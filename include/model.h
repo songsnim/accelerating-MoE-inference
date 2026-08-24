@@ -41,16 +41,28 @@ private:
         std::size_t out = 0, in = 0;
     };
 
+    // The router plus all 16 experts of one layer, on the device.
+    struct DeviceMoE {
+        DeviceMoE(const ModelLoader& loader, std::size_t layer_idx);
+        DeviceMoE(const DeviceMoE&) = delete;
+        DeviceMoE& operator=(const DeviceMoE&) = delete;
+        DeviceMoE(DeviceMoE&&) noexcept = default;
+        void free();
+
+        DeviceLinear gate;
+        std::vector<DeviceLinear> w1, w2, w3;
+    };
+
     // A decoder layer taken apart into its primitives. PhiDecoderLayer keeps
     // its projections private, so the batched path assembles the same weights
-    // from layer.h's public classes instead. Still one copy of the weights.
+    // from the loader instead. Still one copy of the weights.
     struct Layer {
         Layer(const ModelLoader& loader, std::size_t layer_idx);
 
         Tensor input_norm_weight, input_norm_bias;
         Tensor post_norm_weight, post_norm_bias;
         DeviceLinear q_proj, k_proj, v_proj, o_proj;
-        PhiMoE moe;
+        DeviceMoE moe;
     };
 
     ModelLoader loader_;

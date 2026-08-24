@@ -37,18 +37,19 @@ float* device_copy(const Tensor& host) {
 }
 
 // Device scratch that frees itself when the batch is done.
+template <typename T>
 class DeviceBuffer {
 public:
     explicit DeviceBuffer(std::size_t elements) {
-        cuda_check(cudaMalloc(&data_, elements * sizeof(float)), "cudaMalloc scratch");
+        cuda_check(cudaMalloc(&data_, elements * sizeof(T)), "cudaMalloc scratch");
     }
     ~DeviceBuffer() { cudaFree(data_); }
     DeviceBuffer(const DeviceBuffer&) = delete;
     DeviceBuffer& operator=(const DeviceBuffer&) = delete;
-    float* get() const { return data_; }
+    T* get() const { return data_; }
 
 private:
-    float* data_ = nullptr;
+    T* data_ = nullptr;
 };
 
 void to_device(float* device, const Tensor& host) {
@@ -93,6 +94,67 @@ __global__ void gemm_nt_bias(const float* __restrict__ a,
         if (bias != nullptr) acc += bias[col];
         c[static_cast<long long>(row) * n + col] = acc;
     }
+}
+
+// dst[i, :] = src[index[i], :]
+__global__ void gather_rows(const float* __restrict__ src,
+                            const int* __restrict__ index,
+                            float* __restrict__ dst, int cols) {
+    const int row = index[blockIdx.x];
+    const float* in = src + static_cast<long long>(row) * cols;
+    float* out = dst + static_cast<long long>(blockIdx.x) * cols;
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) out[c] = in[c];
+}
+
+// dst[index[i], :] += weight * src[i, :]
+// Each expert holds every row at most once and the experts are applied in
+// separate launches, so no two threads touch the same element.
+__global__ void scatter_add_rows(const float* __restrict__ src,
+                                 const int* __restrict__ index,
+                                 float* __restrict__ dst, int cols,
+                                 float weight) {
+    const int row = index[blockIdx.x];
+    const float* in = src + static_cast<long long>(blockIdx.x) * cols;
+    float* out = dst + static_cast<long long>(row) * cols;
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) out[c] += weight * in[c];
+}
+
+// PhiMLP applies silu to the w1 branch and multiplies the w3 branch into it.
+// tensor.cu evaluates exp in double; expf differs by ~1e-7 relative, which is
+// four orders under the 3e-3 validation threshold.
+__global__ void silu_mul(float* __restrict__ gate,
+                         const float* __restrict__ up, long long n) {
+    const long long i = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < n) {
+        const float x = gate[i];
+        gate[i] = (x / (1.0f + expf(-x))) * up[i];
+    }
+}
+
+// Mirrors PhiMoE::route in layer.cu: quantise the router scores, then pick the
+// best two with a tie epsilon. Left on the host -- it is 16 values per token.
+void route_row(const float* logits, int& first, int& second) {
+    float scores[apss26::NUM_EXPERTS];
+    for (std::size_t e = 0; e < apss26::NUM_EXPERTS; ++e) {
+        const float score = logits[e];
+        const float rounded = std::floor(std::fabs(score) /
+            apss26::ROUTER_SCORE_QUANTUM + 0.5f) * apss26::ROUTER_SCORE_QUANTUM;
+        scores[e] = score < 0.0f ? -rounded : rounded;
+    }
+    auto select = [&scores](int excluded) {
+        int best = -1;
+        float best_value = -std::numeric_limits<float>::infinity();
+        for (std::size_t e = 0; e < apss26::NUM_EXPERTS; ++e) {
+            if (static_cast<int>(e) == excluded) continue;
+            if (best < 0 || scores[e] > best_value + apss26::ROUTER_TIE_EPS) {
+                best = static_cast<int>(e);
+                best_value = scores[e];
+            }
+        }
+        return best;
+    };
+    first = select(-1);
+    second = select(first);
 }
 
 // layer.cu evaluates every exponential in double and rounds once. Keep that.
@@ -206,6 +268,29 @@ void PhiTinyMoEModel::DeviceLinear::forward(const float* x, float* y,
     cuda_check(cudaGetLastError(), "gemm_nt_bias launch");
 }
 
+PhiTinyMoEModel::DeviceMoE::DeviceMoE(const ModelLoader& loader, std::size_t layer_idx)
+    : gate(loader, "model.layers." + std::to_string(layer_idx) + ".block_sparse_moe.gate.weight", "") {
+    const std::string base = "model.layers." + std::to_string(layer_idx) + ".block_sparse_moe";
+    w1.reserve(apss26::NUM_EXPERTS);
+    w2.reserve(apss26::NUM_EXPERTS);
+    w3.reserve(apss26::NUM_EXPERTS);
+    for (std::size_t e = 0; e < apss26::NUM_EXPERTS; ++e) {
+        const std::string prefix = base + ".experts." + std::to_string(e);
+        w1.emplace_back(loader, prefix + ".w1.weight", "");
+        w2.emplace_back(loader, prefix + ".w2.weight", "");
+        w3.emplace_back(loader, prefix + ".w3.weight", "");
+    }
+}
+
+void PhiTinyMoEModel::DeviceMoE::free() {
+    gate.free();
+    for (std::size_t e = 0; e < w1.size(); ++e) {
+        w1[e].free();
+        w2[e].free();
+        w3[e].free();
+    }
+}
+
 PhiTinyMoEModel::Layer::Layer(const ModelLoader& loader, std::size_t layer_idx)
     : input_norm_weight(loader.load("model.layers." + std::to_string(layer_idx) + ".input_layernorm.weight")),
       input_norm_bias(loader.load("model.layers." + std::to_string(layer_idx) + ".input_layernorm.bias")),
@@ -233,6 +318,7 @@ PhiTinyMoEModel::~PhiTinyMoEModel() {
         layer.k_proj.free();
         layer.v_proj.free();
         layer.o_proj.free();
+        layer.moe.free();
     }
     lm_head_.free();
 }
@@ -296,12 +382,22 @@ void PhiTinyMoEModel::generate(
     // once per layer.
     constexpr std::size_t QDIM = apss26::NUM_ATTENTION_HEADS * apss26::HEAD_DIM;
     constexpr std::size_t KVDIM = apss26::NUM_KV_HEADS * apss26::HEAD_DIM;
-    DeviceBuffer d_in(total * apss26::HIDDEN_SIZE), d_out(total * apss26::HIDDEN_SIZE);
-    DeviceBuffer d_q(total * QDIM), d_k(total * KVDIM), d_v(total * KVDIM);
-    DeviceBuffer d_ctx(total * QDIM);
+    constexpr std::size_t FFDIM = apss26::EXPERT_INTERMEDIATE_SIZE;
+    DeviceBuffer<float> d_in(total * apss26::HIDDEN_SIZE), d_out(total * apss26::HIDDEN_SIZE);
+    DeviceBuffer<float> d_q(total * QDIM), d_k(total * KVDIM), d_v(total * KVDIM);
+    DeviceBuffer<float> d_ctx(total * QDIM);
+    // MoE scratch. An expert can in principle draw every row, so size for it.
+    DeviceBuffer<float> d_router(total * apss26::NUM_EXPERTS);
+    DeviceBuffer<float> d_ff(total * apss26::HIDDEN_SIZE);
+    DeviceBuffer<float> d_expert_in(total * apss26::HIDDEN_SIZE);
+    DeviceBuffer<float> d_expert_out(total * apss26::HIDDEN_SIZE);
+    DeviceBuffer<float> d_gate(total * FFDIM), d_up(total * FFDIM);
+    DeviceBuffer<int> d_index(total);
 
     Tensor q({total, QDIM}), k({total, KVDIM}), v({total, KVDIM});
     Tensor context({total, QDIM});
+    Tensor router({total, apss26::NUM_EXPERTS});
+    std::vector<std::vector<int>> assignment(apss26::NUM_EXPERTS);
 
     for (const Layer& layer : layers_) {
         Tensor normed(hidden.shape());
@@ -335,11 +431,49 @@ void PhiTinyMoEModel::generate(
         tensor_ops::add_inplace(attn, hidden);
         tick(t_resid);
 
-        Tensor post(attn.shape()), ff;
+        Tensor post(attn.shape());
         tensor_ops::layer_norm(attn, layer.post_norm_weight, layer.post_norm_bias, apss26::NORM_EPS, post);
         tick(t_norm);
-        layer.moe.forward(post, ff);
+
+        // MoE: route on the host (16 scores per token), then run each expert
+        // over its own gathered rows and scatter the halves back.
+        to_device(d_in.get(), post);
+        tick(t_h2d);
+        layer.moe.gate.forward(d_in.get(), d_router.get(), total);
+        tick(t_gemm);
+        to_host(router, d_router.get());
+        tick(t_d2h);
+
+        for (auto& rows : assignment) rows.clear();
+        for (std::size_t t = 0; t < total; ++t) {
+            int first = 0, second = 0;
+            route_row(router.data() + t * apss26::NUM_EXPERTS, first, second);
+            assignment[first].push_back(static_cast<int>(t));
+            assignment[second].push_back(static_cast<int>(t));
+        }
+        cuda_check(cudaMemset(d_ff.get(), 0, total * apss26::HIDDEN_SIZE * sizeof(float)),
+                   "cudaMemset d_ff");
+        for (std::size_t e = 0; e < apss26::NUM_EXPERTS; ++e) {
+            const std::size_t rows = assignment[e].size();
+            if (rows == 0) continue;
+            cuda_check(cudaMemcpy(d_index.get(), assignment[e].data(), rows * sizeof(int),
+                                  cudaMemcpyHostToDevice), "cudaMemcpy expert index");
+            gather_rows<<<static_cast<unsigned>(rows), 256>>>(
+                d_in.get(), d_index.get(), d_expert_in.get(), apss26::HIDDEN_SIZE);
+            layer.moe.w1[e].forward(d_expert_in.get(), d_gate.get(), rows);
+            layer.moe.w3[e].forward(d_expert_in.get(), d_up.get(), rows);
+            const long long activated = static_cast<long long>(rows) * FFDIM;
+            silu_mul<<<static_cast<unsigned>((activated + 255) / 256), 256>>>(
+                d_gate.get(), d_up.get(), activated);
+            layer.moe.w2[e].forward(d_gate.get(), d_expert_out.get(), rows);
+            scatter_add_rows<<<static_cast<unsigned>(rows), 256>>>(
+                d_expert_out.get(), d_index.get(), d_ff.get(), apss26::HIDDEN_SIZE, 0.5f);
+        }
+        cuda_check(cudaGetLastError(), "moe kernels");
+        Tensor ff({total, apss26::HIDDEN_SIZE});
+        to_host(ff, d_ff.get());
         tick(t_moe);
+
         tensor_ops::add_inplace(ff, attn);
         hidden = std::move(ff);
         tick(t_resid);
@@ -354,7 +488,7 @@ void PhiTinyMoEModel::generate(
         float* dst = last.data() + b * apss26::HIDDEN_SIZE;
         for (std::size_t h = 0; h < apss26::HIDDEN_SIZE; ++h) dst[h] = src[h];
     }
-    DeviceBuffer d_last(batch * apss26::HIDDEN_SIZE), d_logits(batch * apss26::VOCAB_SIZE);
+    DeviceBuffer<float> d_last(batch * apss26::HIDDEN_SIZE), d_logits(batch * apss26::VOCAB_SIZE);
     to_device(d_last.get(), last);
     lm_head_.forward(d_last.get(), d_logits.get(), batch);
     logits = Tensor({batch, apss26::VOCAB_SIZE});
