@@ -41,6 +41,23 @@ private:
         std::size_t out = 0, in = 0;
     };
 
+    // A layer norm's weight and bias in device memory.
+    struct DeviceNorm {
+        DeviceNorm() = default;
+        DeviceNorm(const ModelLoader& loader, const std::string& weight,
+                   const std::string& bias);
+        DeviceNorm(const DeviceNorm&) = delete;
+        DeviceNorm& operator=(const DeviceNorm&) = delete;
+        DeviceNorm(DeviceNorm&& other) noexcept;
+        void free();
+        // y[rows, cols] = normalise(x[rows, cols]) * weight + bias
+        void forward(const float* x, float* y, std::size_t rows) const;
+
+        float* weight = nullptr;
+        float* bias = nullptr;
+        std::size_t cols = 0;
+    };
+
     // The router plus all 16 experts of one layer, on the device.
     struct DeviceMoE {
         DeviceMoE(const ModelLoader& loader, std::size_t layer_idx);
@@ -59,15 +76,14 @@ private:
     struct Layer {
         Layer(const ModelLoader& loader, std::size_t layer_idx);
 
-        Tensor input_norm_weight, input_norm_bias;
-        Tensor post_norm_weight, post_norm_bias;
+        DeviceNorm input_norm, post_norm;
         DeviceLinear q_proj, k_proj, v_proj, o_proj;
         DeviceMoE moe;
     };
 
     ModelLoader loader_;
     Tensor embeddings_;
-    Tensor final_norm_weight_, final_norm_bias_;
+    DeviceNorm final_norm_;
     DeviceLinear lm_head_;
     std::vector<Layer> layers_;
 };

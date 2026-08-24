@@ -131,6 +131,72 @@ __global__ void silu_mul(float* __restrict__ gate,
     }
 }
 
+// a[i] += b[i]
+__global__ void add_inplace_kernel(float* __restrict__ a,
+                                   const float* __restrict__ b, long long n) {
+    const long long i = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < n) a[i] += b[i];
+}
+
+void add_inplace_device(float* a, const float* b, long long n) {
+    add_inplace_kernel<<<static_cast<unsigned>((n + 255) / 256), 256>>>(a, b, n);
+    cuda_check(cudaGetLastError(), "add_inplace_kernel launch");
+}
+
+// One block per row. The row is staged in shared memory, then a single thread
+// walks it twice.
+//
+// The serial walk is deliberate. tensor_ops::layer_norm accumulates each row
+// sequentially into one float accumulator (verified in the disassembly: a
+// chain of vaddss, no vectorisation and no FMA), and a block-wide tree
+// reduction sums in a different order. That reordering shifts the router
+// logits by ~1e-7, which is enough to flip a token across the score
+// quantisation boundary in PhiMoE::route and hand it a different expert -- a
+// discrete O(0.1) change in that token's output. Measured at n=1024: a tree
+// reduction failed validation on 4 of 1024 sequences (max abs diff 0.212)
+// while the mean stayed at 6.8e-05.
+//
+// So every arithmetic step below mirrors the host op exactly, including the
+// __f*_rn intrinsics that keep nvcc from contracting the multiply-adds into
+// FMAs the host does not emit. One serial thread per row costs ~70 ms in
+// total, against the 16.1 s the host layer norms took.
+constexpr int NORM_BLOCK = 256;
+
+__global__ void layer_norm_rows(const float* __restrict__ x,
+                                const float* __restrict__ weight,
+                                const float* __restrict__ bias,
+                                float* __restrict__ y, int cols, float eps) {
+    extern __shared__ float shared[];
+    float* row = shared;
+    float* stats = shared + cols;
+
+    const long long base = static_cast<long long>(blockIdx.x) * cols;
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) row[c] = x[base + c];
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        float sum = 0.0f;
+        for (int j = 0; j < cols; ++j) sum = __fadd_rn(sum, row[j]);
+        const float mean = sum / static_cast<float>(cols);
+
+        float var = 0.0f;
+        for (int j = 0; j < cols; ++j) {
+            const float d = __fsub_rn(row[j], mean);
+            var = __fadd_rn(var, __fmul_rn(d, d));
+        }
+        stats[0] = mean;
+        stats[1] = 1.0f / sqrtf(var / static_cast<float>(cols) + eps);
+    }
+    __syncthreads();
+
+    const float mean = stats[0], inv = stats[1];
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) {
+        const float scaled = __fmul_rn(__fmul_rn(__fsub_rn(row[c], mean), inv),
+                                       weight[c]);
+        y[base + c] = __fadd_rn(scaled, bias[c]);
+    }
+}
+
 // Mirrors PhiMoE::route in layer.cu: quantise the router scores, then pick the
 // best two with a tie epsilon. Left on the host -- it is 16 values per token.
 void route_row(const float* logits, int& first, int& second) {
@@ -268,6 +334,36 @@ void PhiTinyMoEModel::DeviceLinear::forward(const float* x, float* y,
     cuda_check(cudaGetLastError(), "gemm_nt_bias launch");
 }
 
+PhiTinyMoEModel::DeviceNorm::DeviceNorm(const ModelLoader& loader,
+                                        const std::string& weight_name,
+                                        const std::string& bias_name) {
+    const Tensor host_weight = loader.load(weight_name);
+    cols = host_weight.size();
+    weight = device_copy(host_weight);
+    bias = device_copy(loader.load(bias_name));
+}
+
+PhiTinyMoEModel::DeviceNorm::DeviceNorm(DeviceNorm&& other) noexcept
+    : weight(other.weight), bias(other.bias), cols(other.cols) {
+    other.weight = nullptr;
+    other.bias = nullptr;
+}
+
+void PhiTinyMoEModel::DeviceNorm::free() {
+    cudaFree(weight);
+    cudaFree(bias);
+    weight = nullptr;
+    bias = nullptr;
+}
+
+void PhiTinyMoEModel::DeviceNorm::forward(const float* x, float* y,
+                                          std::size_t rows) const {
+    const std::size_t shared = (cols + 2) * sizeof(float);
+    layer_norm_rows<<<static_cast<unsigned>(rows), NORM_BLOCK, shared>>>(
+        x, weight, bias, y, static_cast<int>(cols), apss26::NORM_EPS);
+    cuda_check(cudaGetLastError(), "layer_norm_rows launch");
+}
+
 PhiTinyMoEModel::DeviceMoE::DeviceMoE(const ModelLoader& loader, std::size_t layer_idx)
     : gate(loader, "model.layers." + std::to_string(layer_idx) + ".block_sparse_moe.gate.weight", "") {
     const std::string base = "model.layers." + std::to_string(layer_idx) + ".block_sparse_moe";
@@ -292,10 +388,10 @@ void PhiTinyMoEModel::DeviceMoE::free() {
 }
 
 PhiTinyMoEModel::Layer::Layer(const ModelLoader& loader, std::size_t layer_idx)
-    : input_norm_weight(loader.load("model.layers." + std::to_string(layer_idx) + ".input_layernorm.weight")),
-      input_norm_bias(loader.load("model.layers." + std::to_string(layer_idx) + ".input_layernorm.bias")),
-      post_norm_weight(loader.load("model.layers." + std::to_string(layer_idx) + ".post_attention_layernorm.weight")),
-      post_norm_bias(loader.load("model.layers." + std::to_string(layer_idx) + ".post_attention_layernorm.bias")),
+    : input_norm(loader, "model.layers." + std::to_string(layer_idx) + ".input_layernorm.weight",
+                 "model.layers." + std::to_string(layer_idx) + ".input_layernorm.bias"),
+      post_norm(loader, "model.layers." + std::to_string(layer_idx) + ".post_attention_layernorm.weight",
+                "model.layers." + std::to_string(layer_idx) + ".post_attention_layernorm.bias"),
       q_proj(loader, "model.layers." + std::to_string(layer_idx) + ".self_attn.q_proj.weight", "model.layers." + std::to_string(layer_idx) + ".self_attn.q_proj.bias"),
       k_proj(loader, "model.layers." + std::to_string(layer_idx) + ".self_attn.k_proj.weight", "model.layers." + std::to_string(layer_idx) + ".self_attn.k_proj.bias"),
       v_proj(loader, "model.layers." + std::to_string(layer_idx) + ".self_attn.v_proj.weight", "model.layers." + std::to_string(layer_idx) + ".self_attn.v_proj.bias"),
@@ -305,8 +401,7 @@ PhiTinyMoEModel::Layer::Layer(const ModelLoader& loader, std::size_t layer_idx)
 PhiTinyMoEModel::PhiTinyMoEModel(const std::string& model_file)
     : loader_(model_file),
       embeddings_(loader_.load("model.embed_tokens.weight")),
-      final_norm_weight_(loader_.load("model.norm.weight")),
-      final_norm_bias_(loader_.load("model.norm.bias")),
+      final_norm_(loader_, "model.norm.weight", "model.norm.bias"),
       lm_head_(loader_, "lm_head.weight", "lm_head.bias") {
     layers_.reserve(apss26::NUM_LAYERS);
     for (std::size_t i = 0; i < apss26::NUM_LAYERS; ++i) layers_.emplace_back(loader_, i);
@@ -314,12 +409,15 @@ PhiTinyMoEModel::PhiTinyMoEModel(const std::string& model_file)
 
 PhiTinyMoEModel::~PhiTinyMoEModel() {
     for (Layer& layer : layers_) {
+        layer.input_norm.free();
+        layer.post_norm.free();
         layer.q_proj.free();
         layer.k_proj.free();
         layer.v_proj.free();
         layer.o_proj.free();
         layer.moe.free();
     }
+    final_norm_.free();
     lm_head_.free();
 }
 
@@ -377,22 +475,32 @@ void PhiTinyMoEModel::generate(
     };
     tick(t_embed);
 
-    // The projections run on the device; layer norm, attention and the MoE
-    // still run on the host, so q/k/v and the attention context cross the bus
-    // once per layer.
+    // Everything except attention and the routing decision now runs on the
+    // device, and the residual stream stays there for all 32 layers: only
+    // q/k/v, the attention context and the 16 router scores per token still
+    // cross the bus.
     constexpr std::size_t QDIM = apss26::NUM_ATTENTION_HEADS * apss26::HEAD_DIM;
     constexpr std::size_t KVDIM = apss26::NUM_KV_HEADS * apss26::HEAD_DIM;
     constexpr std::size_t FFDIM = apss26::EXPERT_INTERMEDIATE_SIZE;
-    DeviceBuffer<float> d_in(total * apss26::HIDDEN_SIZE), d_out(total * apss26::HIDDEN_SIZE);
+    const std::size_t elements = total * apss26::HIDDEN_SIZE;
+
+    // The residual stream, double buffered: the MoE accumulates the next
+    // layer's input while this layer's is still needed for the residual add.
+    DeviceBuffer<float> d_stream_a(elements), d_stream_b(elements);
+    float* d_hidden = d_stream_a.get();
+    float* d_next = d_stream_b.get();
+
+    DeviceBuffer<float> d_norm(elements), d_attn(elements);
     DeviceBuffer<float> d_q(total * QDIM), d_k(total * KVDIM), d_v(total * KVDIM);
     DeviceBuffer<float> d_ctx(total * QDIM);
-    // MoE scratch. An expert can in principle draw every row, so size for it.
     DeviceBuffer<float> d_router(total * apss26::NUM_EXPERTS);
-    DeviceBuffer<float> d_ff(total * apss26::HIDDEN_SIZE);
-    DeviceBuffer<float> d_expert_in(total * apss26::HIDDEN_SIZE);
-    DeviceBuffer<float> d_expert_out(total * apss26::HIDDEN_SIZE);
+    // MoE scratch. An expert can in principle draw every row, so size for it.
+    DeviceBuffer<float> d_expert_in(elements), d_expert_out(elements);
     DeviceBuffer<float> d_gate(total * FFDIM), d_up(total * FFDIM);
     DeviceBuffer<int> d_index(total);
+
+    to_device(d_hidden, hidden);
+    tick(t_h2d);
 
     Tensor q({total, QDIM}), k({total, KVDIM}), v({total, KVDIM});
     Tensor context({total, QDIM});
@@ -400,15 +508,11 @@ void PhiTinyMoEModel::generate(
     std::vector<std::vector<int>> assignment(apss26::NUM_EXPERTS);
 
     for (const Layer& layer : layers_) {
-        Tensor normed(hidden.shape());
-        tensor_ops::layer_norm(hidden, layer.input_norm_weight, layer.input_norm_bias, apss26::NORM_EPS, normed);
+        layer.input_norm.forward(d_hidden, d_norm.get(), total);
         tick(t_norm);
-
-        to_device(d_in.get(), normed);
-        tick(t_h2d);
-        layer.q_proj.forward(d_in.get(), d_q.get(), total);
-        layer.k_proj.forward(d_in.get(), d_k.get(), total);
-        layer.v_proj.forward(d_in.get(), d_v.get(), total);
+        layer.q_proj.forward(d_norm.get(), d_q.get(), total);
+        layer.k_proj.forward(d_norm.get(), d_k.get(), total);
+        layer.v_proj.forward(d_norm.get(), d_v.get(), total);
         tick(t_gemm);
         to_host(q, d_q.get());
         to_host(k, d_k.get());
@@ -423,23 +527,19 @@ void PhiTinyMoEModel::generate(
 
         to_device(d_ctx.get(), context);
         tick(t_h2d);
-        layer.o_proj.forward(d_ctx.get(), d_out.get(), total);
+        layer.o_proj.forward(d_ctx.get(), d_attn.get(), total);
         tick(t_gemm);
-        Tensor attn({total, apss26::HIDDEN_SIZE});
-        to_host(attn, d_out.get());
-        tick(t_d2h);
-        tensor_ops::add_inplace(attn, hidden);
+        add_inplace_device(d_attn.get(), d_hidden, static_cast<long long>(elements));
         tick(t_resid);
 
-        Tensor post(attn.shape());
-        tensor_ops::layer_norm(attn, layer.post_norm_weight, layer.post_norm_bias, apss26::NORM_EPS, post);
+        // o_proj has consumed q/k/v, so d_norm is free to take the
+        // post-attention norm -- which is also the expert gather source.
+        layer.post_norm.forward(d_attn.get(), d_norm.get(), total);
         tick(t_norm);
 
         // MoE: route on the host (16 scores per token), then run each expert
         // over its own gathered rows and scatter the halves back.
-        to_device(d_in.get(), post);
-        tick(t_h2d);
-        layer.moe.gate.forward(d_in.get(), d_router.get(), total);
+        layer.moe.gate.forward(d_norm.get(), d_router.get(), total);
         tick(t_gemm);
         to_host(router, d_router.get());
         tick(t_d2h);
@@ -451,15 +551,14 @@ void PhiTinyMoEModel::generate(
             assignment[first].push_back(static_cast<int>(t));
             assignment[second].push_back(static_cast<int>(t));
         }
-        cuda_check(cudaMemset(d_ff.get(), 0, total * apss26::HIDDEN_SIZE * sizeof(float)),
-                   "cudaMemset d_ff");
+        cuda_check(cudaMemset(d_next, 0, elements * sizeof(float)), "cudaMemset stream");
         for (std::size_t e = 0; e < apss26::NUM_EXPERTS; ++e) {
             const std::size_t rows = assignment[e].size();
             if (rows == 0) continue;
             cuda_check(cudaMemcpy(d_index.get(), assignment[e].data(), rows * sizeof(int),
                                   cudaMemcpyHostToDevice), "cudaMemcpy expert index");
             gather_rows<<<static_cast<unsigned>(rows), 256>>>(
-                d_in.get(), d_index.get(), d_expert_in.get(), apss26::HIDDEN_SIZE);
+                d_norm.get(), d_index.get(), d_expert_in.get(), apss26::HIDDEN_SIZE);
             layer.moe.w1[e].forward(d_expert_in.get(), d_gate.get(), rows);
             layer.moe.w3[e].forward(d_expert_in.get(), d_up.get(), rows);
             const long long activated = static_cast<long long>(rows) * FFDIM;
@@ -467,30 +566,30 @@ void PhiTinyMoEModel::generate(
                 d_gate.get(), d_up.get(), activated);
             layer.moe.w2[e].forward(d_gate.get(), d_expert_out.get(), rows);
             scatter_add_rows<<<static_cast<unsigned>(rows), 256>>>(
-                d_expert_out.get(), d_index.get(), d_ff.get(), apss26::HIDDEN_SIZE, 0.5f);
+                d_expert_out.get(), d_index.get(), d_next, apss26::HIDDEN_SIZE, 0.5f);
         }
         cuda_check(cudaGetLastError(), "moe kernels");
-        Tensor ff({total, apss26::HIDDEN_SIZE});
-        to_host(ff, d_ff.get());
         tick(t_moe);
 
-        tensor_ops::add_inplace(ff, attn);
-        hidden = std::move(ff);
+        add_inplace_device(d_next, d_attn.get(), static_cast<long long>(elements));
         tick(t_resid);
+        std::swap(d_hidden, d_next);
     }
 
-    Tensor normed(hidden.shape());
-    tensor_ops::layer_norm(hidden, final_norm_weight_, final_norm_bias_, apss26::NORM_EPS, normed);
+    final_norm_.forward(d_hidden, d_norm.get(), total);
+    tick(t_norm);
 
-    Tensor last({batch, apss26::HIDDEN_SIZE});
+    // Only the last row of each sequence feeds lm_head.
+    std::vector<int> last_rows(batch);
     for (std::size_t b = 0; b < batch; ++b) {
-        const float* src = normed.data() + (offset[b] + length[b] - 1) * apss26::HIDDEN_SIZE;
-        float* dst = last.data() + b * apss26::HIDDEN_SIZE;
-        for (std::size_t h = 0; h < apss26::HIDDEN_SIZE; ++h) dst[h] = src[h];
+        last_rows[b] = static_cast<int>(offset[b] + length[b] - 1);
     }
-    DeviceBuffer<float> d_last(batch * apss26::HIDDEN_SIZE), d_logits(batch * apss26::VOCAB_SIZE);
-    to_device(d_last.get(), last);
-    lm_head_.forward(d_last.get(), d_logits.get(), batch);
+    cuda_check(cudaMemcpy(d_index.get(), last_rows.data(), batch * sizeof(int),
+                          cudaMemcpyHostToDevice), "cudaMemcpy last rows");
+    gather_rows<<<static_cast<unsigned>(batch), 256>>>(
+        d_norm.get(), d_index.get(), d_expert_in.get(), apss26::HIDDEN_SIZE);
+    DeviceBuffer<float> d_logits(batch * apss26::VOCAB_SIZE);
+    lm_head_.forward(d_expert_in.get(), d_logits.get(), batch);
     logits = Tensor({batch, apss26::VOCAB_SIZE});
     to_host(logits, d_logits.get());
     tick(t_lm);

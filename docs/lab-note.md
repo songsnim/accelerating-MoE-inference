@@ -219,7 +219,8 @@ VRAM: projection 2.7GB + MoE 11.3GB + lm_head 0.5GB = 14.5GB < 24GB.
 가설(n=8에서 10x 이상)은 **맞았다** — 실제 35.9x. MoE 28.0s가 사라졌다.
 - **n=1024 전체가 2분 제한 안에 들어왔다** (48.8s + load 5.3s). EXP-001/002는 n=8이 한계였는데,
   이제 throughput이 n에 따라 계속 오르므로(7.8 -> 21.0) 전량 처리가 곧 최고 기록이다.
-- **제출: 20.998835 seq/s (n=1024). baseline 0.033306 대비 630x, EXP-002 대비 96.8x.**
+- **제출: 19.252353 seq/s (n=1024, 리더보드 1위/4). baseline 0.033306 대비 630x, EXP-002 대비 96.8x.**
+  (리더보드 값이 로컬 20.999보다 낮은 건 제출 런이 별도 측정이고 런 간 변동이 ±5~8%이기 때문.)
 - 정확도: max abs diff 1.79e-04 (임계값 3e-3의 6%). T가 커져 오차 누적이 늘었지만 여유 있다.
 
 `APS_PROFILE=1` 프로파일 (n=1024, sync 추가로 총 57.7s):
@@ -250,3 +251,86 @@ VRAM: projection 2.7GB + MoE 11.3GB + lm_head 0.5GB = 14.5GB < 24GB.
 -> EXP-004 (layer_norm + residual 커널화, 활성값 device 상주).
 그 다음 후보: attention도 커널로 옮겨 D2H를 라우팅용 1회로 축소, GEMM 커널 자체 튜닝
 (13.2s는 아직 3090 피크의 수 %다), expert 배치를 grouped GEMM 1회로 묶어 launch 오버헤드 제거.
+
+---
+
+# EXP-004 (layer_norm + residual 커널화, 활성값 device 상주)
+## 1. Background
+EXP-003 프로파일에서 GPU 연산이 아닌 부분이 53%였다: host norm/resid/attn 20.1s +
+그 때문에 발생하는 PCIe 왕복 10.1s.
+
+## 2. Hypothesis
+layer_norm과 residual add를 커널로 옮기고 residual stream을 32 레이어 내내 device에
+상주시키면, host 잔여 연산 18.8s와 H2D/D2H 대부분이 사라져 **~2.5x**.
+
+## 3. Design and Implementation
+- `model.h`: `Layer`의 norm weight/bias Tensor 4개 -> `DeviceNorm input_norm, post_norm`,
+  `final_norm_weight_/bias_` -> `DeviceNorm final_norm_`. (`DeviceLinear`와 같은 패턴)
+- 커널 2개 추가: `add_inplace_kernel`(elementwise), `layer_norm_rows`(행당 1 block).
+- **residual stream double buffer**: `d_stream_a/b`를 raw pointer로 잡고 레이어 끝에서
+  `std::swap`. MoE가 다음 레이어 입력을 누적하는 동안 현재 stream은 residual add에 아직 필요.
+- 버퍼 재사용: q/k/v를 o_proj가 소비한 뒤 `d_norm`이 post-attention norm(= expert gather
+  source)을 받는다. default stream이므로 커널 순서가 보장된다.
+- lm_head 입력의 마지막 토큰 추출도 `gather_rows` 재사용 (host 복사 제거).
+- 레이어당 버스 통과는 q/k/v D2H + context H2D + router D2H(1.3MB)만 남는다.
+
+### 실패한 첫 시도 — 이게 이 실험의 알짜다
+`layer_norm_rows`를 **block tree reduction**으로 쓰면 n=8은 통과하는데 **n=1024가 실패**했다.
+```
+max abs diff 0.211975  mean abs diff 6.83e-05  first mismatch [344, 6744]
+```
+EXP-003 출력과 행별 비교: **1024개 중 4개 시퀀스만** 임계값 초과 (344/400/401/1009).
+mean은 그대로인데 max만 튄다 -> 정밀도가 아니라 **이산적 결정이 뒤집힌 것**.
+
+원인: tree reduction은 합의 순서를 바꾸므로 router logit이 ~1e-7 흔들린다. `PhiMoE::route`는
+score를 `ROUTER_SCORE_QUANTUM`으로 양자화한 뒤 tie-eps로 top-2를 고르므로, 경계에 있는 토큰이
+**다른 expert**를 받는다. 그 토큰 출력은 O(0.1) 바뀐다. (634k개 라우팅 결정 중 몇 개면 충분.
+top-1/top-2 순서만 바뀌는 flip은 가중치가 둘 다 0.5라 무해하고, **집합**이 바뀔 때만 터진다.)
+
+해결: norm을 host와 bit-identical하게. `objdump obj/tensor.o`로 host 코드를 먼저 확인했다 —
+`vaddss` 단일 accumulator 순차 누적, **벡터화도 FMA도 없다**. 그래서
+- 행을 shared memory에 올리고 **thread 0이 순차로 두 번 훑는다**
+- `__fadd_rn/__fsub_rn/__fmul_rn`으로 nvcc의 FMA contraction을 막는다
+  (host가 내지 않는 FMA를 device가 내면 결과가 달라진다)
+- `1.0f/sqrtf(...)` — `rsqrtf`는 저정밀 근사라 금지
+
+직렬화 비용은 23.82s -> 24.11s (**1.2%**). host norm 16.1s를 없애는 대가로는 공짜다.
+
+## 4. Result
+| n | tokens | EXP-003 | EXP-004 | speedup | seq/s | Validation |
+|---|---|---|---|---|---|---|
+| 8 | 165 | 1.026 s | **0.727 s** | 1.41x | 11.004965 | PASSED |
+| 1024 | 19,803 | 48.765 s | **24.115 s** | **2.02x** | **42.463893** | PASSED (max 1.79e-04) |
+
+가설(~2.5x)은 대체로 맞았다 — 실제 2.02x.
+- **출력이 EXP-003과 bitwise 동일**: `cmp exp003_n1024.bin exp004_n1024.bin` -> IDENTICAL.
+  max abs diff도 1.79e-04로 소수점까지 같다. bit-exact 목표가 달성됐음이 증명됨.
+- **제출: 42.677174 seq/s (n=1024, 리더보드 1위/4). 개인 최고 19.25 -> 42.68 (+121.7%).**
+- baseline 0.033306 대비 **1275x**.
+- 런 간 변동 ±5% 관측(23.82~24.12s). 실험 간 비교는 같은 세션 연속 측정으로 해야 한다.
+
+프로파일 비교 (n=1024, 둘 다 `APS_PROFILE=1`):
+| 단계 | EXP-003 | EXP-004 | 비고 |
+|---|---|---|---|
+| norm | 16.144 | **0.350** | 46x. 병목에서 노이즈로 |
+| gemm | 13.164 | 13.156 | 손대지 않음 — 이제 **56%** |
+| moe | 13.449 | **7.276** | EXP-003의 t_moe는 `ff` D2H(10GB)를 포함했다 |
+| d2h | 7.495 | **0.850** | |
+| resid | 2.689 | **0.075** | |
+| h2d | 2.618 | **0.561** | |
+| attn | 1.305 | 1.125 | host 잔류 |
+| lm_head | 0.460 | 0.148 | |
+
+## 5. Next action
+이제 **GEMM 커널 자체가 병목**이다. gemm 13.156s + moe 7.276s = **20.4s / 87%**가 device GEMM.
+실효 성능을 계산하면:
+- projection+gate+lm_head 13.4 TMAC / 13.156s = **2.04 TFLOP/s**
+- MoE expert 6.8 TMAC / 7.276s = **1.87 TFLOP/s**
+-> RTX 3090 fp32 피크 35.6 TFLOP/s의 **약 6%**.
+
+`gemm_nt_bias`는 thread당 출력 1개라 내부 루프가 MAC 1회마다 shared를 2번 읽는다
+(shared bandwidth bound). thread당 4x4~8x8 출력을 레지스터에 들고 도는 **register tiling**이
+정석이며 보통 피크의 30~50%까지 간다. 87%에 걸린 레버이므로 기대값이 가장 크다.
+-> EXP-005 (register-tiled GEMM).
+그 다음 후보: expert 16개를 grouped GEMM 1회로 묶어 launch/tail 낭비 제거,
+host attention(1.1s)과 host 라우팅(t_moe에 포함, 634k회 직렬 `route_row`) 커널화.
