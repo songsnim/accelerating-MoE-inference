@@ -1,12 +1,99 @@
 #include "model.h"
 #include "config.h"
+#include <cuda_runtime.h>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
 namespace {
+
+double now_sec() {
+    timespec t{};
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return static_cast<double>(t.tv_sec) + 1.0e-9 * static_cast<double>(t.tv_nsec);
+}
+
+void cuda_check(cudaError_t status, const char* what) {
+    if (status != cudaSuccess) {
+        throw std::runtime_error(std::string(what) + ": " +
+                                 cudaGetErrorString(status));
+    }
+}
+
+float* device_copy(const Tensor& host) {
+    if (host.size() == 0) return nullptr;
+    float* device = nullptr;
+    const std::size_t bytes = host.size() * sizeof(float);
+    cuda_check(cudaMalloc(&device, bytes), "cudaMalloc weight");
+    cuda_check(cudaMemcpy(device, host.data(), bytes, cudaMemcpyHostToDevice),
+               "cudaMemcpy weight");
+    return device;
+}
+
+// Device scratch that frees itself when the batch is done.
+class DeviceBuffer {
+public:
+    explicit DeviceBuffer(std::size_t elements) {
+        cuda_check(cudaMalloc(&data_, elements * sizeof(float)), "cudaMalloc scratch");
+    }
+    ~DeviceBuffer() { cudaFree(data_); }
+    DeviceBuffer(const DeviceBuffer&) = delete;
+    DeviceBuffer& operator=(const DeviceBuffer&) = delete;
+    float* get() const { return data_; }
+
+private:
+    float* data_ = nullptr;
+};
+
+void to_device(float* device, const Tensor& host) {
+    cuda_check(cudaMemcpy(device, host.data(), host.size() * sizeof(float),
+                          cudaMemcpyHostToDevice), "cudaMemcpy H2D");
+}
+
+void to_host(Tensor& host, const float* device) {
+    cuda_check(cudaMemcpy(host.data(), device, host.size() * sizeof(float),
+                          cudaMemcpyDeviceToHost), "cudaMemcpy D2H");
+}
+
+// C[M,N] = A[M,K] * B[N,K]^T + bias[N], tiled through shared memory.
+// The K loop still walks k in ascending order, so each output accumulates in
+// the same order as tensor_ops::matmul_transposed does on the host.
+constexpr int TILE = 32;
+
+__global__ void gemm_nt_bias(const float* __restrict__ a,
+                             const float* __restrict__ b,
+                             const float* __restrict__ bias,
+                             float* __restrict__ c,
+                             int m, int k, int n) {
+    __shared__ float as[TILE][TILE + 1];
+    __shared__ float bs[TILE][TILE + 1];
+
+    const int tx = threadIdx.x, ty = threadIdx.y;
+    const int row = blockIdx.y * TILE + ty;
+    const int col = blockIdx.x * TILE + tx;
+    const int b_row = blockIdx.x * TILE + ty;
+
+    float acc = 0.0f;
+    for (int kt = 0; kt < k; kt += TILE) {
+        const int kk = kt + tx;
+        as[ty][tx] = (row < m && kk < k) ? a[static_cast<long long>(row) * k + kk] : 0.0f;
+        bs[ty][tx] = (b_row < n && kk < k) ? b[static_cast<long long>(b_row) * k + kk] : 0.0f;
+        __syncthreads();
+        for (int i = 0; i < TILE; ++i) acc += as[ty][i] * bs[tx][i];
+        __syncthreads();
+    }
+
+    if (row < m && col < n) {
+        if (bias != nullptr) acc += bias[col];
+        c[static_cast<long long>(row) * n + col] = acc;
+    }
+}
 
 // layer.cu evaluates every exponential in double and rounds once. Keep that.
 inline float accurate_exp(float x) {
@@ -82,6 +169,43 @@ void attend_sequence(Tensor& q, Tensor& k, const Tensor& v,
 
 }  // namespace
 
+PhiTinyMoEModel::DeviceLinear::DeviceLinear(const ModelLoader& loader,
+                                            const std::string& weight_name,
+                                            const std::string& bias_name) {
+    {
+        const Tensor host = loader.load(weight_name);
+        out = host.size(0);
+        in = host.size(1);
+        weight = device_copy(host);
+    }
+    if (!bias_name.empty() && loader.has(bias_name)) {
+        bias = device_copy(loader.load(bias_name));
+    }
+}
+
+PhiTinyMoEModel::DeviceLinear::DeviceLinear(DeviceLinear&& other) noexcept
+    : weight(other.weight), bias(other.bias), out(other.out), in(other.in) {
+    other.weight = nullptr;
+    other.bias = nullptr;
+}
+
+void PhiTinyMoEModel::DeviceLinear::free() {
+    cudaFree(weight);
+    cudaFree(bias);
+    weight = nullptr;
+    bias = nullptr;
+}
+
+void PhiTinyMoEModel::DeviceLinear::forward(const float* x, float* y,
+                                            std::size_t rows) const {
+    const dim3 block(TILE, TILE);
+    const dim3 grid(static_cast<unsigned>((out + TILE - 1) / TILE),
+                    static_cast<unsigned>((rows + TILE - 1) / TILE));
+    gemm_nt_bias<<<grid, block>>>(x, weight, bias, y, static_cast<int>(rows),
+                                  static_cast<int>(in), static_cast<int>(out));
+    cuda_check(cudaGetLastError(), "gemm_nt_bias launch");
+}
+
 PhiTinyMoEModel::Layer::Layer(const ModelLoader& loader, std::size_t layer_idx)
     : input_norm_weight(loader.load("model.layers." + std::to_string(layer_idx) + ".input_layernorm.weight")),
       input_norm_bias(loader.load("model.layers." + std::to_string(layer_idx) + ".input_layernorm.bias")),
@@ -101,6 +225,16 @@ PhiTinyMoEModel::PhiTinyMoEModel(const std::string& model_file)
       lm_head_(loader_, "lm_head.weight", "lm_head.bias") {
     layers_.reserve(apss26::NUM_LAYERS);
     for (std::size_t i = 0; i < apss26::NUM_LAYERS; ++i) layers_.emplace_back(loader_, i);
+}
+
+PhiTinyMoEModel::~PhiTinyMoEModel() {
+    for (Layer& layer : layers_) {
+        layer.q_proj.free();
+        layer.k_proj.free();
+        layer.v_proj.free();
+        layer.o_proj.free();
+    }
+    lm_head_.free();
 }
 
 void PhiTinyMoEModel::forward(const std::vector<int>& input_ids, Tensor& logits) const {
@@ -142,30 +276,73 @@ void PhiTinyMoEModel::generate(
         }
     }
 
+    // Stage timers, off unless APS_PROFILE is set, so measured runs carry no
+    // extra synchronisation.
+    const bool profile = std::getenv("APS_PROFILE") != nullptr;
+    double t_embed = 0, t_norm = 0, t_h2d = 0, t_gemm = 0, t_d2h = 0,
+           t_attn = 0, t_moe = 0, t_resid = 0, t_lm = 0;
+    double mark = now_sec();
+    auto tick = [&](double& sink) {
+        if (!profile) return;
+        cudaDeviceSynchronize();
+        const double now = now_sec();
+        sink += now - mark;
+        mark = now;
+    };
+    tick(t_embed);
+
+    // The projections run on the device; layer norm, attention and the MoE
+    // still run on the host, so q/k/v and the attention context cross the bus
+    // once per layer.
+    constexpr std::size_t QDIM = apss26::NUM_ATTENTION_HEADS * apss26::HEAD_DIM;
+    constexpr std::size_t KVDIM = apss26::NUM_KV_HEADS * apss26::HEAD_DIM;
+    DeviceBuffer d_in(total * apss26::HIDDEN_SIZE), d_out(total * apss26::HIDDEN_SIZE);
+    DeviceBuffer d_q(total * QDIM), d_k(total * KVDIM), d_v(total * KVDIM);
+    DeviceBuffer d_ctx(total * QDIM);
+
+    Tensor q({total, QDIM}), k({total, KVDIM}), v({total, KVDIM});
+    Tensor context({total, QDIM});
+
     for (const Layer& layer : layers_) {
         Tensor normed(hidden.shape());
         tensor_ops::layer_norm(hidden, layer.input_norm_weight, layer.input_norm_bias, apss26::NORM_EPS, normed);
+        tick(t_norm);
 
-        Tensor q, k, v;
-        layer.q_proj.forward(normed, q);
-        layer.k_proj.forward(normed, k);
-        layer.v_proj.forward(normed, v);
+        to_device(d_in.get(), normed);
+        tick(t_h2d);
+        layer.q_proj.forward(d_in.get(), d_q.get(), total);
+        layer.k_proj.forward(d_in.get(), d_k.get(), total);
+        layer.v_proj.forward(d_in.get(), d_v.get(), total);
+        tick(t_gemm);
+        to_host(q, d_q.get());
+        to_host(k, d_k.get());
+        to_host(v, d_v.get());
+        tick(t_d2h);
 
-        Tensor context({total, apss26::NUM_ATTENTION_HEADS * apss26::HEAD_DIM});
 #pragma omp parallel for schedule(dynamic)
         for (long long b = 0; b < static_cast<long long>(batch); ++b) {
             attend_sequence(q, k, v, offset[b], length[b], context);
         }
+        tick(t_attn);
 
-        Tensor attn;
-        layer.o_proj.forward(context, attn);
+        to_device(d_ctx.get(), context);
+        tick(t_h2d);
+        layer.o_proj.forward(d_ctx.get(), d_out.get(), total);
+        tick(t_gemm);
+        Tensor attn({total, apss26::HIDDEN_SIZE});
+        to_host(attn, d_out.get());
+        tick(t_d2h);
         tensor_ops::add_inplace(attn, hidden);
+        tick(t_resid);
 
         Tensor post(attn.shape()), ff;
         tensor_ops::layer_norm(attn, layer.post_norm_weight, layer.post_norm_bias, apss26::NORM_EPS, post);
+        tick(t_norm);
         layer.moe.forward(post, ff);
+        tick(t_moe);
         tensor_ops::add_inplace(ff, attn);
         hidden = std::move(ff);
+        tick(t_resid);
     }
 
     Tensor normed(hidden.shape());
@@ -177,8 +354,20 @@ void PhiTinyMoEModel::generate(
         float* dst = last.data() + b * apss26::HIDDEN_SIZE;
         for (std::size_t h = 0; h < apss26::HIDDEN_SIZE; ++h) dst[h] = src[h];
     }
-    lm_head_.forward(last, logits);
-    logits.reshape({batch, apss26::VOCAB_SIZE});
+    DeviceBuffer d_last(batch * apss26::HIDDEN_SIZE), d_logits(batch * apss26::VOCAB_SIZE);
+    to_device(d_last.get(), last);
+    lm_head_.forward(d_last.get(), d_logits.get(), batch);
+    logits = Tensor({batch, apss26::VOCAB_SIZE});
+    to_host(logits, d_logits.get());
+    tick(t_lm);
+
+    if (profile) {
+        std::fprintf(stderr,
+                     "[profile] T=%zu  embed %.3f  norm %.3f  h2d %.3f  gemm %.3f  "
+                     "d2h %.3f  attn %.3f  moe %.3f  resid %.3f  lm_head %.3f\n",
+                     total, t_embed, t_norm, t_h2d, t_gemm, t_d2h, t_attn, t_moe,
+                     t_resid, t_lm);
+    }
 }
 
 void PhiTinyMoEModel::generate_decode(

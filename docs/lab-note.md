@@ -145,6 +145,54 @@ device에 올려두고, `Linear::forward` 호출을 자체 CUDA GEMM으로 바�
 사실상 공짜가 되어 **2.5x 이상** 빨라진다.
 
 ## 3. Design and Implementation
+- `model.h`: `Layer`의 `Linear q/k/v/o`와 `lm_head_`를 `DeviceLinear`로 교체.
+  `DeviceLinear`는 생성자에서 `loader.load()` -> `cudaMemcpy` -> **host 사본 즉시 폐기**.
+  (host RAM도 2.7GB 절약). 소멸자에서 `cudaFree`. copy 금지 + move ctor로 double-free 차단.
+- `model.cu`: shared-memory tiled GEMM 커널 `gemm_nt_bias` 1개.
+  `C[M,N] = A[M,K] * B[N,K]^T + bias[N]`, TILE=32, `bs`는 [TILE][TILE+1]로 패딩해 bank conflict 회피.
+  k 루프를 오름차순으로 유지해 host `matmul_transposed`와 누적 순서를 맞췄다. bias는 커널에 융합.
+- layer_norm / attention / MoE는 host에 남으므로 레이어당 q/k/v와 context가 버스를 1회씩 왕복.
+- `APS_PROFILE=1`일 때만 켜지는 stage 타이머 추가 (측정 런에는 sync가 추가되지 않음).
+
+## 4. Result
+| n | EXP-001 | EXP-002 | speedup | seq/s | Validation |
+|---|---|---|---|---|---|
+| 8 | 62.270 s | **36.869 s** | **1.69x** | 0.216985 | PASSED (max 8.77e-05) |
+
+가설(2.5x 이상)은 **틀렸다**. `APS_PROFILE=1`로 원인을 계측:
+
+```
+[profile] T=165  embed 0.000  norm 0.140  h2d 0.016  gemm 0.153  d2h 0.040
+                 attn 0.094  moe 28.007  resid 0.095  lm_head 0.005
+```
+
+- **MoE가 28.007s / 28.55s = 98.1%**. GPU로 옮긴 projection 전체(32 layer x 4 GEMM + lm_head)는
+  **0.153s**에 끝난다. 즉 GEMM 커널은 이미 충분히 빠르고, 병목은 전부 MoE로 이동했다.
+- Amdahl 추정(MoE 34%)이 틀린 이유: MoE의 비용은 GEMM 연산량(34%)이 아니다.
+  `PhiMoE::forward`가 (a) 토큰마다 `Tensor({16})`을 새로 할당하고 (b) expert별 gather/scatter를
+  `at()`으로 원소 단위 복사하며 (c) 16 expert x 3 matmul을 전부 느린 `matmul_transposed`로 돈다.
+- H2D/D2H는 합쳐서 0.056s로 무시 가능(T=165). host attention도 0.094s로 무시 가능.
+- 정확도: max abs diff 6.87e-05 -> 8.77e-05. GPU가 FMA로 계약(contract)한 결과로,
+  임계값 3e-3의 3% 수준. 안전하다.
+
+## 5. Next action
+MoE만 GPU로 옮기면 된다. 남은 host 작업(norm/attn/resid = 0.33s)은 그 다음 문제다.
+-> EXP-003.
+
+---
+
+# EXP-003 (MoE를 GPU로: gather -> expert GEMM -> silu*mul -> scatter)
+## 1. Background
+EXP-002 프로파일에서 MoE가 98.1%(28.0s/28.55s)로 단일 병목임을 계측했다.
+GEMM 커널은 이미 0.153s로 검증됐으므로 같은 커널을 expert에도 쓰면 된다.
+
+## 2. Hypothesis
+MoE expert 가중치(레이어당 88M param, 32 layer 합 **11.3GB**)를 device에 올리고
+router -> gather -> w1/w3 GEMM -> silu*mul -> w2 GEMM -> weighted scatter를 전부 커널로 돌리면
+28.0s가 사실상 사라져 **n=8에서 10x 이상** 빨라진다.
+VRAM: projection 2.7GB + MoE 11.3GB + lm_head 0.5GB = 14.5GB < 24GB.
+
+## 3. Design and Implementation
 (작성 예정)
 
 ## 4. Result
