@@ -334,3 +334,73 @@ top-1/top-2 순서만 바뀌는 flip은 가중치가 둘 다 0.5라 무해하고
 -> EXP-005 (register-tiled GEMM).
 그 다음 후보: expert 16개를 grouped GEMM 1회로 묶어 launch/tail 낭비 제거,
 host attention(1.1s)과 host 라우팅(t_moe에 포함, 634k회 직렬 `route_row`) 커널화.
+
+---
+
+# EXP-005 (register-tiled GEMM)
+## 1. Background
+EXP-004 이후 남은 시간의 87%가 device GEMM이었다 (gemm 13.13s + moe 7.27s / 23.90s).
+`gemm_nt_bias`는 thread당 출력 1개라 MAC 1회마다 shared를 2번 읽는다. 실효 성능은
+피크의 6% 수준(2.0 / 1.9 TFLOP/s vs 35.6)이었고, 이는 FLOP이 아니라 **shared bandwidth**에
+막힌 전형적인 신호다.
+
+## 2. Hypothesis
+thread당 TMxTN 출력을 레지스터에 들고 돌면 내부 루프의 shared 읽기가 MAC당 2회에서
+`(TM+TN)/(TM*TN)` = 4x4일 때 0.5회로 **4배 줄어든다**. shared bound라면 GEMM이 3~5x 빨라지고
+전체는 2.5~3x.
+
+정확도: per-output의 k 누적 순서(오름차순)와 `acc += a*b` 식 형태를 그대로 두면 각 출력이 보는
+FMA 시퀀스가 바뀌지 않는다 -> **EXP-004와 bitwise 동일**해야 한다. 이게 검증 기준이다.
+(host GEMM은 `objdump`로 확인한 결과 `vmulss`+`vaddss`로 FMA를 내지 않는다. 즉 EXP-002 이후
+device GEMM은 애초에 host와 bit-exact가 아니고 1.79e-04로 임계값 안에만 있다. 그러므로
+비교 기준은 host가 아니라 직전 실험 출력이다.)
+
+## 3. Design and Implementation
+`BM=64, BN=64, BK=16, TM=TN=4` -> block 256 thread, block당 64x64 출력.
+- shared는 **k-major로 전치** 저장: `as[BK][BM+4]`, `bs[BK][BN+4]`.
+  compute 루프가 한 k에 대해 m/n 방향으로 연속 접근하므로 `float4`로 4개를 한 번에 읽는다.
+- `+4` 패딩의 의도: row stride를 68 float = 272B로 만들어 **16B 정렬을 유지하면서**(float4
+  shared 로드 필수 조건) bare `[BK][64]`의 bank-conflict 패턴을 깬다. `+1`은 정렬이 깨져 못 쓴다.
+- global 로드도 `float4`: A/B 타일이 각각 64x16 = 256 float4 = thread 수와 정확히 일치해
+  thread당 1회. K가 16의 배수라 k 방향 bound check가 불필요(호출부에서 `in % BK` 검증).
+- M/N tail은 로드 시 0 채움 + store 시 bound check. M=19803은 64의 배수가 아니고
+  gate는 N=16이라 BN=64의 1/4만 쓰지만, gate는 전체 MAC의 0.3%라 무시.
+
+한 개 커널로 projection/gate/expert/lm_head 전부 처리한다. 별도 경로를 만들지 않았다.
+
+## 4. Result
+| n | EXP-004 | EXP-005 | speedup | seq/s | Validation |
+|---|---|---|---|---|---|
+| 8 | 0.727 s | **0.456 s** | 1.59x | 17.541370 | PASSED (max 9.16e-05) |
+| 1024 | 23.901 s | **6.344 s** | **3.77x** | **161.406779** | PASSED (max 1.79e-04) |
+
+가설(2.5~3x)을 **넘겼다** — 실제 3.77x.
+- **`cmp exp004_n1024.bin exp005_n1024.bin` -> BITWISE IDENTICAL.** 누적 순서를 건드리지 않았음이
+  증명됨. 성능 실험에서 이게 가장 강한 안전망이다.
+- **제출: 160.333047 seq/s (n=1024, 리더보드 1위/7). 개인 최고 42.68 -> 160.3 (+275.7%).**
+- baseline 0.033306 대비 **4846x**.
+- n=1024 두 번 연속 6.3442 / 6.3437s — 변동 0.01%. 이전의 ±5~8%는 host 연산 비중이 컸을 때의 것.
+
+프로파일 (n=1024, `APS_PROFILE=1`):
+| 단계 | EXP-004 | EXP-005 | 비중 |
+|---|---|---|---|
+| gemm | 13.133 | **1.704** | 27% |
+| moe | 7.273 | **1.276** | 20% |
+| attn | 1.148 | 1.126 | 18% (**host**) |
+| d2h | 0.938 | 0.865 | 14% |
+| h2d | 0.524 | 0.548 | 9% |
+| norm | 0.349 | 0.352 | 6% |
+| lm_head | 0.147 | 0.085 | 1% |
+| resid | 0.074 | 0.074 | 1% |
+
+실효 성능: projection+gate+lm_head 26.8 TFLOP / 1.704s = **15.7 TFLOP/s (피크의 44%)**,
+expert 13.6 TFLOP / 1.276s = **10.7 TFLOP/s (30%)**. 6% -> 44%. shared bound 진단이 맞았다.
+
+## 5. Next action
+병목이 평평해졌다. 단일 최대 항목이 더 이상 없다.
+- **host attention 1.13s (18%)** 가 이제 최대 단일 비-GEMM 항목이고, `d2h`+`h2d` 1.41s(23%)의
+  대부분이 attention 때문에 q/k/v를 내리고 context를 올리는 왕복이다. 둘을 합치면 **2.5s / 40%**.
+  -> attention 커널화가 가장 큰 레버. sliding window 2047 + GQA(16Q/4KV)라 flash 스타일이 필요.
+- expert GEMM은 M이 작은(평균 T*2/16 ~ 2475행) 16개 GEMM으로 쪼개져 있어 tail/launch 낭비가 있다.
+  피크의 30%에 그친 이유. grouped GEMM 1회로 묶는 것이 다음 후보.
+- host 라우팅(634k회 직렬 `route_row`)은 `moe`에 포함되어 있어 아직 분리 측정되지 않았다.

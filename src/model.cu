@@ -62,37 +62,84 @@ void to_host(Tensor& host, const float* device) {
                           cudaMemcpyDeviceToHost), "cudaMemcpy D2H");
 }
 
-// C[M,N] = A[M,K] * B[N,K]^T + bias[N], tiled through shared memory.
-// The K loop still walks k in ascending order, so each output accumulates in
-// the same order as tensor_ops::matmul_transposed does on the host.
-constexpr int TILE = 32;
+// C[M,N] = A[M,K] * B[N,K]^T + bias[N], register-tiled through shared memory.
+// One block computes a BM x BN output tile; one thread keeps TM x TN outputs in
+// registers, so the inner loop reads TM + TN floats from shared per TM * TN
+// MACs instead of two per MAC.
+//
+// The K loop still walks k in ascending order and each output still accumulates
+// into one register with the same `acc += a * b` expression, so every output
+// sees the same sequence of FMAs as the tile kernel it replaces.
+constexpr int BM = 64, BN = 64, BK = 16, TM = 4, TN = 4;
+constexpr int GEMM_THREADS = (BM / TM) * (BN / TN);  // 256
+// The +4 keeps the shared rows 16B-aligned (68 * 4B) while breaking the
+// bank-conflict pattern of a bare [BK][64] layout.
+constexpr int SPAD = 4;
 
 __global__ void gemm_nt_bias(const float* __restrict__ a,
                              const float* __restrict__ b,
                              const float* __restrict__ bias,
                              float* __restrict__ c,
                              int m, int k, int n) {
-    __shared__ float as[TILE][TILE + 1];
-    __shared__ float bs[TILE][TILE + 1];
+    __shared__ __align__(16) float as[BK][BM + SPAD];
+    __shared__ __align__(16) float bs[BK][BN + SPAD];
 
-    const int tx = threadIdx.x, ty = threadIdx.y;
-    const int row = blockIdx.y * TILE + ty;
-    const int col = blockIdx.x * TILE + tx;
-    const int b_row = blockIdx.x * TILE + ty;
+    const int tid = threadIdx.x;
+    const int m0 = blockIdx.y * BM;
+    const int n0 = blockIdx.x * BN;
+    // Each thread loads one float4 of the A tile and one of the B tile.
+    const int lr = tid / (BK / 4);          // 0..63, row inside the tile
+    const int lc = (tid % (BK / 4)) * 4;    // 0, 4, 8, 12 inside the k window
+    const int ty = tid / (BN / TN);         // 0..15
+    const int tx = tid % (BN / TN);         // 0..15
 
-    float acc = 0.0f;
-    for (int kt = 0; kt < k; kt += TILE) {
-        const int kk = kt + tx;
-        as[ty][tx] = (row < m && kk < k) ? a[static_cast<long long>(row) * k + kk] : 0.0f;
-        bs[ty][tx] = (b_row < n && kk < k) ? b[static_cast<long long>(b_row) * k + kk] : 0.0f;
+    const int a_row = m0 + lr;
+    const int b_row = n0 + lr;
+    const bool a_ok = a_row < m;
+    const bool b_ok = b_row < n;
+
+    float acc[TM][TN] = {};
+    for (int kt = 0; kt < k; kt += BK) {
+        const int kk = kt + lc;
+        float4 av = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        float4 bv = av;
+        if (a_ok) av = *reinterpret_cast<const float4*>(
+                           a + static_cast<long long>(a_row) * k + kk);
+        if (b_ok) bv = *reinterpret_cast<const float4*>(
+                           b + static_cast<long long>(b_row) * k + kk);
+        // Transposed store: the compute loop wants a whole k-slice contiguous.
+        as[lc + 0][lr] = av.x; as[lc + 1][lr] = av.y;
+        as[lc + 2][lr] = av.z; as[lc + 3][lr] = av.w;
+        bs[lc + 0][lr] = bv.x; bs[lc + 1][lr] = bv.y;
+        bs[lc + 2][lr] = bv.z; bs[lc + 3][lr] = bv.w;
         __syncthreads();
-        for (int i = 0; i < TILE; ++i) acc += as[ty][i] * bs[tx][i];
+
+#pragma unroll
+        for (int p = 0; p < BK; ++p) {
+            const float4 ar = *reinterpret_cast<const float4*>(&as[p][ty * TM]);
+            const float4 br = *reinterpret_cast<const float4*>(&bs[p][tx * TN]);
+            const float av4[TM] = {ar.x, ar.y, ar.z, ar.w};
+            const float bv4[TN] = {br.x, br.y, br.z, br.w};
+#pragma unroll
+            for (int i = 0; i < TM; ++i)
+#pragma unroll
+                for (int j = 0; j < TN; ++j) acc[i][j] += av4[i] * bv4[j];
+        }
         __syncthreads();
     }
 
-    if (row < m && col < n) {
-        if (bias != nullptr) acc += bias[col];
-        c[static_cast<long long>(row) * n + col] = acc;
+#pragma unroll
+    for (int i = 0; i < TM; ++i) {
+        const int row = m0 + ty * TM + i;
+        if (row >= m) continue;
+#pragma unroll
+        for (int j = 0; j < TN; ++j) {
+            const int col = n0 + tx * TN + j;
+            if (col >= n) continue;
+            float v = acc[i][j];
+            if (bias != nullptr) v += bias[col];
+            c[static_cast<long long>(row) * n + col] = v;
+        }
     }
 }
 
@@ -326,11 +373,15 @@ void PhiTinyMoEModel::DeviceLinear::free() {
 
 void PhiTinyMoEModel::DeviceLinear::forward(const float* x, float* y,
                                             std::size_t rows) const {
-    const dim3 block(TILE, TILE);
-    const dim3 grid(static_cast<unsigned>((out + TILE - 1) / TILE),
-                    static_cast<unsigned>((rows + TILE - 1) / TILE));
-    gemm_nt_bias<<<grid, block>>>(x, weight, bias, y, static_cast<int>(rows),
-                                  static_cast<int>(in), static_cast<int>(out));
+    // The kernel loads the K window as float4 without a k bound check; every
+    // shape in this model has K divisible by BK.
+    if (in % BK != 0) throw std::runtime_error("DeviceLinear: K not a multiple of BK");
+    const dim3 grid(static_cast<unsigned>((out + BN - 1) / BN),
+                    static_cast<unsigned>((rows + BM - 1) / BM));
+    gemm_nt_bias<<<grid, GEMM_THREADS>>>(x, weight, bias, y,
+                                         static_cast<int>(rows),
+                                         static_cast<int>(in),
+                                         static_cast<int>(out));
     cuda_check(cudaGetLastError(), "gemm_nt_bias launch");
 }
 
