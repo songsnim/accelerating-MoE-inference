@@ -1,0 +1,154 @@
+# 조교도 정답을 모르지만 추천한 먼저 해볼만한 것들 목록
+- 여러 개의 입력을 묶음으로 처리(batching)
+- 각 input의 공통된 토큰(e.g. <|user|>, <|end|>, <|assistanct|>)에 대한 중복 연상 제거
+- kernel 최적화
+    - matmul 최적화
+    - reduction 연산 최적화
+    - Kernel Fusion
+- 프로파일링: Nsight Systems/Compute 사용
+- CPU-GPU 통신 시간을 감안해도, 특정 연산을 CPU에서 처리하는 것이 이득일 수도 있음
+
+---
+
+# EXP-000 (baseline 계측 · 코드 무수정)
+## 1. Background
+스켈레톤 그대로 제출해 최소 성능 기준선을 확보한다.
+
+## 2. Hypothesis
+(없음 — 계측만)
+
+## 3. Design and Implementation
+`make` 후 `./submit.sh -n 1`. 소스 무수정.
+
+## 4. Result
+| n | Elapsed | Throughput | Validation |
+|---|---|---|---|
+| 1 | 30.024 s | 0.033306 seq/s | PASSED (max 6.87e-05) |
+| 2 | 108.838 s | 0.018376 seq/s | PASSED (max 6.87e-05) |
+
+- 대시보드 등록: 0.0333 seq/s (기본반, n=1)
+- 참조 출력 저장: `baseline_n2.bin` (이후 bitwise 비교용)
+
+계측으로 확인한 작업 특성:
+- **입력이 짧다**: `max_seq_len=32`, 길이 min/median/max = 6/19/32, 1024개 합 **19,803 토큰**.
+  → sliding window(2047)는 절대 발동하지 않음. attention은 병목이 아니다.
+- **연산량**: 토큰당 attention proj 21M MAC + MoE(top-2) 11M MAC = 32M MAC/layer,
+  ×32 layer = **1.02 G MAC/token**. 전체 1024 seq = **40 TFLOP** + lm_head 0.27 TFLOP.
+- **실효 성능 0.86 GFLOP/s** (n=2: 46토큰 / 108.8s). 32-core Xeon E5-2650 피크의 0.4%.
+- **baseline은 GPU를 전혀 쓰지 않는다**: `Tensor`는 `std::vector<float>`(호스트), `tensor_ops`는 OpenMP CPU.
+  `run.sh`가 GPU를 잡고 `main.cpp`가 device sync를 하지만 커널은 하나도 없다.
+- 모델 크기 15.0 GB(fp32, ~3.75B param) — RTX 3090 24GB에 fp32로 **올라간다**.
+- 느린 이유 3가지 (코드 리딩):
+  1. `generate()`가 시퀀스를 1개씩 처리 → 모든 matmul이 M=19 행. 레이어 가중치 470MB를
+     시퀀스마다 다시 스트리밍한다.
+  2. `layer.cu`의 attention이 q·k 내적을 **130회 재계산**(max 패스 + denom 패스 + head_dim 128회).
+     s=32에서 전체 연산의 ~14%.
+  3. `tensor_ops::matmul_transposed`가 `Tensor::at()`을 원소마다 호출 —
+     `initializer_list` 생성 + 차원별 bounds check → 벡터화 불가.
+
+## 5. Next action
+EXP-001(batching)로 진행. 단, 편집 가능 파일이 `model.h/model.cu/model_loader.*/run.sh`뿐이므로
+`layer.cu`의 attention/`tensor.cu`의 matmul은 **고칠 수 없다** → `model.cu`에서 `layer.h`의
+공개 클래스(`Linear`, `PhiMoE`)를 직접 조립해 배치 경로를 새로 쓴다.
+
+---
+
+# EXP-001 (batching: 전체 시퀀스를 1개의 [T, H] 활성 행렬로)
+## 1. Background
+EXP-000에서 `generate()`가 시퀀스를 1개씩 `forward()`에 넣는 것이 확인됐다. 시퀀스 평균 길이가
+19토큰이라 모든 matmul이 M≈19의 극단적으로 얇은 GEMM이고, 레이어당 470MB 가중치를
+1024번 다시 읽는다.
+
+## 2. Hypothesis
+1024개 시퀀스의 토큰 19,803개를 **하나의 [T, 4096] 행렬로 연결**해 32개 레이어를 한 번만
+통과시키면, (a) 가중치를 레이어당 1회만 읽고 (b) matmul의 M이 19 → 19,803이 되어
+OpenMP 병렬화·캐시 재사용이 살아난다. **연산량은 그대로인데 처리량이 오른다.**
+
+정당성: layer_norm / matmul_transposed / silu / mul / MoE 라우팅은 모두 **행 단위 독립**이라
+배치해도 각 행의 부동소수점 연산 순서가 바뀌지 않는다. 시퀀스 간 상호작용은 attention뿐이므로
+attention만 시퀀스 구간 [offset, offset+len)에 대해 따로 계산하면 된다.
+
+## 3. Design and Implementation
+- `model.h`: `std::vector<PhiDecoderLayer> layers_`를 `Layer{norm 4개 + Linear q/k/v/o + PhiMoE}`로
+  교체. `PhiDecoderLayer`/`PhiAttention`은 내부 멤버가 private이라 배치 경로에서 재사용 불가.
+  가중치 사본은 여전히 1개(15GB)다.
+- `model.cu`: `generate()`가 배치 경로. 레이어당
+  `layer_norm → q/k/v proj → (시퀀스별 RoPE+attention) → o proj → residual → layer_norm → PhiMoE → residual`.
+  마지막에 final norm → 각 시퀀스 마지막 토큰만 [B, 4096]으로 모아 `lm_head` 1회.
+- attention은 `layer.cu`의 산술을 **그대로** 옮기되 q·k 내적을 1회만 계산해 재사용
+  (130회 재계산 제거). `exp`는 double로 계산 후 float 캐스팅, 누적 순서(d 오름차순, ki 오름차순)
+  모두 동일하게 유지 → **bitwise 동일 출력**이 목표.
+- `forward()`는 `generate({ids})`로 위임 → `-d`(decode) 경로도 그대로 동작.
+- 가설 1개 원칙: 자체 GEMM/CUDA 커널은 이 실험에 넣지 않는다 (EXP-002 이후).
+
+## 4. Result
+`src/model.cu` 전면 교체 + `include/model.h` 멤버 교체. 빌드 경고 없음.
+
+| n | tokens | baseline | EXP-001 | speedup | seq/s | Validation |
+|---|---|---|---|---|---|---|
+| 1 | 14 | 30.024 s | (미측정) | - | - | - |
+| 2 | 46 | 108.838 s | **37.749 s** | **2.88x** | 0.052982 | PASSED |
+| 4 | 91 | (>2min) | **46.535 s** | - | 0.085956 | PASSED |
+| 8 | 165 | (>2min) | **62.270 s** | - | **0.128473** | PASSED |
+
+- **출력 bitwise 동일**: `cmp baseline_n2.bin exp001_n2.bin` -> IDENTICAL.
+  max abs diff 6.86646e-05 / mean 1.20815e-05 로 baseline과 소수점까지 같음.
+  -> 배치화가 부동소수점 연산 순서를 전혀 바꾸지 않았음이 증명됨.
+- 토큰당 비용: baseline 2.37 s/token -> n=2 0.82 -> n=4 0.51 -> n=8 0.377. n이 커질수록 계속 개선.
+  이유: `matmul_transposed`의 `#pragma omp parallel for`가 **행(M)에 대해서만** 병렬화한다.
+  baseline은 M=19라 32스레드 중 19개만 일했다. 배치화로 M=T가 되어 스레드가 포화된다.
+  -> throughput이 n에 의존하므로 리더보드 제출은 2분 제한에 들어가는 최대 n으로 해야 한다.
+  n=8(62s)이 여유 있는 최대치. n=12는 250토큰 x 0.37 = 94s + load 10s로 2분 제한에 너무 붙는다.
+  이득도 평탄해지는 중(0.086 -> 0.128 -> 추정 0.135)이라 n=8로 제출하고 다음 레버로 넘어간다.
+- **제출: 0.128473 seq/s (n=8), baseline 0.033306 대비 3.86x**
+- 130회 attention 재계산 제거분은 전체의 13%(1.15x)뿐. 2.88x의 주된 원인은 스레드 포화다.
+
+### 부수 측정: `tensor_ops::matmul_transposed`의 천장
+scratchpad에서 `obj/tensor.o`만 링크해 실제 shape로 측정 (login node, 32 threads):
+
+| 연산 | shape | GMAC/s |
+|---|---|---|
+| q_proj T=46 | M=46 K=4096 N=2048 | 1.03 |
+| q_proj T=736 | M=736 K=4096 N=2048 | 1.23 |
+| o_proj T=736 | M=736 K=2048 N=4096 | 1.21 |
+| expert w1 r=92 | M=92 K=4096 N=448 | 1.01 |
+| expert w2 r=92 | M=92 K=448 N=4096 | 1.09 |
+| lm_head B=32 | M=32 K=4096 N=32064 | 1.23 |
+
+**shape와 무관하게 1.2 GMAC/s(2.4 GFLOP/s)에 고정**. E5-2650 x2 피크(~256 GFLOP/s)의 1%.
+원인은 `Tensor::at()`: 원소마다 `initializer_list`를 만들고 차원별 bounds check를 하므로
+벡터화가 불가능하다. 전체 작업량 20.4 TMAC / 1.2 GMAC/s = **4.7시간** -> 이 경로로는 n=1024 불가.
+
+## 5. Next action
+matmul이 유일한 벽이므로 `tensor_ops::matmul_transposed`에서 벗어나는 것이 다음 레버다.
+`tensor.cu`는 수정 금지이므로 `model.cu`에 자체 커널을 쓴다. 작업량 분해(토큰당, 32 layer 합산):
+
+| 부분 | GMAC/token | 비중 | 현재 소유자 |
+|---|---|---|---|
+| q/k/v/o proj | 0.671 | 66% | `Linear` (model.cu에서 호출 -> 교체 가능) |
+| MoE experts (top-2) | 0.344 | 34% | `PhiMoE::forward` 내부 (교체하려면 재구현 필요) |
+| lm_head | 0.131 /seq | - | `Linear` (교체 가능) |
+
+-> EXP-002는 교체 가능한 66%만 CUDA로 옮겨 "GEMM이 벽"이라는 가설을 최소 코드로 검증한다.
+Amdahl 상한 1/0.34 = 2.9x. 성공하면 EXP-003에서 MoE(34%)를 재구현해 GPU로 옮긴다.
+
+---
+
+# EXP-002 (q/k/v/o + lm_head GEMM을 CUDA 커널로)
+## 1. Background
+EXP-001에서 `matmul_transposed`가 shape 무관 1.2 GMAC/s로 고정된 벽임을 측정했다.
+RTX 3090은 fp32 35.6 TFLOP/s이고, 모델 15GB는 24GB VRAM에 fp32로 그대로 올라간다.
+
+## 2. Hypothesis
+projection 가중치(레이어당 21M param, 32 layer 합 2.7GB)와 lm_head(525MB)를 생성자에서
+device에 올려두고, `Linear::forward` 호출을 자체 CUDA GEMM으로 바꾸면 전체 연산의 66%가
+사실상 공짜가 되어 **2.5x 이상** 빨라진다.
+
+## 3. Design and Implementation
+(작성 예정)
+
+## 4. Result
+(측정 전)
+
+## 5. Next action
+(측정 후)
