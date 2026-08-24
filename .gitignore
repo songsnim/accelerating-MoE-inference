@@ -1,0 +1,14 @@
+# build artifacts
+obj/
+main
+
+# run outputs and local references
+*.bin
+*.log
+
+# environment / vendored installer
+.venv/
+get-pip.py
+
+# pre-git backup of the editable files (superseded by the baseline commit)
+.baseline/
