@@ -85,13 +85,15 @@ constexpr int SPAD = 4;
 //
 // The k loop still walks ascending and each output still accumulates into one
 // register with the same `acc += a * b`, so the FMA sequence is unchanged.
-// `row0` is the first row of this block's tile inside `a`/`c` and `rows` how
-// many rows past it are real; everything else is the tile kernel unchanged.
+// `row0` is the first row of this block's tile inside `a`/`c` and `m` the row
+// past its last; everything else is the tile kernel unchanged, down to the
+// bound expressions -- writing them any other way moves ptxas off the
+// instruction schedule the projections were measured on.
 __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
                                              const float* __restrict__ b,
                                              const float* __restrict__ bias,
                                              float* __restrict__ c,
-                                             int row0, int rows, int k, int n) {
+                                             int row0, int m, int k, int n) {
     __shared__ __align__(16) float as[2][BK][BM + SPAD];
     __shared__ __align__(16) float bs[2][BK][BN + SPAD];
 
@@ -105,7 +107,7 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
 
     const int a_row = m0 + lr;
     const int b_row = n0 + lr;
-    const bool a_ok = lr < rows;
+    const bool a_ok = a_row < m;
     const bool b_ok = b_row < n;
     const float* const ab = a + static_cast<long long>(a_row) * k + lc;
     const float* const bb = b + static_cast<long long>(b_row) * k + lc;
@@ -167,9 +169,8 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
 
 #pragma unroll
     for (int i = 0; i < TM; ++i) {
-        const int r = ty * TM + i;
-        if (r >= rows) continue;
-        const int row = m0 + r;
+        const int row = m0 + ty * TM + i;
+        if (row >= m) continue;
 #pragma unroll
         for (int j = 0; j < TN; ++j) {
             const int col = n0 + tx * TN + j;
@@ -186,8 +187,7 @@ __global__ void gemm_nt_bias(const float* __restrict__ a,
                              const float* __restrict__ bias,
                              float* __restrict__ c,
                              int m, int k, int n) {
-    const int row0 = blockIdx.y * BM;
-    gemm_nt_body(a, b, bias, c, row0, m - row0, k, n);
+    gemm_nt_body(a, b, bias, c, blockIdx.y * BM, m, k, n);
 }
 
 // One launch for all 16 experts of a layer. `tiles` holds three ints per row
@@ -202,7 +202,7 @@ __global__ void gemm_grouped(const float* __restrict__ a,
                              float* __restrict__ c,
                              const int* __restrict__ tiles, int k, int n) {
     const int* const t = tiles + blockIdx.y * 3;
-    gemm_nt_body(a, weights[t[0]], nullptr, c, t[1], t[2], k, n);
+    gemm_nt_body(a, weights[t[0]], nullptr, c, t[1], t[1] + t[2], k, n);
 }
 
 // dst[i, :] = src[index[i], :]
