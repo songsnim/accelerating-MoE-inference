@@ -1,7 +1,7 @@
 # 실험 계획
 
-기준: EXP-009 완료. b6 stage 합 기준 attn 0.291 -> 0.183.
-제출 기록은 EXP-008 시점 **3.670 s / 279.0 seq/s** (b0급 노드).
+기준: EXP-011 완료. b5 기준 **2.653 s / 386.1 seq/s**.
+제출 기록은 EXP-010 시점 **309.3 seq/s**.
 근거: `exploration-003.md`(2위 라인 대조) + EXP-008 ncu 실측.
 
 ## 순서
@@ -10,9 +10,10 @@
 |---|---|---|---|
 | ~~009~~ | **Attention 직렬 `exp` 분산** (완료 `cd3cdf6`) | **−0.109 s 실측** | attn 0.291 → 0.183. 직렬 구간을 통째로 삭제한 하한이 0.178 s → 가용분의 96% 회수, 이 방향 소진. bitwise 동일 |
 | **010** | **MoE W1/W3 fusion + grouped GEMM** — N=896(=7×128) 융합, expert를 `blockIdx.z` | −0.2~0.37 s | ncu 실측: 블록 40~72 / 164 슬롯(24~44% 점유) + N=448에 BN=128이라 **12.5% 패딩 낭비**. EXP-008이 만든 moe 퇴행(1.259→1.398) 상환. 누산 순서 불변 → `cmp` 판정 |
-| 011 | **Prefix trie** — 19,803 → 15,583 노드 (−21.3%) | −0.6~0.8 s | 단일 최대 레버, 정밀도 타협 0(exact CSE). 커널이 안정된 뒤 인덱싱을 얹어야 롤백 비용 최소 |
-| 012 | Q/O `cp.async` 2-stage + XOR swizzle | −0.13 s | K/V로 확대 금지(저쪽 실측 0.3784→0.4545 s 역효과) |
-| 013 | GQA grouping + cooperative K staging | −0.10~0.15 s | 남은 attn 0.178 s. 현재 thread i가 key row `lo+i`를 직접 읽어 **uncoalesced**(연속 thread 간격 `KVH·D`) |
+| ~~011~~ | **Prefix trie** (완료 `47aff75`) | **−0.628 s 실측** | 19,803 → 15,583 행. elapsed 3.281 → 2.653 (b5), bitwise 동일. attn은 `qi` 직렬 루프 소멸로 −24.7% |
+| **012** | **expert w13 grouping** — (expert, rowtile) work queue | −0.19 s 이상 | 측정-A: w13 시간가중 wave 충전율 66%, 53%가 1 wave 미만 launch. trie로 expert당 행이 21% 줄어 충전율은 더 나빠졌다 |
+| 013 | Q/O `cp.async` 2-stage + XOR swizzle | −0.10 s | K/V로 확대 금지(저쪽 실측 0.3784→0.4545 s 역효과) |
+| 014 | GQA grouping + coalesced K staging | −0.05~0.10 s | 남은 attn 0.137 s. thread i가 key row `chain[i]`를 직접 읽어 **uncoalesced**(연속 thread 간격 `KVH·D`) |
 | 이후 | LayerNorm coalesced staging + fused residual −0.10 · device-side routing −0.07 · embedding OpenMP −0.10 · K/V projection fusion 소액 | | |
 
 ## 하지 않는 것
