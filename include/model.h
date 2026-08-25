@@ -73,6 +73,10 @@ private:
         DeviceLinear gate;
         // w13[e] is w1 stacked on w3, so the two share one GEMM.
         std::vector<DeviceLinear> w13, w2;
+        // The same weights as a device-side pointer table, so one grouped
+        // launch can serve every expert.
+        float** w13_ptrs = nullptr;
+        float** w2_ptrs = nullptr;
     };
 
     // A decoder layer taken apart into its primitives. PhiDecoderLayer keeps

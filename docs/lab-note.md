@@ -836,3 +836,49 @@ w13 wave 충전율(66%)이 더 나빠진다 — **grouping의 상대 가치는 �
 ## 5. Next action
 **EXP-012 = expert w13 grouping.** (expert, rowtile) work queue로 평탄화.
 행이 21% 줄어 충전율이 더 나빠졌으므로 측정-A의 -0.19 s(b6)보다 커질 가능성이 있다.
+
+---
+
+# EXP-012: expert GEMM grouping (16개 launch -> 1개)
+
+## 1. Hypothesis
+측정-A: expert w13의 시간가중 wave 충전율 66%, 시간의 53%가 1 wave(164 블록) 미만
+launch. expert당 grid가 `7 x rowtiles`뿐이기 때문이다. EXP-011로 행이 21% 더 줄어
+충전율은 더 나빠졌다. 16개 expert의 행을 한 버퍼에 이어 붙이고 **(expert, rowtile)
+work queue로 평탄화**하면 한 launch가 그리드를 채운다.
+
+## 2. Change (`src/model.cu`, `include/model.h`)
+- `gemm_nt_bias` 본문을 `gemm_nt_body(a, b, bias, c, row0, rows, k, n)`로 빼고,
+  `gemm_nt_bias`와 새 `gemm_grouped`가 각각 얇게 감싼다. 타일 경계 판정만 `m` 기준에서
+  `row0/rows` 기준으로 바뀌고 누산은 손대지 않았다.
+- `tiles[]`: 행 타일당 int 3개 (expert, 패킹 버퍼 내 시작행, 남은 행). expert마다
+  부분 타일이 최대 1개. 레이어당 ~250 타일.
+- gather를 expert별 16회 -> 패킹 버퍼로 **1회**. expert index H2D도 1회.
+- w13/w2를 `gemm_grouped` 각 1회. 디바이스 측 weight 포인터 테이블(`w13_ptrs`,
+  `w2_ptrs`)은 모델 로드 시 1회 구성.
+- **scatter는 expert별로 유지**: 한 행이 expert 2개에 속하므로 launch를 나누는 것이
+  두 add의 경쟁을 막는 방법이다. 이미 expert당 블록 수가 1 wave를 훨씬 넘어 얻을 것도 없다.
+- 스크래치 행 수 `total` -> `TOP_K * total` (+650 MB, 총 ~16.3 GB / 24 GB).
+
+## 3. Result (노드 b6, 한 allocation 안에서 교차 2rep)
+
+| | norm | gemm | attn | moe | elapsed | seq/s |
+|---|---|---|---|---|---|---|
+| EXP-011 | 0.114 | 1.046 | 0.137 | 0.968 | 2.6645 | 384.3 |
+| **EXP-012** | 0.113 | 1.069 | 0.141 | **0.768** | **2.4907** | **411.1** |
+
+**moe -0.199 s (1.26x), elapsed -0.171 s.** `cmp` -> **bitwise 동일**, 양쪽 PASSED.
+
+## 4. Analysis
+moe는 예측(-0.19 s)과 정확히 맞았다. 충전율 가설이 옳았다.
+
+**gemm이 +0.023 s 퇴행했다(1.046 -> 1.070, 2rep 재현).** gemm 구간은 q/k/v/o proj과
+router gate뿐이고 이 실험에서 코드가 바뀌지 않았다. 남는 설명은 스크래치가 650 MB
+늘어 버퍼 배치가 달라진 것뿐이다. 실측 이득의 12%를 갉아먹지만 원인은 미확인 —
+**추측으로 적지 않고 미해결로 남긴다.** attn도 +0.004로 같은 방향이다.
+
+## 5. Next action
+남은 큰 항목은 gemm 1.07(= projection)과 moe 0.77이다. 계획서 순서대로면 Q/O
+`cp.async`지만, EXP-012의 gemm 퇴행이 **버퍼 배치가 projection 속도에 영향을 준다**는
+신호이므로, 그것부터 확인하는 편이 싸다: `d_expert_in/out`을 `TOP_K * total`에서
+실제 최대 행 수로 줄이면 gemm이 1.046으로 돌아오는가.

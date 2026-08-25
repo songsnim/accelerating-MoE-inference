@@ -85,16 +85,18 @@ constexpr int SPAD = 4;
 //
 // The k loop still walks ascending and each output still accumulates into one
 // register with the same `acc += a * b`, so the FMA sequence is unchanged.
-__global__ void gemm_nt_bias(const float* __restrict__ a,
-                             const float* __restrict__ b,
-                             const float* __restrict__ bias,
-                             float* __restrict__ c,
-                             int m, int k, int n) {
+// `row0` is the first row of this block's tile inside `a`/`c` and `rows` how
+// many rows past it are real; everything else is the tile kernel unchanged.
+__device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
+                                             const float* __restrict__ b,
+                                             const float* __restrict__ bias,
+                                             float* __restrict__ c,
+                                             int row0, int rows, int k, int n) {
     __shared__ __align__(16) float as[2][BK][BM + SPAD];
     __shared__ __align__(16) float bs[2][BK][BN + SPAD];
 
     const int tid = threadIdx.x;
-    const int m0 = blockIdx.y * BM;
+    const int m0 = row0;
     const int n0 = blockIdx.x * BN;
     const int lr = tid / (BK / 4);          // 0..127, row inside the tile
     const int lc = (tid % (BK / 4)) * 4;    // 0, 4 inside the k window
@@ -103,7 +105,7 @@ __global__ void gemm_nt_bias(const float* __restrict__ a,
 
     const int a_row = m0 + lr;
     const int b_row = n0 + lr;
-    const bool a_ok = a_row < m;
+    const bool a_ok = lr < rows;
     const bool b_ok = b_row < n;
     const float* const ab = a + static_cast<long long>(a_row) * k + lc;
     const float* const bb = b + static_cast<long long>(b_row) * k + lc;
@@ -165,8 +167,9 @@ __global__ void gemm_nt_bias(const float* __restrict__ a,
 
 #pragma unroll
     for (int i = 0; i < TM; ++i) {
-        const int row = m0 + ty * TM + i;
-        if (row >= m) continue;
+        const int r = ty * TM + i;
+        if (r >= rows) continue;
+        const int row = m0 + r;
 #pragma unroll
         for (int j = 0; j < TN; ++j) {
             const int col = n0 + tx * TN + j;
@@ -176,6 +179,30 @@ __global__ void gemm_nt_bias(const float* __restrict__ a,
             c[static_cast<long long>(row) * n + col] = v;
         }
     }
+}
+
+__global__ void gemm_nt_bias(const float* __restrict__ a,
+                             const float* __restrict__ b,
+                             const float* __restrict__ bias,
+                             float* __restrict__ c,
+                             int m, int k, int n) {
+    const int row0 = blockIdx.y * BM;
+    gemm_nt_body(a, b, bias, c, row0, m - row0, k, n);
+}
+
+// One launch for all 16 experts of a layer. `tiles` holds three ints per row
+// tile -- expert, first row inside the packed activation buffer, rows left --
+// so blocks from different experts share one grid and one wave. Per expert the
+// grid was only (n/BN) x rowtiles, which left the 82 SMs a third idle (nsys:
+// 66% time-weighted wave fill on w13, 53% of its time in sub-one-wave
+// launches). Nothing about a row's arithmetic changes: the tile it lands in
+// does not enter the accumulation.
+__global__ void gemm_grouped(const float* __restrict__ a,
+                             const float* const* __restrict__ weights,
+                             float* __restrict__ c,
+                             const int* __restrict__ tiles, int k, int n) {
+    const int* const t = tiles + blockIdx.y * 3;
+    gemm_nt_body(a, weights[t[0]], nullptr, c, t[1], t[2], k, n);
 }
 
 // dst[i, :] = src[index[i], :]
@@ -527,6 +554,18 @@ PhiTinyMoEModel::DeviceMoE::DeviceMoE(const ModelLoader& loader, std::size_t lay
         w13.emplace_back(loader, prefix + ".w1.weight", prefix + ".w3.weight", true);
         w2.emplace_back(loader, prefix + ".w2.weight", "");
     }
+    std::vector<float*> h13(apss26::NUM_EXPERTS), h2(apss26::NUM_EXPERTS);
+    for (std::size_t e = 0; e < apss26::NUM_EXPERTS; ++e) {
+        h13[e] = w13[e].weight;
+        h2[e] = w2[e].weight;
+    }
+    const std::size_t bytes = apss26::NUM_EXPERTS * sizeof(float*);
+    cuda_check(cudaMalloc(&w13_ptrs, bytes), "cudaMalloc w13 pointer table");
+    cuda_check(cudaMalloc(&w2_ptrs, bytes), "cudaMalloc w2 pointer table");
+    cuda_check(cudaMemcpy(w13_ptrs, h13.data(), bytes, cudaMemcpyHostToDevice),
+               "cudaMemcpy w13 pointer table");
+    cuda_check(cudaMemcpy(w2_ptrs, h2.data(), bytes, cudaMemcpyHostToDevice),
+               "cudaMemcpy w2 pointer table");
 }
 
 void PhiTinyMoEModel::DeviceMoE::free() {
@@ -535,6 +574,10 @@ void PhiTinyMoEModel::DeviceMoE::free() {
         w13[e].free();
         w2[e].free();
     }
+    cudaFree(w13_ptrs);
+    cudaFree(w2_ptrs);
+    w13_ptrs = nullptr;
+    w2_ptrs = nullptr;
 }
 
 PhiTinyMoEModel::Layer::Layer(const ModelLoader& loader, std::size_t layer_idx)
@@ -691,10 +734,17 @@ void PhiTinyMoEModel::generate(
     DeviceBuffer<float> d_q(total * QDIM), d_k(total * KVDIM), d_v(total * KVDIM);
     DeviceBuffer<float> d_ctx(total * QDIM);
     DeviceBuffer<float> d_router(total * apss26::NUM_EXPERTS);
-    // MoE scratch. An expert can in principle draw every row, so size for it.
-    DeviceBuffer<float> d_expert_in(elements), d_expert_out(elements);
-    DeviceBuffer<float> d_gate(total * FFDIM), d_gate_up(total * 2 * FFDIM);
-    DeviceBuffer<int> d_index(total);
+    // MoE scratch. Every expert's rows are packed into one buffer so the 16
+    // expert GEMMs become one launch, so the row count is the number of
+    // (row, expert) pairs -- exactly TOP_K * total.
+    const std::size_t packed_rows = total * apss26::TOP_K;
+    DeviceBuffer<float> d_expert_in(packed_rows * apss26::HIDDEN_SIZE),
+                        d_expert_out(packed_rows * apss26::HIDDEN_SIZE);
+    DeviceBuffer<float> d_gate(packed_rows * FFDIM),
+                        d_gate_up(packed_rows * 2 * FFDIM);
+    DeviceBuffer<int> d_index(packed_rows);
+    // Three ints per row tile; an expert contributes at most one partial tile.
+    DeviceBuffer<int> d_tiles(3 * (packed_rows / BM + apss26::NUM_EXPERTS + 1));
 
     // Attention runs on the device now, so it needs the batch layout there:
     // each row's position inside its sequence (for RoPE) and each sequence's
@@ -734,6 +784,10 @@ void PhiTinyMoEModel::generate(
 
     Tensor router({total, apss26::NUM_EXPERTS});
     std::vector<std::vector<int>> assignment(apss26::NUM_EXPERTS);
+    std::vector<int> index_all, tiles;
+    std::vector<std::size_t> expert_off(apss26::NUM_EXPERTS);
+    index_all.reserve(packed_rows);
+    tiles.reserve(3 * (packed_rows / BM + apss26::NUM_EXPERTS + 1));
 
     for (const Layer& layer : layers_) {
         layer.input_norm.forward(d_hidden, d_norm.get(), total);
@@ -776,20 +830,48 @@ void PhiTinyMoEModel::generate(
             assignment[second].push_back(static_cast<int>(t));
         }
         cuda_check(cudaMemset(d_next, 0, elements * sizeof(float)), "cudaMemset stream");
+
+        // Lay the 16 experts' rows end to end and cut them into BM-row tiles,
+        // so both expert GEMMs run as one launch over all of them.
+        index_all.clear();
+        tiles.clear();
+        for (std::size_t e = 0; e < apss26::NUM_EXPERTS; ++e) {
+            const std::vector<int>& rows = assignment[e];
+            expert_off[e] = index_all.size();
+            for (std::size_t r = 0; r < rows.size(); r += BM) {
+                tiles.push_back(static_cast<int>(e));
+                tiles.push_back(static_cast<int>(expert_off[e] + r));
+                tiles.push_back(static_cast<int>(
+                    rows.size() - r < BM ? rows.size() - r : BM));
+            }
+            index_all.insert(index_all.end(), rows.begin(), rows.end());
+        }
+        const unsigned ntiles = static_cast<unsigned>(tiles.size() / 3);
+        cuda_check(cudaMemcpy(d_index.get(), index_all.data(),
+                              index_all.size() * sizeof(int),
+                              cudaMemcpyHostToDevice), "cudaMemcpy expert index");
+        cuda_check(cudaMemcpy(d_tiles.get(), tiles.data(), tiles.size() * sizeof(int),
+                              cudaMemcpyHostToDevice), "cudaMemcpy expert tiles");
+
+        gather_rows<<<static_cast<unsigned>(index_all.size()), 256>>>(
+            d_norm.get(), d_index.get(), d_expert_in.get(), apss26::HIDDEN_SIZE);
+        gemm_grouped<<<dim3((2 * FFDIM + BN - 1) / BN, ntiles), GEMM_THREADS>>>(
+            d_expert_in.get(), layer.moe.w13_ptrs, d_gate_up.get(), d_tiles.get(),
+            static_cast<int>(apss26::HIDDEN_SIZE), static_cast<int>(2 * FFDIM));
+        const long long activated = static_cast<long long>(index_all.size()) * FFDIM;
+        silu_mul<<<static_cast<unsigned>((activated + 255) / 256), 256>>>(
+            d_gate_up.get(), d_gate.get(), static_cast<int>(FFDIM), activated);
+        gemm_grouped<<<dim3((apss26::HIDDEN_SIZE + BN - 1) / BN, ntiles), GEMM_THREADS>>>(
+            d_gate.get(), layer.moe.w2_ptrs, d_expert_out.get(), d_tiles.get(),
+            static_cast<int>(FFDIM), static_cast<int>(apss26::HIDDEN_SIZE));
+        // Scatter stays per expert: a row belongs to two of them, and separate
+        // launches are what keep the two adds from racing.
         for (std::size_t e = 0; e < apss26::NUM_EXPERTS; ++e) {
             const std::size_t rows = assignment[e].size();
             if (rows == 0) continue;
-            cuda_check(cudaMemcpy(d_index.get(), assignment[e].data(), rows * sizeof(int),
-                                  cudaMemcpyHostToDevice), "cudaMemcpy expert index");
-            gather_rows<<<static_cast<unsigned>(rows), 256>>>(
-                d_norm.get(), d_index.get(), d_expert_in.get(), apss26::HIDDEN_SIZE);
-            layer.moe.w13[e].forward(d_expert_in.get(), d_gate_up.get(), rows);
-            const long long activated = static_cast<long long>(rows) * FFDIM;
-            silu_mul<<<static_cast<unsigned>((activated + 255) / 256), 256>>>(
-                d_gate_up.get(), d_gate.get(), static_cast<int>(FFDIM), activated);
-            layer.moe.w2[e].forward(d_gate.get(), d_expert_out.get(), rows);
             scatter_add_rows<<<static_cast<unsigned>(rows), 256>>>(
-                d_expert_out.get(), d_index.get(), d_next, apss26::HIDDEN_SIZE, 0.5f);
+                d_expert_out.get() + expert_off[e] * apss26::HIDDEN_SIZE,
+                d_index.get() + expert_off[e], d_next, apss26::HIDDEN_SIZE, 0.5f);
         }
         cuda_check(cudaGetLastError(), "moe kernels");
         tick(t_moe);
