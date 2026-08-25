@@ -26,11 +26,11 @@
 # 3. SAFETY GUARDRAIL
 - NEVER EDIT
     - inputs.bin, answers.bin, decode_answers.bin, model.bin, main.cpp, config.h, Makefile, tensor.h, tensor.cu, layer.h, layer.cu
-- can edit to submit
+- can edit
     - model.h, model.cu, model_loader.h, model_loader.cu, run.sh
 
 # 4. Rule
-- Do not guess, but measure.
+- Don't guess, but measure.
 - Don't assume. Don't hide confusion. Surface tradeoffs
 - Simplicity first
     - Minimum code that solves the problem. Nothing speculative.
@@ -42,6 +42,9 @@
     - 반드시 1개의 가설씩 실험을 진행해야 한다. 동시에 여러개를 바꿔버리면 뭐가 실제 레버인지 알 수 없다.
     - 기록은 최대한 간결해야 하며, bloat을 쳐내고 load-bearing한 알짜 내용만 기록
     - 실험 1개마다 반드시 commit을 수행한다. 커밋 명은 <index>-<slug> 여야 한다.
+- 실험 output binary는 `outputs/` 폴더에 저장
+- 사용자가 실험 하나에 대해 **microworld**를 생성하라고 하면 `docs/microworld.md`를 참고하여, `docs/microworld/`에 저장하라.
+- 모든 CUDA API 호출에는 디버깅 용이성을 위해 에러 코드가 포함되어야 한다.
 
 ## 6. useful scripts
 - `./run.sh -h`: 실행으로 실행 스크립트 옵션 확인 가능
