@@ -746,3 +746,45 @@ grouping 전에 남은 moe 1.155의 내역을 먼저 재야 한다.
 **EXP-011 착수 전 측정.** moe 1.155가 expert GEMM / gather+scatter / per-expert
 `cudaMemcpy` 중 어디에 있는지 분해한다. w1/w3 점유율이 이미 85%라면 grouping의 값은
 낭비 제거가 아니라 **launch·H2D 왕복 제거(레이어당 112회)** 쪽으로 옮겨간다.
+
+---
+
+# 측정-A: MoE 및 전체 커널 시간 분해 (nsys, EXP-010 코드, 노드 b1)
+
+EXP-011을 grouping으로 짤지 결정하기 위해 코드 변경 없이 `nsys profile -t cuda` 1회.
+b1은 느린 노드이므로 절대값은 b6 대비 약 1.19배. 커널 총합 3.497 s.
+
+| 항목 | 시간 (s) | launch | 비고 |
+|---|---|---|---|
+| q/o_proj | 0.657 + 0.656 | 64 | 각 10.63 TFLOP -> **16.2 TF/s** |
+| k/v_proj | 0.343 | 64 | 15.5 TF/s |
+| **expert w13** | **0.800** | 512 | 9.30 TFLOP -> **11.6 TF/s** |
+| **expert w2** | **0.379** | 512 | 4.65 TFLOP -> 12.3 TF/s |
+| attention | 0.197 | 32 | |
+| layer_norm | 0.167 | 65 | |
+| scatter/gather/silu | 0.077 / 0.052 / 0.009 | 512 x3 | |
+| add_inplace | 0.073 | 64 | |
+| router gate / rope / lm_head | 0.050 / 0.016 / 0.020 | | |
+
+## 결론 1: w13의 손실은 **wave 충전율**이 전부다
+`gridX=7`(N=896)이라 블록이 `7 x rowtiles`뿐이다.
+
+| | 시간가중 wave 충전율 | 1 wave(164 블록) 미만 launch |
+|---|---|---|
+| expert w13 | **66%** | **0.423 s = 53%** |
+| expert w2 | 89% | 0.007 s = 2% |
+
+11.6 TF/s / 0.66 = 17.6 -> 충전율만 채우면 wide GEMM(16.2)과 같은 대역에 들어온다.
+**충전율이 격차를 전부 설명한다.** w2는 `gridX=32`라 이미 89%로 손댈 것이 없다.
+
+## 결론 2: launch 수와 index H2D는 레버가 아니다
+per-expert index `cudaMemcpy` 776회 합 **1.1 ms**. grouping의 값은 launch 제거가 아니라
+**오직 w13 충전율**이다. CUDA Graph 사망 판정과 같은 결론.
+
+## 결론 3: 순위 재산정
+- **w13 grouping**: 0.800 -> ~0.57 = **-0.23 s (b1) ~ -0.19 s (b6)**. work queue로
+  (expert, rowtile) 평탄화 필요 — max rows로 잡으면 불균형만큼 빈 블록이 생긴다.
+- **prefix trie**: 토큰 19,803 -> 15,583 (-21.3%)은 위 표의 **거의 모든 항목에 비례로**
+  꽂힌다(projection 1.656 + expert 1.179 + attn + norm). b1 기준 **-0.7 s** 규모.
+
+⇒ trie가 grouping보다 3배 크고 둘은 독립이다. **EXP-011 = prefix trie**, grouping은 그 뒤.
