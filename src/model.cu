@@ -270,75 +270,119 @@ void route_row(const float* logits, int& first, int& second) {
     second = select(first);
 }
 
-// layer.cu evaluates every exponential in double and rounds once. Keep that.
-inline float accurate_exp(float x) {
-    return static_cast<float>(std::exp(static_cast<double>(x)));
+// RoPE applied in place to the batched q and k projections. One block per row.
+//
+// The cos/sin table is built by the host inside generate() rather than here:
+// device powf/cosf/sinf differ from glibc by up to an ulp, and a 1e-7 shift in
+// the rotated q/k is exactly the magnitude that moves a router logit across the
+// quantisation boundary in PhiMoE::route (see layer_norm_rows). The table is
+// 64 * max_len * 2 floats, so building it costs microseconds.
+__global__ void rope_rows(float* __restrict__ q, float* __restrict__ k,
+                          const int* __restrict__ pos,
+                          const float* __restrict__ table) {
+    constexpr int D = static_cast<int>(apss26::HEAD_DIM);
+    constexpr int HALF = D / 2;
+    constexpr int QH = static_cast<int>(apss26::NUM_ATTENTION_HEADS);
+    constexpr int KVH = static_cast<int>(apss26::NUM_KV_HEADS);
+
+    const int row = blockIdx.x;
+    const float* trig = table + static_cast<long long>(pos[row]) * HALF * 2;
+
+    // The host writes both halves of a pair from the pre-rotation values, so
+    // one thread owns one pair and no two threads touch the same element.
+    float* qrow = q + static_cast<long long>(row) * QH * D;
+    for (int i = threadIdx.x; i < QH * HALF; i += blockDim.x) {
+        float* r = qrow + (i / HALF) * D;
+        const int j = i % HALF;
+        const float c = trig[j * 2], sn = trig[j * 2 + 1];
+        const float x0 = r[j], x1 = r[j + HALF];
+        r[j] = __fsub_rn(__fmul_rn(x0, c), __fmul_rn(x1, sn));
+        r[j + HALF] = __fadd_rn(__fmul_rn(x1, c), __fmul_rn(x0, sn));
+    }
+    float* krow = k + static_cast<long long>(row) * KVH * D;
+    for (int i = threadIdx.x; i < KVH * HALF; i += blockDim.x) {
+        float* r = krow + (i / HALF) * D;
+        const int j = i % HALF;
+        const float c = trig[j * 2], sn = trig[j * 2 + 1];
+        const float x0 = r[j], x1 = r[j + HALF];
+        r[j] = __fsub_rn(__fmul_rn(x0, c), __fmul_rn(x1, sn));
+        r[j + HALF] = __fadd_rn(__fmul_rn(x1, c), __fmul_rn(x0, sn));
+    }
 }
 
-// RoPE + causal attention for one sequence occupying rows [begin, begin+len)
-// of the batched projections. Arithmetic mirrors PhiAttention::forward, with
-// each q.k dot product evaluated once instead of once per output dimension.
-void attend_sequence(Tensor& q, Tensor& k, const Tensor& v,
-                     std::size_t begin, std::size_t len, Tensor& out) {
-    constexpr std::size_t D = apss26::HEAD_DIM;
-    constexpr std::size_t QH = apss26::NUM_ATTENTION_HEADS;
-    constexpr std::size_t KVH = apss26::NUM_KV_HEADS;
-    constexpr std::size_t half = D / 2;
-    const std::size_t group = QH / KVH;
-    const float scale = std::sqrt(static_cast<float>(D));
+// Causal sliding-window attention. One block per (sequence, query head), with
+// HEAD_DIM threads: thread d owns output element d.
+//
+// Every accumulation order matches the sequential reference, which is the whole
+// difficulty of this kernel. A reordered sum here shifts the router logits by
+// ~1e-7 and flips tokens to other experts, so:
+//   - the q.k dot walks d ascending inside a single thread,
+//   - the softmax denominator walks ki ascending inside a single thread,
+//   - the value accumulation walks ki ascending inside thread d,
+//   - __f*_rn keeps nvcc from contracting the multiply-adds into FMAs that the
+//     host does not emit (verified in obj/model.o: vmulss + vaddss throughout),
+//   - exp stays in double, as accurate_exp did.
+__global__ void attention_heads(const float* __restrict__ q,
+                                const float* __restrict__ k,
+                                const float* __restrict__ v,
+                                const int* __restrict__ begin,
+                                const int* __restrict__ length,
+                                float* __restrict__ out, float scale) {
+    constexpr int D = static_cast<int>(apss26::HEAD_DIM);
+    constexpr int QH = static_cast<int>(apss26::NUM_ATTENTION_HEADS);
+    constexpr int KVH = static_cast<int>(apss26::NUM_KV_HEADS);
+    constexpr int WINDOW = static_cast<int>(apss26::SLIDING_WINDOW);
 
-    float* qbase = q.data() + begin * QH * D;
-    float* kbase = k.data() + begin * KVH * D;
-    const float* vbase = v.data() + begin * KVH * D;
-    float* obase = out.data() + begin * QH * D;
+    extern __shared__ float shared[];
+    float* sq = shared;               // the query row being served
+    float* sdenom = shared + D;       // the softmax denominator
+    float* sw = shared + D + 1;       // one score per key
 
-    for (std::size_t s = 0; s < len; ++s) {
-        for (std::size_t h = 0; h < QH; ++h) for (std::size_t j = 0; j < half; ++j) {
-            const float inv = std::pow(apss26::ROPE_THETA, -2.0f * static_cast<float>(j) / static_cast<float>(D));
-            const float c = std::cos(static_cast<float>(s) * inv), sn = std::sin(static_cast<float>(s) * inv);
-            float* row = qbase + s * QH * D + h * D;
-            const float x0 = row[j], x1 = row[j + half];
-            row[j] = x0 * c - x1 * sn;
-            row[j + half] = x1 * c + x0 * sn;
-        }
-        for (std::size_t h = 0; h < KVH; ++h) for (std::size_t j = 0; j < half; ++j) {
-            const float inv = std::pow(apss26::ROPE_THETA, -2.0f * static_cast<float>(j) / static_cast<float>(D));
-            const float c = std::cos(static_cast<float>(s) * inv), sn = std::sin(static_cast<float>(s) * inv);
-            float* row = kbase + s * KVH * D + h * D;
-            const float x0 = row[j], x1 = row[j + half];
-            row[j] = x0 * c - x1 * sn;
-            row[j + half] = x1 * c + x0 * sn;
-        }
-    }
+    const int b = blockIdx.x, qh = blockIdx.y;
+    const int kh = qh / (QH / KVH);
+    const int base = begin[b], len = length[b];
+    const int tid = threadIdx.x;
 
-    std::vector<float> weights(len);
-    for (std::size_t qi = 0; qi < len; ++qi) for (std::size_t qh = 0; qh < QH; ++qh) {
-        const std::size_t kh = qh / group;
-        const float* qrow = qbase + qi * QH * D + qh * D;
-        const std::size_t lo = qi + 1 > apss26::SLIDING_WINDOW ? qi + 1 - apss26::SLIDING_WINDOW : 0;
+    const float* qb = q + static_cast<long long>(base) * QH * D + qh * D;
+    const float* kb = k + static_cast<long long>(base) * KVH * D + kh * D;
+    const float* vb = v + static_cast<long long>(base) * KVH * D + kh * D;
+    float* ob = out + static_cast<long long>(base) * QH * D + qh * D;
 
-        float maxv = -std::numeric_limits<float>::infinity();
-        for (std::size_t ki = lo; ki <= qi; ++ki) {
-            const float* krow = kbase + ki * KVH * D + kh * D;
+    for (int qi = 0; qi < len; ++qi) {
+        const int lo = qi + 1 > WINDOW ? qi + 1 - WINDOW : 0;
+        const int nk = qi - lo + 1;
+
+        sq[tid] = qb[static_cast<long long>(qi) * QH * D + tid];
+        __syncthreads();
+
+        for (int i = tid; i < nk; i += D) {
+            const float* kr = kb + static_cast<long long>(lo + i) * KVH * D;
             float score = 0.0f;
-            for (std::size_t d = 0; d < D; ++d) score += qrow[d] * krow[d];
-            weights[ki] = score / scale;
-            maxv = std::max(maxv, weights[ki]);
+            for (int d = 0; d < D; ++d) score = __fadd_rn(score, __fmul_rn(sq[d], kr[d]));
+            sw[i] = score / scale;
         }
-        float denom = 0.0f;
-        for (std::size_t ki = lo; ki <= qi; ++ki) {
-            weights[ki] = accurate_exp(weights[ki] - maxv);
-            denom += weights[ki];
-        }
+        __syncthreads();
 
-        float acc[D] = {};
-        for (std::size_t ki = lo; ki <= qi; ++ki) {
-            const float w = weights[ki] / denom;
-            const float* vrow = vbase + ki * KVH * D + kh * D;
-            for (std::size_t d = 0; d < D; ++d) acc[d] += w * vrow[d];
+        if (tid == 0) {
+            float maxv = -INFINITY;
+            for (int i = 0; i < nk; ++i) maxv = fmaxf(maxv, sw[i]);
+            float denom = 0.0f;
+            for (int i = 0; i < nk; ++i) {
+                sw[i] = static_cast<float>(exp(static_cast<double>(sw[i] - maxv)));
+                denom = __fadd_rn(denom, sw[i]);
+            }
+            *sdenom = denom;
         }
-        float* orow = obase + qi * QH * D + qh * D;
-        for (std::size_t d = 0; d < D; ++d) orow[d] = acc[d];
+        __syncthreads();
+
+        const float denom = *sdenom;
+        float acc = 0.0f;
+        for (int i = 0; i < nk; ++i) {
+            const float w = sw[i] / denom;
+            acc = __fadd_rn(acc, __fmul_rn(w, vb[static_cast<long long>(lo + i) * KVH * D + tid]));
+        }
+        ob[static_cast<long long>(qi) * QH * D + tid] = acc;
+        __syncthreads();
     }
 }
 
@@ -550,11 +594,45 @@ void PhiTinyMoEModel::generate(
     DeviceBuffer<float> d_gate(total * FFDIM), d_up(total * FFDIM);
     DeviceBuffer<int> d_index(total);
 
+    // Attention runs on the device now, so it needs the batch layout there:
+    // each row's position inside its sequence (for RoPE) and each sequence's
+    // extent (for the causal window).
+    constexpr std::size_t HALF = apss26::HEAD_DIM / 2;
+    std::size_t max_len = 0;
+    std::vector<int> pos(total), seq_begin(batch), seq_len(batch);
+    for (std::size_t b = 0; b < batch; ++b) {
+        seq_begin[b] = static_cast<int>(offset[b]);
+        seq_len[b] = static_cast<int>(length[b]);
+        max_len = std::max(max_len, length[b]);
+        for (std::size_t si = 0; si < length[b]; ++si) pos[offset[b] + si] = static_cast<int>(si);
+    }
+    // Built here, on the host, so the values come from the same libm calls the
+    // sequential path made -- see rope_rows.
+    std::vector<float> rope(max_len * HALF * 2);
+    for (std::size_t si = 0; si < max_len; ++si) {
+        for (std::size_t j = 0; j < HALF; ++j) {
+            const float inv = std::pow(apss26::ROPE_THETA, -2.0f * static_cast<float>(j) / static_cast<float>(apss26::HEAD_DIM));
+            rope[(si * HALF + j) * 2] = std::cos(static_cast<float>(si) * inv);
+            rope[(si * HALF + j) * 2 + 1] = std::sin(static_cast<float>(si) * inv);
+        }
+    }
+    DeviceBuffer<int> d_pos(total), d_begin(batch), d_len(batch);
+    DeviceBuffer<float> d_rope(rope.size());
+    cuda_check(cudaMemcpy(d_pos.get(), pos.data(), total * sizeof(int),
+                          cudaMemcpyHostToDevice), "cudaMemcpy positions");
+    cuda_check(cudaMemcpy(d_begin.get(), seq_begin.data(), batch * sizeof(int),
+                          cudaMemcpyHostToDevice), "cudaMemcpy sequence begin");
+    cuda_check(cudaMemcpy(d_len.get(), seq_len.data(), batch * sizeof(int),
+                          cudaMemcpyHostToDevice), "cudaMemcpy sequence length");
+    cuda_check(cudaMemcpy(d_rope.get(), rope.data(), rope.size() * sizeof(float),
+                          cudaMemcpyHostToDevice), "cudaMemcpy rope table");
+    const unsigned attn_shared =
+        static_cast<unsigned>((apss26::HEAD_DIM + 1 + max_len) * sizeof(float));
+    const float attn_scale = std::sqrt(static_cast<float>(apss26::HEAD_DIM));
+
     to_device(d_hidden, hidden);
     tick(t_h2d);
 
-    Tensor q({total, QDIM}), k({total, KVDIM}), v({total, KVDIM});
-    Tensor context({total, QDIM});
     Tensor router({total, apss26::NUM_EXPERTS});
     std::vector<std::vector<int>> assignment(apss26::NUM_EXPERTS);
 
@@ -565,19 +643,15 @@ void PhiTinyMoEModel::generate(
         layer.k_proj.forward(d_norm.get(), d_k.get(), total);
         layer.v_proj.forward(d_norm.get(), d_v.get(), total);
         tick(t_gemm);
-        to_host(q, d_q.get());
-        to_host(k, d_k.get());
-        to_host(v, d_v.get());
-        tick(t_d2h);
-
-#pragma omp parallel for schedule(dynamic)
-        for (long long b = 0; b < static_cast<long long>(batch); ++b) {
-            attend_sequence(q, k, v, offset[b], length[b], context);
-        }
+        rope_rows<<<static_cast<unsigned>(total), 256>>>(
+            d_q.get(), d_k.get(), d_pos.get(), d_rope.get());
+        attention_heads<<<dim3(static_cast<unsigned>(batch),
+                               apss26::NUM_ATTENTION_HEADS),
+                          apss26::HEAD_DIM, attn_shared>>>(
+            d_q.get(), d_k.get(), d_v.get(), d_begin.get(), d_len.get(),
+            d_ctx.get(), attn_scale);
+        cuda_check(cudaGetLastError(), "attention kernels");
         tick(t_attn);
-
-        to_device(d_ctx.get(), context);
-        tick(t_h2d);
         layer.o_proj.forward(d_ctx.get(), d_attn.get(), total);
         tick(t_gemm);
         add_inplace_device(d_attn.get(), d_hidden, static_cast<long long>(elements));

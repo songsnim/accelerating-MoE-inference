@@ -96,12 +96,30 @@ attention만 시퀀스 구간 [offset, offset+len)에 대해 따로 계산하면
   -> 배치화가 부동소수점 연산 순서를 전혀 바꾸지 않았음이 증명됨.
 - 토큰당 비용: baseline 2.37 s/token -> n=2 0.82 -> n=4 0.51 -> n=8 0.377. n이 커질수록 계속 개선.
   이유: `matmul_transposed`의 `#pragma omp parallel for`가 **행(M)에 대해서만** 병렬화한다.
-  baseline은 M=19라 32스레드 중 19개만 일했다. 배치화로 M=T가 되어 스레드가 포화된다.
+  baseline은 M=19라 **64코어 중 19개만** 일했다(노드 `omp_max_threads=64`). 배치화로 M=T가 되어 코어가 찬다.
   -> throughput이 n에 의존하므로 리더보드 제출은 2분 제한에 들어가는 최대 n으로 해야 한다.
   n=8(62s)이 여유 있는 최대치. n=12는 250토큰 x 0.37 = 94s + load 10s로 2분 제한에 너무 붙는다.
   이득도 평탄해지는 중(0.086 -> 0.128 -> 추정 0.135)이라 n=8로 제출하고 다음 레버로 넘어간다.
 - **제출: 0.128473 seq/s (n=8), baseline 0.033306 대비 3.86x**
-- 130회 attention 재계산 제거분은 전체의 13%(1.15x)뿐. 2.88x의 주된 원인은 스레드 포화다.
+
+#### 정정 (2026-08-25): 두 변경의 분리 측정
+이 커밋은 (a) 배치화와 (b) 어텐션 재작성을 **한 번에** 바꿨다(1가설 원칙 위반).
+어느 쪽이 레버인지 가르려고 "배치화는 하되 `attend_sequence` 안쪽만 `layer.cu` 원문
+(130회 재계산 + `at()`)으로 되돌린" 측정용 빌드를 만들어 같은 입력(n=2)으로 돌렸다.
+
+| 빌드 | 배치화 | 어텐션 | n=2 elapsed |
+|---|---|---|---|
+| `57ffaeb` baseline | - | 130회 | 108.838 s |
+| 가르는 빌드 (측정용) | O | 130회 | **68.640 s** |
+| `8f09c7f` EXP-001 | O | 1회 | **37.749 s** |
+
+-> 배치화 **1.59x**, 어텐션 재작성 **1.82x** (1.59 x 1.82 = 2.88 ✓). 셋 다 Validation PASSED.
+**어텐션 재작성이 둘 중 큰 레버였다** — 원래 여기 적었던 "13%(1.15x)뿐"은 틀렸다.
+
+메커니즘("스레드 포화")은 맞다. 같은 `q_proj`를 코어 1/8/32/64개로 M 스윕해 확인:
+코어 1개면 **완전한 직선**(행당 48.550 ms, 공짜인 행 0개), 코어 8개면 8행마다 계단
+(48.807 -> 97.475 -> 146.532 -> 194.784 = 정확히 1:2:3:4배). 평탄 구간의 끝이 코어 수를 따라 움직인다.
+행 하나 = 코어 하나이고, 코어를 다 채운 뒤로는 바퀴 수가 정직하게 는다.
 
 ### 부수 측정: `tensor_ops::matmul_transposed`의 천장
 scratchpad에서 `obj/tensor.o`만 링크해 실제 shape로 측정 (login node, 32 threads):
@@ -119,6 +137,10 @@ scratchpad에서 `obj/tensor.o`만 링크해 실제 shape로 측정 (login node,
 원인은 `Tensor::at()`: 원소마다 `initializer_list`를 만들고 차원별 bounds check를 하므로
 벡터화가 불가능하다. 전체 작업량 20.4 TMAC / 1.2 GMAC/s = **4.7시간** -> 이 경로로는 n=1024 불가.
 
+> 정정 (2026-08-25): 이 표는 login node(32 threads, 공유)라 실제 실행 노드보다 느리다.
+> 계산 노드(`--exclusive`, 64 threads)에서 다시 재면 q_proj M=256이 **4.83 GMAC/s**이고,
+> 20.4 TMAC / 4.83 = **1.2시간**이다. 여전히 2분 제한의 35배라 결론은 그대로.
+
 ## 5. Next action
 matmul이 유일한 벽이므로 `tensor_ops::matmul_transposed`에서 벗어나는 것이 다음 레버다.
 `tensor.cu`는 수정 금지이므로 `model.cu`에 자체 커널을 쓴다. 작업량 분해(토큰당, 32 layer 합산):
@@ -131,6 +153,8 @@ matmul이 유일한 벽이므로 `tensor_ops::matmul_transposed`에서 벗어나
 
 -> EXP-002는 교체 가능한 66%만 CUDA로 옮겨 "GEMM이 벽"이라는 가설을 최소 코드로 검증한다.
 Amdahl 상한 1/0.34 = 2.9x. 성공하면 EXP-003에서 MoE(34%)를 재구현해 GPU로 옮긴다.
+
+microworld: `docs/microworld/exp-001-batching.html` (+ `-bench.cpp`, `-threads-bench.cpp`).
 
 ---
 
@@ -404,3 +428,89 @@ expert 13.6 TFLOP / 1.276s = **10.7 TFLOP/s (30%)**. 6% -> 44%. shared bound 진
 - expert GEMM은 M이 작은(평균 T*2/16 ~ 2475행) 16개 GEMM으로 쪼개져 있어 tail/launch 낭비가 있다.
   피크의 30%에 그친 이유. grouped GEMM 1회로 묶는 것이 다음 후보.
 - host 라우팅(634k회 직렬 `route_row`)은 `moe`에 포함되어 있어 아직 분리 측정되지 않았다.
+
+---
+
+# EXP-006 (attention을 커널로: q/k/v/context를 device에 상주)
+## 1. Background
+EXP-005 이후 남은 6.34s 중 attention 관련이 **2.54s / 40%**였다: host `attn` 1.126s와,
+q/k/v를 내리고 context를 올리기 위한 버스 왕복(`d2h` 0.865 + `h2d` 0.548의 대부분).
+레이어당 243MB↓ + 162MB↑, 32 레이어 합 13GB.
+
+후보 3개 중 attention을 고른 이유 — 이득이 가장 크고(40%), **이후 실험에 주는 제약이 없다**.
+host 코드와 버스 왕복을 제거할 뿐 MoE/GEMM/norm 경로를 건드리지 않고, 끝나면 활성값이
+device를 떠나는 곳이 router logits 1곳만 남아 다음 실험의 표면이 좁아진다.
+(grouped expert GEMM은 이득 ~1.09x인데 나중에 라우팅을 device로 옮기면 다시 짜야 한다.
+device routing은 이득이 미측정이고 `route_row`의 양자화+tie-eps가 정확도 지뢰다.)
+
+## 2. Hypothesis
+RoPE + softmax attention을 커널로 옮겨 q/k/v/context를 device에 상주시키면 host 1.13s와
+버스 왕복 1.2s가 사라져 6.34s -> **~4.0s (1.5~1.6x)**.
+
+연산량은 근거가 아니다 — attention 전체가 30 GMAC(전체의 0.15%)다. 이건 FLOP 실험이 아니라
+**host/버스 제거 실험**이고, 그래서 커널이 느려도(스레드당 직렬 dot) 이긴다.
+
+## 3. Design and Implementation
+커널 2개만 추가하고 그 자리의 host 코드만 지웠다. GEMM 튜닝/grouped GEMM/device routing은 넣지 않았다.
+
+- `rope_rows`: 행당 1 block, in-place. 스레드 1개가 (j, j+64) 쌍 하나를 담당.
+- `attention_heads`: **(시퀀스, query head)당 1 block, HEAD_DIM(128) 스레드**. 스레드 d가 출력 원소 d를 소유.
+  shared는 `[q행 128][denom 1][score max_len]`. k/v는 shared에 올리지 않고 L1/L2에 맡긴다
+  (한 head의 k 작업집합이 16KB).
+- `d_pos[T]`(시퀀스 내 위치), `d_begin/d_len[B]`를 generate() 시작에 1회 업로드.
+
+### 정확도 — 이 실험의 실제 난점
+EXP-004에서 배운 것: 누적 순서가 1e-7 흔들리면 `route()`의 양자화 경계에서 expert **집합**이
+뒤집혀 O(0.1) 오차가 난다. 그래서 bit-exact로 설계했다.
+- **`objdump obj/model.o`로 host를 먼저 확인**: `attend_sequence`에 `vfmadd`가 **0개**.
+  GCC가 dot product의 곱만 `vmulps`로 벡터화하고 덧셈은 순서대로 `vaddss`로 낸다.
+  -> device도 `__fmul_rn`/`__fadd_rn`으로 FMA 계약을 막아야 한다.
+- q·k dot은 한 스레드가 d 오름차순 직렬 (128개 의존 FADD — 느리지만 8%짜리라 무관)
+- softmax denom은 thread 0이 ki 오름차순 직렬, `exp`는 double (`accurate_exp`와 동일)
+- acc는 스레드 d가 ki 오름차순 직렬
+- **RoPE cos/sin 테이블은 host가 `generate()` 안에서 계산**해 8KB만 올린다.
+  device `powf/cosf/sinf`는 glibc와 1 ulp 다를 수 있고 그 1e-7이 정확히 라우팅을 뒤집는 크기다.
+  측정 구간 안이고, 입력이 아니라 config에서 나오는 상수라 캐싱 금지 조항과 무관하다.
+
+## 4. Result
+| n | EXP-005 | EXP-006 | speedup | seq/s | Validation |
+|---|---|---|---|---|---|
+| 8 | 0.456 s | **0.345 s** | 1.32x | 23.193103 | PASSED (max 9.16e-05) |
+| 1024 | 6.344 s | **3.93 s** | **1.61x** | **259.986279** | PASSED (max 1.79e-04) |
+
+가설(1.5~1.6x)이 **맞았다** — 실제 1.61x.
+- **`cmp exp005_n1024.bin exp006_n1024.bin` -> BITWISE IDENTICAL.** host 테이블 + `__f*_rn` +
+  누적 순서 보존이 전부 통했다. 정확도 실험이 1회로 끝났다.
+- 런 간 변동: 10회 중 8회가 [3.889, 3.939], 2회가 4.567s. 이상치는 프로파일에서 gemm 1.717->2.106,
+  moe 1.257->1.496, attn 0.303->0.363으로 **모든 커널이 균일하게 1.2x** 느려졌다
+  -> 코드가 아니라 GPU 클럭. 노드(b0/b5/b7)와는 무관.
+- **제출: 262.949606 seq/s (n=1024). 개인 최고 160.3 -> 262.9 (+64.0%). baseline 0.033306 대비 7895x.**
+  단 **순위 2위/10** — EXP-005 때는 1위였다. 리더보드가 움직였다.
+- 비교 공정성: EXP-005를 `b19dfa4`에서 같은 세션에 재빌드해 재측정(6.318/6.392/6.318s,
+  출력 bitwise 동일)했으므로 6.344는 신뢰할 수 있는 기준이다.
+
+프로파일 (n=1024):
+| 단계 | EXP-005 | EXP-006 | 비중 |
+|---|---|---|---|
+| gemm | 1.704 | 1.717 | **44%** |
+| moe | 1.276 | 1.257 | **32%** |
+| attn | 1.126 (host) | **0.303** (device) | 8% |
+| norm | 0.352 | 0.142 | 4% |
+| lm_head | 0.085 | 0.085 | 2% |
+| resid | 0.074 | 0.074 | 2% |
+| h2d | 0.548 | **0.030** | 1% |
+| d2h | 0.865 | **0.006** | 0.2% |
+
+- `d2h` 0.865 -> 0.006 (**144x**). 남은 6ms는 router logits 40MB뿐이다.
+- 제거한 2.50s(host 1.126 + 버스 1.377) 대비 추가한 커널 0.303s -> 순 -2.20s.
+- attention 커널 실효 성능은 60 GFLOP / 0.303s = 198 GFLOP/s (피크의 0.6%). 직렬 dot 때문이지만
+  8%짜리라 지금 손댈 이유가 없다.
+
+## 5. Next action
+device GEMM이 다시 **76%**(gemm 1.717 + moe 1.257)다. 단, `moe` 1.257s의 내부 구성이
+아직 **미측정**이다 — expert GEMM / 16회 launch 오버헤드 / **host 라우팅 634k회 직렬 `route_row`**가
+한 타이머에 섞여 있다. 추측하지 말고 먼저 쪼개 재는 것이 EXP-007이다(코드 변경 없음, 타이머만).
+그 결과에 따라:
+- 라우팅이 크면 -> device routing (router D2H 0.006s까지 같이 사라진다)
+- expert GEMM이 크면 -> grouped GEMM 1회로 16개 launch/tail 낭비 제거
+- 둘 다 작으면 -> `gemm_nt_bias` 자체 튜닝(현재 피크의 44%)
