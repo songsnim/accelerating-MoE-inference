@@ -788,3 +788,51 @@ per-expert index `cudaMemcpy` 776회 합 **1.1 ms**. grouping의 값은 launch �
   꽂힌다(projection 1.656 + expert 1.179 + attn + norm). b1 기준 **-0.7 s** 규모.
 
 ⇒ trie가 grouping보다 3배 크고 둘은 독립이다. **EXP-011 = prefix trie**, grouping은 그 뒤.
+
+---
+
+# EXP-011: Prefix trie (공유 prefix 중복 제거)
+
+## 1. Hypothesis
+causal attention + 절대위치 RoPE이므로, 앞선 토큰이 전부 같은 두 토큰은 32개 레이어
+전부에서 **동일한 hidden state**를 갖는다. 행을 토큰이 아니라 **prefix trie 노드**로
+잡으면 공유 prefix를 1번만 계산한다. 정확히 CSE — 산술 변경 0.
+
+입력 실측: 19,803 토큰 -> **15,583 노드 (-21.31%)**.
+
+## 2. Change (`src/model.cu`, `attention_heads` + `generate()`)
+- `generate()` 앞에서 `(parent, token) -> node` 해시로 trie 구성.
+  노드당 `token/parent/depth`, 시퀀스당 종단 노드.
+- 각 노드의 key 집합 = 자기 root path. `anc_off[n]..anc_off[n+1]`에 depth 오름차순으로
+  **평탄화**(215,717 int = 863 KB). attention이 parent 체인을 되짚지 않아도 된다.
+- attention: `block=(sequence, head)` + 내부 `qi` 루프 -> **`block=(node, head)`, 1 블록
+  1 쿼리**. key/value를 `chain[i]` 인덱스로 읽는다. 누산 순서는 전부 그대로.
+- position = trie depth. lm_head 행 = 시퀀스 종단 노드.
+
+## 3. Result (노드 b5, 한 allocation 안에서 교차 2rep)
+
+| | T | embed | norm | gemm | attn | moe | resid | elapsed | seq/s |
+|---|---|---|---|---|---|---|---|---|---|
+| EXP-010 | 19,803 | (미측정) | 0.141 | 1.351 | 0.182 | 1.151 | 0.074 | 3.2807 | 312.1 |
+| **EXP-011** | **15,583** | 0.180 | 0.112 | 1.045 | 0.137 | 0.966 | 0.058 | **2.6529** | **386.1** |
+
+**elapsed -0.628 s (1.237x).** `cmp` -> **bitwise 동일**, 양쪽 PASSED. decode(`-d`) PASSED.
+
+EXP-010의 `embed`는 타이머 시작 전이라 0으로 찍혔다. 이번에 타이머를 `generate()` 맨
+앞으로 올려 trie 구성 + embedding gather를 실제로 재게 했다. 미계상분으로 역산하면
+0.263 -> 0.222 s이므로 **trie 구성 자체는 수 ms**다.
+
+## 4. Analysis
+행 수에 비례하는 항목은 전부 -21% 근처로 떨어졌다(gemm -22.6%, moe -16.1%,
+norm -20.6%, resid -21.6%). **attn만 -24.7%로 예상(-6.5%)을 크게 넘겼다.**
+attention 연산량은 sum(depth+1) 기준 230,759 -> 215,717 = -6.5%에 불과하다 —
+나머지는 `qi` 직렬 루프를 없애고 블록을 16,384개(각 최대 32회 반복)에서
+249,328개(각 1회)로 편 **병렬성 효과**다. 두 변경이 한 커밋에 섞였다는 뜻이지만,
+trie를 넣으면 `qi` 루프는 구조상 유지할 수 없다(노드의 조상은 연속이 아니다).
+
+moe의 -16.1%가 행 감소(-21.3%)에 못 미치는 것은 예상대로다. expert당 행이 줄면
+w13 wave 충전율(66%)이 더 나빠진다 — **grouping의 상대 가치는 오히려 올라갔다.**
+
+## 5. Next action
+**EXP-012 = expert w13 grouping.** (expert, rowtile) work queue로 평탄화.
+행이 21% 줄어 충전율이 더 나빠졌으므로 측정-A의 -0.19 s(b6)보다 커질 가능성이 있다.

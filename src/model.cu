@@ -7,7 +7,9 @@
 #include <ctime>
 #include <limits>
 #include <stdexcept>
+#include <cstring>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -347,8 +349,9 @@ __global__ void rope_rows(float* __restrict__ q, float* __restrict__ k,
     }
 }
 
-// Causal sliding-window attention. One block per (sequence, query head), with
-// HEAD_DIM threads: thread d owns output element d.
+// Causal attention over the prefix trie. One block per (node, query head),
+// with HEAD_DIM threads: thread d owns output element d. A node's key set is
+// its own root path, which `anc` lists ascending by depth.
 //
 // Every accumulation order matches the sequential reference, which is the whole
 // difficulty of this kernel. A reordered sum here shifts the router logits by
@@ -363,8 +366,8 @@ __global__ void rope_rows(float* __restrict__ q, float* __restrict__ k,
 __global__ void attention_heads(const float* __restrict__ q,
                                 const float* __restrict__ k,
                                 const float* __restrict__ v,
-                                const int* __restrict__ begin,
-                                const int* __restrict__ length,
+                                const int* __restrict__ anc,
+                                const int* __restrict__ anc_off,
                                 float* __restrict__ out, float scale) {
     constexpr int D = static_cast<int>(apss26::HEAD_DIM);
     constexpr int QH = static_cast<int>(apss26::NUM_ATTENTION_HEADS);
@@ -377,58 +380,53 @@ __global__ void attention_heads(const float* __restrict__ q,
     float* sw = shared + D + 1;       // one score per key
     __shared__ float smax;            // the softmax max, broadcast to all lanes
 
-    const int b = blockIdx.x, qh = blockIdx.y;
+    const int node = blockIdx.x, qh = blockIdx.y;
     const int kh = qh / (QH / KVH);
-    const int base = begin[b], len = length[b];
     const int tid = threadIdx.x;
 
-    const float* qb = q + static_cast<long long>(base) * QH * D + qh * D;
-    const float* kb = k + static_cast<long long>(base) * KVH * D + kh * D;
-    const float* vb = v + static_cast<long long>(base) * KVH * D + kh * D;
-    float* ob = out + static_cast<long long>(base) * QH * D + qh * D;
+    const int abase = anc_off[node];
+    const int keys = anc_off[node + 1] - abase;   // = position + 1
+    const int lo = keys > WINDOW ? keys - WINDOW : 0;
+    const int nk = keys - lo;
+    const int* const chain = anc + abase + lo;
 
-    for (int qi = 0; qi < len; ++qi) {
-        const int lo = qi + 1 > WINDOW ? qi + 1 - WINDOW : 0;
-        const int nk = qi - lo + 1;
+    sq[tid] = q[static_cast<long long>(node) * QH * D + qh * D + tid];
+    __syncthreads();
 
-        sq[tid] = qb[static_cast<long long>(qi) * QH * D + tid];
-        __syncthreads();
-
-        for (int i = tid; i < nk; i += D) {
-            const float* kr = kb + static_cast<long long>(lo + i) * KVH * D;
-            float score = 0.0f;
-            for (int d = 0; d < D; ++d) score = __fadd_rn(score, __fmul_rn(sq[d], kr[d]));
-            sw[i] = score / scale;
-        }
-        __syncthreads();
-
-        // exp is elementwise, so it may leave thread 0 without disturbing any
-        // summation order; the max scan and the denominator stay where they are.
-        if (tid == 0) {
-            float maxv = -INFINITY;
-            for (int i = 0; i < nk; ++i) maxv = fmaxf(maxv, sw[i]);
-            smax = maxv;
-        }
-        __syncthreads();
-        for (int i = tid; i < nk; i += D)
-            sw[i] = static_cast<float>(exp(static_cast<double>(sw[i] - smax)));
-        __syncthreads();
-        if (tid == 0) {
-            float denom = 0.0f;
-            for (int i = 0; i < nk; ++i) denom = __fadd_rn(denom, sw[i]);
-            *sdenom = denom;
-        }
-        __syncthreads();
-
-        const float denom = *sdenom;
-        float acc = 0.0f;
-        for (int i = 0; i < nk; ++i) {
-            const float w = sw[i] / denom;
-            acc = __fadd_rn(acc, __fmul_rn(w, vb[static_cast<long long>(lo + i) * KVH * D + tid]));
-        }
-        ob[static_cast<long long>(qi) * QH * D + tid] = acc;
-        __syncthreads();
+    for (int i = tid; i < nk; i += D) {
+        const float* kr = k + static_cast<long long>(chain[i]) * KVH * D + kh * D;
+        float score = 0.0f;
+        for (int d = 0; d < D; ++d) score = __fadd_rn(score, __fmul_rn(sq[d], kr[d]));
+        sw[i] = score / scale;
     }
+    __syncthreads();
+
+    // exp is elementwise, so it may leave thread 0 without disturbing any
+    // summation order; the max scan and the denominator stay where they are.
+    if (tid == 0) {
+        float maxv = -INFINITY;
+        for (int i = 0; i < nk; ++i) maxv = fmaxf(maxv, sw[i]);
+        smax = maxv;
+    }
+    __syncthreads();
+    for (int i = tid; i < nk; i += D)
+        sw[i] = static_cast<float>(exp(static_cast<double>(sw[i] - smax)));
+    __syncthreads();
+    if (tid == 0) {
+        float denom = 0.0f;
+        for (int i = 0; i < nk; ++i) denom = __fadd_rn(denom, sw[i]);
+        *sdenom = denom;
+    }
+    __syncthreads();
+
+    const float denom = *sdenom;
+    float acc = 0.0f;
+    for (int i = 0; i < nk; ++i) {
+        const float w = sw[i] / denom;
+        acc = __fadd_rn(acc, __fmul_rn(w,
+            v[static_cast<long long>(chain[i]) * KVH * D + kh * D + tid]));
+    }
+    out[static_cast<long long>(node) * QH * D + qh * D + tid] = acc;
 }
 
 }  // namespace
@@ -578,10 +576,11 @@ void PhiTinyMoEModel::forward(const std::vector<int>& input_ids, Tensor& logits)
     generate({input_ids}, logits);
 }
 
-// Every sequence in the batch is packed into a single [T, HIDDEN] activation
-// matrix, so the 32 layers are traversed once for the whole batch. Layer norm,
-// the projections and the MoE are row-wise, so packing does not change any
-// row's arithmetic; only attention needs to know the sequence boundaries.
+// The batch is packed into a single [T, HIDDEN] activation matrix, so the 32
+// layers are traversed once for the whole batch, and the rows are the nodes of
+// a prefix trie over the sequences rather than the raw tokens. Layer norm, the
+// projections and the MoE are row-wise, so packing does not change any row's
+// arithmetic; only attention needs to know which rows precede a given row.
 void PhiTinyMoEModel::generate(
     const std::vector<std::vector<int>>& input_ids,
     Tensor& logits) const {
@@ -590,30 +589,10 @@ void PhiTinyMoEModel::generate(
     }
 
     const std::size_t batch = input_ids.size();
-    std::vector<std::size_t> offset(batch), length(batch);
-    std::size_t total = 0;
-    for (std::size_t b = 0; b < batch; ++b) {
-        const std::size_t s = input_ids[b].size();
-        if (s == 0) throw std::invalid_argument("empty input");
-        if (s > apss26::MAX_POSITION_EMBEDDINGS) throw std::invalid_argument("sequence is too long");
-        offset[b] = total;
-        length[b] = s;
-        total += s;
-    }
-
-    Tensor hidden({total, apss26::HIDDEN_SIZE});
-    for (std::size_t b = 0; b < batch; ++b) {
-        for (std::size_t si = 0; si < length[b]; ++si) {
-            const int token = input_ids[b][si];
-            if (token < 0 || static_cast<std::size_t>(token) >= apss26::VOCAB_SIZE) throw std::invalid_argument("token out of vocabulary");
-            float* row = hidden.data() + (offset[b] + si) * apss26::HIDDEN_SIZE;
-            const float* src = embeddings_.data() + static_cast<std::size_t>(token) * apss26::HIDDEN_SIZE;
-            for (std::size_t h = 0; h < apss26::HIDDEN_SIZE; ++h) row[h] = src[h];
-        }
-    }
 
     // Stage timers, off unless APS_PROFILE is set, so measured runs carry no
-    // extra synchronisation.
+    // extra synchronisation. t_embed covers the trie build and the embedding
+    // gather, both of which are host work this experiment moves the cost of.
     const bool profile = std::getenv("APS_PROFILE") != nullptr;
     double t_embed = 0, t_norm = 0, t_h2d = 0, t_gemm = 0, t_d2h = 0,
            t_attn = 0, t_moe = 0, t_resid = 0, t_lm = 0;
@@ -625,6 +604,72 @@ void PhiTinyMoEModel::generate(
         sink += now - mark;
         mark = now;
     };
+
+    // Prefix trie. Two tokens that sit at the same position of two sequences
+    // agreeing on every earlier token get the same hidden state in all 32
+    // layers: attention is causal and RoPE keys off the absolute position, so
+    // nothing downstream can tell the two apart. One trie node per distinct
+    // prefix is therefore one row, and a shared prefix is computed once.
+    // Exact common-subexpression elimination -- no arithmetic changes.
+    // Measured on the contest input: 19,803 tokens -> 15,583 nodes (-21.3%).
+    std::vector<int> node_token, node_parent, node_depth;
+    std::vector<int> last_node(batch);
+    {
+        std::unordered_map<long long, int> child;
+        child.reserve(batch * 64);
+        for (std::size_t b = 0; b < batch; ++b) {
+            const std::vector<int>& seq = input_ids[b];
+            if (seq.empty()) throw std::invalid_argument("empty input");
+            if (seq.size() > apss26::MAX_POSITION_EMBEDDINGS) throw std::invalid_argument("sequence is too long");
+            int parent = -1;
+            for (std::size_t si = 0; si < seq.size(); ++si) {
+                const int token = seq[si];
+                if (token < 0 || static_cast<std::size_t>(token) >= apss26::VOCAB_SIZE) throw std::invalid_argument("token out of vocabulary");
+                const long long key =
+                    (static_cast<long long>(parent) + 1) *
+                        static_cast<long long>(apss26::VOCAB_SIZE) + token;
+                const auto it = child.find(key);
+                if (it != child.end()) {
+                    parent = it->second;
+                } else {
+                    const int node = static_cast<int>(node_token.size());
+                    node_token.push_back(token);
+                    node_parent.push_back(parent);
+                    node_depth.push_back(static_cast<int>(si));
+                    child.emplace(key, node);
+                    parent = node;
+                }
+            }
+            last_node[b] = parent;
+        }
+    }
+    const std::size_t total = node_token.size();
+
+    // A node's causal key set is its own root path, ascending by depth.
+    // Flattened here so attention reads it straight instead of chasing parents.
+    std::vector<int> anc_off(total + 1, 0);
+    for (std::size_t n = 0; n < total; ++n) {
+        anc_off[n + 1] = anc_off[n] + node_depth[n] + 1;
+    }
+    std::vector<int> anc(static_cast<std::size_t>(anc_off[total]));
+    for (std::size_t n = 0; n < total; ++n) {
+        int* dst = anc.data() + anc_off[n];
+        const int parent = node_parent[n];
+        // The parent's chain is this node's chain minus its last entry.
+        if (parent >= 0) {
+            std::memcpy(dst, anc.data() + anc_off[parent],
+                        static_cast<std::size_t>(node_depth[n]) * sizeof(int));
+        }
+        dst[node_depth[n]] = static_cast<int>(n);
+    }
+
+    Tensor hidden({total, apss26::HIDDEN_SIZE});
+    for (std::size_t n = 0; n < total; ++n) {
+        float* row = hidden.data() + n * apss26::HIDDEN_SIZE;
+        const float* src = embeddings_.data() +
+            static_cast<std::size_t>(node_token[n]) * apss26::HIDDEN_SIZE;
+        for (std::size_t h = 0; h < apss26::HIDDEN_SIZE; ++h) row[h] = src[h];
+    }
     tick(t_embed);
 
     // Everything except attention and the routing decision now runs on the
@@ -656,12 +701,8 @@ void PhiTinyMoEModel::generate(
     // extent (for the causal window).
     constexpr std::size_t HALF = apss26::HEAD_DIM / 2;
     std::size_t max_len = 0;
-    std::vector<int> pos(total), seq_begin(batch), seq_len(batch);
-    for (std::size_t b = 0; b < batch; ++b) {
-        seq_begin[b] = static_cast<int>(offset[b]);
-        seq_len[b] = static_cast<int>(length[b]);
-        max_len = std::max(max_len, length[b]);
-        for (std::size_t si = 0; si < length[b]; ++si) pos[offset[b] + si] = static_cast<int>(si);
+    for (std::size_t n = 0; n < total; ++n) {
+        max_len = std::max(max_len, static_cast<std::size_t>(node_depth[n]) + 1);
     }
     // Built here, on the host, so the values come from the same libm calls the
     // sequential path made -- see rope_rows.
@@ -673,14 +714,15 @@ void PhiTinyMoEModel::generate(
             rope[(si * HALF + j) * 2 + 1] = std::sin(static_cast<float>(si) * inv);
         }
     }
-    DeviceBuffer<int> d_pos(total), d_begin(batch), d_len(batch);
+    DeviceBuffer<int> d_pos(total), d_anc(anc.size()), d_anc_off(anc_off.size());
     DeviceBuffer<float> d_rope(rope.size());
-    cuda_check(cudaMemcpy(d_pos.get(), pos.data(), total * sizeof(int),
+    // A node's position is its depth in the trie.
+    cuda_check(cudaMemcpy(d_pos.get(), node_depth.data(), total * sizeof(int),
                           cudaMemcpyHostToDevice), "cudaMemcpy positions");
-    cuda_check(cudaMemcpy(d_begin.get(), seq_begin.data(), batch * sizeof(int),
-                          cudaMemcpyHostToDevice), "cudaMemcpy sequence begin");
-    cuda_check(cudaMemcpy(d_len.get(), seq_len.data(), batch * sizeof(int),
-                          cudaMemcpyHostToDevice), "cudaMemcpy sequence length");
+    cuda_check(cudaMemcpy(d_anc.get(), anc.data(), anc.size() * sizeof(int),
+                          cudaMemcpyHostToDevice), "cudaMemcpy ancestors");
+    cuda_check(cudaMemcpy(d_anc_off.get(), anc_off.data(), anc_off.size() * sizeof(int),
+                          cudaMemcpyHostToDevice), "cudaMemcpy ancestor offsets");
     cuda_check(cudaMemcpy(d_rope.get(), rope.data(), rope.size() * sizeof(float),
                           cudaMemcpyHostToDevice), "cudaMemcpy rope table");
     const unsigned attn_shared =
@@ -702,10 +744,10 @@ void PhiTinyMoEModel::generate(
         tick(t_gemm);
         rope_rows<<<static_cast<unsigned>(total), 256>>>(
             d_q.get(), d_k.get(), d_pos.get(), d_rope.get());
-        attention_heads<<<dim3(static_cast<unsigned>(batch),
+        attention_heads<<<dim3(static_cast<unsigned>(total),
                                apss26::NUM_ATTENTION_HEADS),
                           apss26::HEAD_DIM, attn_shared>>>(
-            d_q.get(), d_k.get(), d_v.get(), d_begin.get(), d_len.get(),
+            d_q.get(), d_k.get(), d_v.get(), d_anc.get(), d_anc_off.get(),
             d_ctx.get(), attn_scale);
         cuda_check(cudaGetLastError(), "attention kernels");
         tick(t_attn);
@@ -760,12 +802,9 @@ void PhiTinyMoEModel::generate(
     final_norm_.forward(d_hidden, d_norm.get(), total);
     tick(t_norm);
 
-    // Only the last row of each sequence feeds lm_head.
-    std::vector<int> last_rows(batch);
-    for (std::size_t b = 0; b < batch; ++b) {
-        last_rows[b] = static_cast<int>(offset[b] + length[b] - 1);
-    }
-    cuda_check(cudaMemcpy(d_index.get(), last_rows.data(), batch * sizeof(int),
+    // Only the last row of each sequence feeds lm_head: the trie node its
+    // whole token list ends on. Two identical sequences share that node.
+    cuda_check(cudaMemcpy(d_index.get(), last_node.data(), batch * sizeof(int),
                           cudaMemcpyHostToDevice), "cudaMemcpy last rows");
     gather_rows<<<static_cast<unsigned>(batch), 256>>>(
         d_norm.get(), d_index.get(), d_expert_in.get(), apss26::HIDDEN_SIZE);
