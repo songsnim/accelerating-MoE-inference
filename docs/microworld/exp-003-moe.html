@@ -1,0 +1,971 @@
+<title>MoE 이송실</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gothic+A1:wght@500;700;900&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ground:#E7EBEF; --panel:#F9FAFB; --panel-2:#EFF3F6; --sunken:#E1E7EC;
+  --ink:#121920; --ink-2:#4A5765; --ink-3:#7A8794;
+  --line:#C7D0D8; --line-2:#DDE3E9;
+  --copper:#AE501D; --steel:#1E6383; --plum:#6A4A7B; --moss:#2C6B52; --idle:#9BA7B3; --hot:#93202C;
+  --shadow:0 1px 0 rgba(18,25,32,.04), 0 8px 24px -18px rgba(18,25,32,.5);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0C1116; --panel:#141B21; --panel-2:#1A232A; --sunken:#0F161B;
+    --ink:#E2E8EE; --ink-2:#9BA8B4; --ink-3:#6F7C88;
+    --line:#26313A; --line-2:#1D262E;
+    --copper:#E08A4B; --steel:#5CA6C4; --plum:#AC8BC4; --moss:#5AA981; --idle:#66727E; --hot:#DD6672;
+    --shadow:0 1px 0 rgba(0,0,0,.3), 0 10px 30px -20px #000;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0C1116; --panel:#141B21; --panel-2:#1A232A; --sunken:#0F161B;
+  --ink:#E2E8EE; --ink-2:#9BA8B4; --ink-3:#6F7C88;
+  --line:#26313A; --line-2:#1D262E;
+  --copper:#E08A4B; --steel:#5CA6C4; --plum:#AC8BC4; --moss:#5AA981; --idle:#66727E; --hot:#DD6672;
+  --shadow:0 1px 0 rgba(0,0,0,.3), 0 10px 30px -20px #000;
+}
+*{box-sizing:border-box}
+body{margin:0; background:var(--ground); color:var(--ink);
+  font-family:"IBM Plex Sans KR",system-ui,sans-serif; font-size:15px; line-height:1.6; -webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:"Gothic A1","IBM Plex Sans KR",sans-serif; text-wrap:balance; margin:0}
+h1{font-weight:900; font-size:clamp(26px,3.4vw,40px); letter-spacing:-.02em; line-height:1.15}
+h2{font-weight:900; font-size:22px; letter-spacing:-.01em}
+h3{font-weight:700; font-size:15px}
+p{margin:0}
+code,.mono,.num{font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums}
+code{font-size:.86em; background:var(--panel-2); padding:.1em .35em; border-radius:3px; color:var(--ink-2)}
+.wrap{max-width:1180px; margin:0 auto; padding:0 20px}
+.eyebrow{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3)}
+.lede{color:var(--ink-2); max-width:68ch}
+abbr[title]{text-decoration:underline dotted var(--ink-3); text-underline-offset:3px; cursor:help}
+
+.console{position:sticky; top:0; z-index:50; background:var(--panel); border-bottom:1px solid var(--line); box-shadow:var(--shadow)}
+.console .wrap{display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding-top:10px; padding-bottom:10px}
+.brand{display:flex; flex-direction:column; line-height:1.15; margin-right:auto}
+.brand b{font-family:"Gothic A1",sans-serif; font-weight:900; font-size:17px; letter-spacing:-.01em}
+.brand span{font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--ink-3); letter-spacing:.08em}
+.ctrls{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+button{font-family:inherit; font-size:13px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line);
+  border-radius:4px; padding:6px 12px; cursor:pointer; transition:background .12s, border-color .12s}
+button:hover{background:var(--sunken); border-color:var(--ink-3)}
+button:focus-visible{outline:2px solid var(--copper); outline-offset:2px}
+button[aria-pressed="true"]{background:var(--ink); color:var(--panel); border-color:var(--ink)}
+button.primary{background:var(--copper); border-color:var(--copper); color:#fff; font-weight:600; min-width:82px}
+button.primary:hover{filter:brightness(1.08); background:var(--copper)}
+.seg{display:flex; border:1px solid var(--line); border-radius:4px; overflow:hidden}
+.seg button{border:0; border-radius:0; border-left:1px solid var(--line); padding:6px 10px}
+.seg button:first-child{border-left:0}
+.readout{display:flex; gap:18px; align-items:baseline}
+.readout .r{display:flex; flex-direction:column; align-items:flex-end}
+.readout .v{font-family:"IBM Plex Mono",monospace; font-size:19px; font-weight:500; line-height:1.1; font-variant-numeric:tabular-nums}
+.readout .k{font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); font-family:"IBM Plex Mono",monospace}
+
+section{padding:44px 0 8px}
+.panel{background:var(--panel); border:1px solid var(--line-2); border-radius:6px; padding:18px; box-shadow:var(--shadow)}
+.grid{display:grid; gap:16px}
+.two{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.wide{grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr)}
+.side{grid-template-columns:minmax(0,1fr) minmax(0,340px)}
+@media(max-width:900px){.two,.wide,.side{grid-template-columns:1fr}}
+.head{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:8px}
+.head .eyebrow{margin-left:auto}
+.note{font-size:13px; color:var(--ink-2)}
+.hr{height:1px; background:var(--line-2); margin:14px 0}
+.stack{display:flex; flex-direction:column; gap:16px}
+
+/* lanes */
+.lane{border:1px solid var(--line-2); border-radius:6px; background:var(--panel); padding:16px; box-shadow:var(--shadow)}
+.lane.before{border-top:3px solid var(--hot)}
+.lane.after{border-top:3px solid var(--moss)}
+.lane .tag{display:flex; align-items:baseline; gap:10px; margin-bottom:2px}
+.lane .tag b{font-family:"Gothic A1",sans-serif; font-weight:900; font-size:18px}
+.lane .who{font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--ink-3); letter-spacing:.06em}
+.bigclock{font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; font-size:30px; line-height:1.1; margin-top:6px}
+.bigclock small{font-size:13px; color:var(--ink-3)}
+.prog{height:8px; background:var(--sunken); border-radius:99px; overflow:hidden; margin:10px 0 4px}
+.prog i{display:block; height:100%; width:0; background:var(--steel)}
+.lane.before .prog i{background:var(--hot)}
+.lane.after .prog i{background:var(--moss)}
+.done{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--moss)}
+.oplist{display:flex; flex-direction:column; gap:2px; font-family:"IBM Plex Mono",monospace; font-size:12px; min-height:190px}
+.op{display:flex; gap:8px; align-items:center; padding:3px 8px; border-radius:3px; color:var(--ink-3); border-left:2px solid transparent}
+.op.on{color:var(--ink); background:var(--panel-2); border-left-color:var(--copper)}
+.op.past{color:var(--ink-3); opacity:.55}
+.op .lbl{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.op .ex{font-size:9.5px; letter-spacing:.06em; padding:1px 5px; border-radius:99px; border:1px solid currentColor; flex:none}
+.op .val{color:var(--ink-2); min-width:8ch; text-align:right}
+.estrip{display:grid; grid-template-columns:repeat(16,1fr); gap:2px; height:16px; margin-top:8px}
+.estrip .e{background:var(--sunken); border-radius:1px}
+.estrip .e.done{background:var(--steel)} .estrip .e.cur{background:var(--copper)}
+
+/* log axis */
+.axis{position:relative; height:64px; margin-top:6px}
+.axis .track{position:absolute; left:0; right:0; top:26px; height:3px; background:var(--sunken); border-radius:2px}
+.axis .tick{position:absolute; top:14px; width:1px; height:12px; background:var(--line)}
+.axis .tl{position:absolute; top:0; transform:translateX(-50%); font-family:"IBM Plex Mono",monospace; font-size:10px; color:var(--ink-3); white-space:nowrap}
+.axis .mk{position:absolute; top:19px; width:16px; height:16px; margin-left:-8px; border-radius:99px; border:2px solid var(--panel)}
+.axis .mk.b{background:var(--hot)} .axis .mk.a{background:var(--moss)}
+.axis .ml{position:absolute; top:40px; transform:translateX(-50%); font-family:"IBM Plex Mono",monospace; font-size:10.5px; white-space:nowrap}
+
+.ledger{display:flex; height:26px; border-radius:3px; overflow:hidden; background:var(--sunken)}
+.ledger div{height:100%}
+.legend{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:5px 14px; font-size:12.5px}
+.legend .row{display:flex; align-items:center; gap:7px}
+.legend .sw{width:9px; height:9px; border-radius:2px; flex:none}
+.legend .nm{color:var(--ink-2)} .legend .vl{margin-left:auto; font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums}
+.stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:10px}
+.stat{background:var(--panel-2); border-radius:4px; padding:9px 11px}
+.stat .k{font-size:10px; letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3); font-family:"IBM Plex Mono",monospace}
+.stat .v{font-family:"IBM Plex Mono",monospace; font-size:16px; font-variant-numeric:tabular-nums; margin-top:1px}
+.stat .s{font-size:11px; color:var(--ink-3)}
+table{border-collapse:collapse; width:100%; font-size:12.5px; font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums}
+th,td{text-align:right; padding:4px 8px; border-bottom:1px solid var(--line-2)}
+th{color:var(--ink-3); font-weight:500; font-size:11px; letter-spacing:.06em; text-transform:uppercase}
+th:first-child,td:first-child{text-align:left}
+.scroll{overflow-x:auto}
+.src{font-family:"IBM Plex Mono",monospace; font-size:11.5px; color:var(--ink-2); background:var(--sunken);
+  border-left:2px solid var(--line); padding:9px 11px; white-space:pre; overflow-x:auto; border-radius:0 3px 3px 0}
+.slider{display:flex; align-items:center; gap:10px; font-family:"IBM Plex Mono",monospace; font-size:12px}
+input[type=range]{flex:1; accent-color:var(--copper); background:transparent}
+input[type=range]:focus-visible{outline:2px solid var(--copper); outline-offset:3px}
+.bars{display:flex; gap:3px; align-items:flex-end; height:130px; touch-action:none}
+.bar{flex:1; background:var(--sunken); border-radius:2px 2px 0 0; position:relative; cursor:ns-resize; display:flex; flex-direction:column; justify-content:flex-end}
+.bar:focus-visible{outline:2px solid var(--copper); outline-offset:2px}
+.bar .f{background:var(--idle); border-radius:2px 2px 0 0}
+.bar.a .f{background:var(--copper)} .bar.b .f{background:var(--steel)}
+.bar .n{position:absolute; top:100%; left:0; right:0; text-align:center; font-family:"IBM Plex Mono",monospace; font-size:9.5px; color:var(--ink-3)}
+.rwrap{overflow-x:auto}
+.rgrid{display:grid; gap:2px; font-family:"IBM Plex Mono",monospace; font-size:10px; min-width:430px}
+.rgrid .hc{color:var(--ink-3); text-align:center; font-size:9.5px}
+.rgrid .c{aspect-ratio:1.6; border-radius:2px; background:var(--sunken); display:flex; align-items:center; justify-content:center; color:var(--ink-3)}
+.rgrid .c.p1{background:var(--copper); color:#fff} .rgrid .c.p2{background:var(--steel); color:#fff}
+.rgrid .rl{color:var(--ink-3); font-size:9.5px; display:flex; align-items:center}
+.chips{display:flex; flex-direction:column; gap:3px; font-family:"IBM Plex Mono",monospace; font-size:11px}
+.chip{display:flex; gap:6px; align-items:center}
+.chip .id{color:var(--ink-3); min-width:9ch}
+.chip .rowlist{color:var(--ink-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.chip .n{margin-left:auto; color:var(--ink-3)}
+svg{display:block; width:100%; height:auto; overflow:visible}
+.tileviz{display:grid; grid-template-columns:repeat(14,1fr); gap:2px; max-width:340px}
+.tileviz .t{aspect-ratio:1; border-radius:1px; background:var(--steel)}
+.tileviz .t.pad{background:var(--sunken); outline:1px dashed var(--line)}
+footer{padding:40px 0 60px; color:var(--ink-3); font-size:12.5px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<header class="console">
+  <div class="wrap">
+    <div class="brand"><b>MoE 이송실</b><span>EXP-003 · MICROWORLD · 39ee87c · PhiMoE → DeviceMoE</span></div>
+    <div class="ctrls">
+      <button id="play" class="primary">▶ 동시 실행</button>
+      <button id="step">한 단계</button>
+      <button id="reset">되감기</button>
+      <div class="seg" id="tsel"></div>
+      <div class="seg" id="spd"></div>
+    </div>
+    <div class="readout">
+      <div class="r"><span class="v" id="rgap">—</span><span class="k">배속</span></div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+<section>
+  <h1>같은 산술, 다른 일꾼</h1>
+  <p class="lede" style="margin-top:12px">
+    EXP-002까지 <abbr title="Mixture of Experts. 토큰마다 16명의 전문가 중 2명만 골라서 계산을 맡기는 구조. 전체 가중치는 크지만 토큰 하나가 쓰는 몫은 작다.">MoE</abbr> 블록은
+    호스트 CPU에서 돌았고, 측정된 전체 시간의 <b>98.1%</b>를 먹었다. EXP-003은 그 블록의
+    <b>계산 순서를 하나도 바꾸지 않고</b> 일꾼만 GPU로 바꿨다. 아래 두 기계는 <b>레이어 1개의 MoE</b>를
+    같은 입력·같은 라우팅 결과에 대해 나란히 돌린다. 시계는 두 기계가 공유한다 — 오른쪽이 끝나도 왼쪽은 계속 간다.
+  </p>
+
+  <div class="panel" style="margin-top:18px">
+    <div class="head"><h3>같은 시간 눈금 위의 두 기계</h3><span class="eyebrow" id="axnote">로그 눈금 · 레이어 1개</span></div>
+    <div class="axis" id="axis"></div>
+  </div>
+
+  <div class="grid two" style="margin-top:16px">
+    <div class="lane before" id="laneB">
+      <div class="tag"><b>BEFORE</b><span class="who">layer.cu · PhiMoE::forward · 호스트</span></div>
+      <div class="bigclock"><span id="clkB">0.000</span><small> / <span id="totB">—</span> s</small></div>
+      <div class="prog"><i id="prB"></i></div>
+      <div style="display:flex; justify-content:space-between; align-items:center">
+        <span class="note" id="stB">대기</span><span class="done" id="dnB"></span>
+      </div>
+      <div class="hr"></div>
+      <div class="oplist" id="opB"></div>
+      <div class="estrip" id="esB"></div>
+      <div class="note" style="font-size:11.5px; margin-top:6px">expert 0 → 15. 채워진 칸은 이미 처리한 expert.</div>
+    </div>
+    <div class="lane after" id="laneA">
+      <div class="tag"><b>AFTER</b><span class="who">model.cu · DeviceMoE · 커널</span></div>
+      <div class="bigclock"><span id="clkA">0.000</span><small> / <span id="totA">—</span> s</small></div>
+      <div class="prog"><i id="prA"></i></div>
+      <div style="display:flex; justify-content:space-between; align-items:center">
+        <span class="note" id="stA">대기</span><span class="done" id="dnA"></span>
+      </div>
+      <div class="hr"></div>
+      <div class="oplist" id="opA"></div>
+      <div class="estrip" id="esA"></div>
+      <div class="note" style="font-size:11.5px; margin-top:6px">같은 16명, 같은 순서, 같은 행 집합.</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>바뀐 것은 여섯 칸의 주인뿐</h2><span class="eyebrow">단계 대조표</span></div>
+  <p class="note" style="max-width:68ch; margin-bottom:14px">
+    MoE 블록은 여섯 단계다. EXP-003은 단계를 지우거나 합치지 않았다. 각 단계를 <b>누가 실행하는가</b>만 옮겼다.
+    라우팅 한 단계는 일부러 호스트에 남겼다 — 토큰당 값이 16개뿐이라 옮길 이득이 없고,
+    <code>layer.cu</code>의 양자화·tie 규칙을 <b>글자 그대로</b> 맞춰야 하기 때문이다.
+  </p>
+  <div class="scroll panel"><table id="maptab"></table></div>
+</section>
+
+<section>
+  <div class="head"><h2>시간 장부</h2><span class="eyebrow" id="ledT">—</span></div>
+  <div class="grid two">
+    <div class="stack">
+      <div class="panel">
+        <div class="head"><h3>BEFORE</h3><span class="eyebrow" id="ledBt">—</span></div>
+        <div class="ledger" id="ledB"></div>
+        <div style="height:10px"></div>
+        <div class="legend" id="lgB"></div>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>AFTER</h3><span class="eyebrow" id="ledAt">—</span></div>
+        <div class="ledger" id="ledA"></div>
+        <div style="height:6px"></div>
+        <div class="note" style="font-size:12px">같은 눈금 위에서 AFTER는 <span id="slivpct">—</span> 폭이다. 아래는 AFTER만 다시 100%로 늘린 것.</div>
+        <div style="height:8px"></div>
+        <div class="ledger" id="ledA2"></div>
+        <div style="height:10px"></div>
+        <div class="legend" id="lgA"></div>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="panel">
+        <div class="head"><h3>계량기</h3></div>
+        <div class="stats" id="stats"></div>
+        <div class="hr"></div>
+        <p class="note" id="scaleNote"></p>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>제출 기록에서는 이렇게 나타났다</h3><span class="eyebrow">docs/lab-note.md</span></div>
+        <div class="scroll"><table id="runtab"></table></div>
+        <div class="hr"></div>
+        <div class="head" style="margin-bottom:6px"><h3>병목은 사라지지 않고 옮겨간다</h3></div>
+        <div class="note" style="font-size:12px; margin-bottom:6px">EXP-002 프로파일 (n=8)</div>
+        <div class="ledger" id="pf2"></div>
+        <div class="note" style="font-size:12px; margin:10px 0 6px">EXP-003 프로파일 (n=1024)</div>
+        <div class="ledger" id="pf3"></div>
+        <div style="height:10px"></div>
+        <div class="legend" id="pfleg"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>BEFORE는 왜 그렇게 느렸나</h2><span class="eyebrow">호스트 경로 분해</span></div>
+  <div class="grid two">
+    <div class="panel">
+      <div class="src">// layer.cu PhiMoE::forward — 토큰마다 Tensor 하나
+for (t = 0; t &lt; rows; ++t) {
+  Tensor one({16});                        // 매 토큰 할당
+  for (e) one[e] = router.at(t, e);        // at() 경유
+  route(one, r);
+}
+// expert 하나: 원소 단위 gather → matmul 3회 → 원소 단위 scatter
+for (i) for (j) input.at(i,j) = flat.at(assign[i], j);
+matmul_transposed(input, w1); silu(); matmul_transposed(input, w3); mul();
+matmul_transposed(act, w2);
+for (i) for (j) y.at(a[i],j) += 0.5f * out.at(i,j);</div>
+      <div class="hr"></div>
+      <div id="whybars"></div>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>세 가지 혐의와 실제 지분</h3></div>
+      <div class="scroll"><table id="whytab"></table></div>
+      <p class="note" style="margin-top:12px" id="whynote"></p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>라우터가 행 집합을 만든다</h2><span class="eyebrow">호스트에 남긴 단계</span></div>
+  <p class="note" style="max-width:68ch; margin-bottom:14px">
+    커널을 붙이기 전에 알아야 할 것: expert 하나는 <b>자기에게 배정된 행만</b> 돈다. 그 배정을 만드는 것이 라우터다.
+    아래 12개 토큰의 logit을 흔들어 보면 오른쪽의 <b>gather 목록</b>과 각 expert의 행 수가 같이 바뀐다.
+    행 수가 커널의 일감 크기이고, 그것이 다음 절의 계단으로 이어진다.
+  </p>
+  <div class="grid wide">
+    <div class="panel">
+      <div class="head"><h3>토큰 × expert logit</h3><span class="eyebrow">색 = top-1 / top-2</span></div>
+      <div class="rwrap"><div class="rgrid" id="rgrid"></div></div>
+      <div class="hr"></div>
+      <div class="head" style="margin-bottom:4px"><h3>토큰 <span id="selTok" class="mono">0</span>의 16개 logit</h3><span class="eyebrow">막대를 끌거나 ↑↓</span></div>
+      <div class="bars" id="bars"></div>
+      <div style="height:22px"></div>
+      <div class="ctrls"><button id="reroll">다시 뽑기</button>
+        <span class="note" style="font-size:12px">격자의 행을 누르면 그 토큰이 선택된다</span></div>
+    </div>
+    <div class="stack">
+      <div class="panel">
+        <div class="src">rounded = floor(|score| / 1e-3 + 0.5) * 1e-3   // 양자화
+if (best &lt; 0 || v[e] &gt; best_value + 2e-2) best = e;
+first = select(-1);  second = select(first);
+// 두 expert 모두 가중치 0.5</div>
+        <div style="height:10px"></div>
+        <div id="routeout" class="note"></div>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>expert별 gather 목록</h3><span class="eyebrow" id="rowsum">—</span></div>
+        <div class="chips" id="chips"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>AFTER가 새로 만난 천장: 타일 계단</h2><span class="eyebrow">측정: gemm_nt_bias</span></div>
+  <p class="note" style="max-width:68ch; margin-bottom:14px">
+    <code>gemm_nt_bias</code>는 출력을 <b>32×32 타일</b>로 잘라 블록 하나에 맡긴다. expert가 받은 행이 20개든 1개든
+    타일은 32행짜리라 나머지는 <b>0으로 채워 계산한다</b>. 게다가 RTX 3090에는
+    <abbr title="Streaming Multiprocessor. GPU 안의 독립적인 계산 묶음. 3090은 82개.">SM</abbr>이 82개뿐이라
+    블록 수가 82를 넘기 전까지는 시간이 <b>거의 변하지 않는다</b>. 슬라이더로 확인해 보라.
+  </p>
+  <div class="grid side">
+    <div class="panel">
+      <div id="stair"></div>
+      <div class="slider" style="margin-top:10px">
+        <label for="rows">expert 1명이 받은 행 R</label>
+        <input type="range" id="rows" min="0" max="14" value="0">
+        <span id="rval" style="min-width:6ch; text-align:right"></span>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="panel">
+        <div class="head"><h3>w1 GEMM · R = <span id="r2" class="mono"></span></h3></div>
+        <div class="stats" id="tstats"></div>
+        <div class="hr"></div>
+        <div class="note" style="font-size:12px; margin-bottom:6px">블록 격자 (가로 = 448/32 = 14칸 고정)</div>
+        <div class="tileviz" id="tileviz"></div>
+        <p class="note" style="margin-top:10px; font-size:12px" id="tnote"></p>
+      </div>
+    </div>
+  </div>
+  <div class="panel" style="margin-top:16px">
+    <div class="head"><h3>그래서 AFTER의 총시간은 토큰이 4배가 되어도 거의 안 움직인다</h3><span class="eyebrow">측정 · 레이어 1개</span></div>
+    <div class="scroll"><table id="flattab"></table></div>
+    <p class="note" style="margin-top:12px" id="flatnote"></p>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>이 모형이 서 있는 자리</h2><span class="eyebrow">측정 · 추정 · 합성</span></div>
+  <div class="grid two">
+    <div class="panel">
+      <div class="head"><h3>기록된 실측과 대조</h3></div>
+      <div class="scroll"><table id="calibtab"></table></div>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>측정한 것 / 지어낸 것</h3></div>
+      <div id="assump" class="note"></div>
+    </div>
+  </div>
+</section>
+
+<footer class="wrap">
+  <div>측정: 2026-08-24, aps 파티션 계산 노드 1개(<code>--exclusive</code>, RTX 3090, OMP 64스레드).
+  벤치 소스 <code>docs/microworld/exp-003-moe-bench.cu</code> — 무수정 <code>obj/tensor.o</code>와
+  39ee87c의 커널 원문에 링크했다. 실제 실행 기록: <code>docs/lab-note.md</code> EXP-002/003.</div>
+</footer>
+</main>
+
+<script>
+"use strict";
+/* ==================================================================
+   측정값. 2026-08-24, aps 계산 노드(--exclusive), RTX 3090, OMP 64.
+   docs/microworld/exp-003-moe-bench.cu 의 출력 원문. 단위 초(s).
+   레이어 1개의 MoE 블록 1회 호출 기준.
+================================================================== */
+const MEAS = {
+  weightsMB: 336.2, launchUs: 2.901,
+  T: [165, 330, 660, 2640, 9900, 19803],
+  rows: {
+    165:  [29,23,27,19,26,32,11,18,9,24,25,15,23,13,17,19],
+    330:  [34,40,39,42,45,44,38,33,44,47,42,42,41,43,41,45],
+    660:  [81,91,74,89,87,65,71,91,84,83,80,96,80,72,81,95],
+    2640: [327,332,344,338,310,336,291,323,329,367,334,313,342,297,365,332],
+    9900: [1197,1240,1284,1271,1247,1228,1218,1132,1304,1205,1252,1290,1207,1286,1273,1166],
+    19803:[2459,2506,2552,2635,2543,2465,2263,2627,2299,2687,2405,2455,2251,2492,2553,2414]
+  },
+  // BEFORE: host PhiMoE::forward. T<=660 만 실측 (그 위는 레이어당 분 단위).
+  host: {
+    165: {total:0.7273, gate:0.0032, route:0.0001, gather:0.0146, w1:0.2400, silu:0.0013, w3:0.2182, mul:0.0086, w2:0.2209, scatter:0.0166},
+    330: {total:1.3842, gate:0.0061, route:0.0001, gather:0.0326, w1:0.3571, silu:0.0680, w3:0.4060, mul:0.0842, w2:0.3901, scatter:0.0337},
+    660: {total:2.3008, gate:0.0088, route:0.0003, gather:0.0514, w1:0.6923, silu:0.0288, w3:0.7085, mul:0.0352, w2:0.7004, scatter:0.0640}
+  },
+  // AFTER: 단계별 분해 (단계마다 sync). 아래 devTotal 은 sync 1회짜리 정직한 총시간.
+  // 벤치가 0.0000 으로 찍은 항목(= 0.05 ms 미만)은 출력 해상도 아래다. 0.00002 로 통일해 넣었다.
+  dev: {
+    165:  {h2d:0.0002,gate:0.0003,rd2h:0.00002,route:0.00002,memset:0.00002,idx:0.0001,gather:0.0002,w1:0.0055,w3:0.0055,silu:0.0001,w2:0.0013,scatter:0.0002,ffd2h:0.0003},
+    330:  {h2d:0.0004,gate:0.0003,rd2h:0.00002,route:0.00002,memset:0.00002,idx:0.0001,gather:0.0002,w1:0.0055,w3:0.0055,silu:0.0001,w2:0.0025,scatter:0.0002,ffd2h:0.0005},
+    660:  {h2d:0.0007,gate:0.0003,rd2h:0.00002,route:0.0001, memset:0.00002,idx:0.0001,gather:0.0002,w1:0.0055,w3:0.0055,silu:0.0001,w2:0.0031,scatter:0.0002,ffd2h:0.0009},
+    2640: {h2d:0.0038,gate:0.0007,rd2h:0.00002,route:0.0003, memset:0.0001, idx:0.0001,gather:0.0003,w1:0.0116,w3:0.0116,silu:0.0001,w2:0.0106,scatter:0.0004,ffd2h:0.0044},
+    9900: {h2d:0.0146,gate:0.0014,rd2h:0.0001, route:0.0010, memset:0.0002, idx:0.0001,gather:0.0009,w1:0.0380,w3:0.0380,silu:0.0002,w2:0.0367,scatter:0.0012,ffd2h:0.0164},
+    19803:{h2d:0.0285,gate:0.0027,rd2h:0.0001, route:0.0021, memset:0.0004, idx:0.0001,gather:0.0017,w1:0.0750,w3:0.0750,silu:0.0003,w2:0.0724,scatter:0.0024,ffd2h:0.0321}
+  },
+  devTotal: {165:0.0134, 330:0.0149, 660:0.0164, 2640:0.0442, 9900:0.1479, 19803:0.2926},
+  // gemm_nt_bias 1회 호출 시간(ms)과 실효 GFLOP/s. R = 행 수.
+  gemm: {
+    R:  [1,2,4,8,16,32,33,48,64,128,256,512,1024,2048,4096],
+    w1: [0.3392,0.3392,0.3392,0.3393,0.3393,0.3400,0.3376,0.3383,0.3389,0.3393,0.6767,1.0145,2.0263,3.7066,7.4103],
+    w1g:[10.8,21.6,43.3,86.5,173.0,345.5,358.7,520.8,693.0,1384.7,1388.4,1852.2,1854.7,2027.8,2028.6],
+    w2: [0.0776,0.0775,0.0777,0.0778,0.0776,0.0779,0.1486,0.1497,0.1507,0.2626,0.4860,0.9312,1.8553,3.7011,7.4033],
+    w2g:[47.3,94.8,188.9,377.5,756.3,1506.8,814.8,1176.5,1559.1,1788.8,1933.3,2017.9,2025.6,2030.8,2030.5]
+  },
+  wrap: { R:[32,256,2048], gather:[0.00421,0.01297,0.08527], silu:[0.00293,0.00298,0.00655], scatter:[0.00433,0.01598,0.12444] }
+};
+/* 제출 기록 (docs/lab-note.md) */
+const RUN = {
+  rows: [
+    ["n=8 · 165토큰", "36.869 s", "1.026 s", "35.9x", "PASSED 9.16e-05"],
+    ["n=1024 · 19,803토큰", "2분 초과", "48.765 s", "—", "PASSED 1.79e-04"],
+    ["대시보드 seq/s", "0.216985", "20.998835", "96.8x", "baseline의 630x"]
+  ],
+  prof2: {moe:28.007, norm:0.140, gemm:0.153, d2h:0.040, h2d:0.016, attn:0.094, resid:0.095, lm:0.005},
+  prof3: {norm:16.144, moe:13.449, gemm:13.164, d2h:7.495, resid:2.689, h2d:2.618, attn:1.305, lm:0.460}
+};
+const CFG = {H:4096, FF:448, NE:16, L:32, TILE:32, SM:82, Q:1e-3, TIE:2e-2};
+const CAT = {
+  gemm:{nm:"행렬곱 (w1·w3·w2·gate)", c:"var(--steel)"},
+  elem:{nm:"silu · mul · silu_mul", c:"var(--moss)"},
+  move:{nm:"행 모으기/되돌리기", c:"var(--plum)"},
+  bus: {nm:"PCIe 왕복 (memcpy)", c:"var(--copper)"},
+  host:{nm:"라우팅 (호스트 잔류)", c:"var(--idle)"}
+};
+
+/* ---------- 보간 ---------- */
+function interp(xs, ys, x){
+  if (x <= xs[0]) return ys[0];
+  if (x >= xs[xs.length-1]) return ys[ys.length-1];
+  for (let i=0;i<xs.length-1;i++) if (x <= xs[i+1])
+    return ys[i] + (ys[i+1]-ys[i])*(x-xs[i])/(xs[i+1]-xs[i]);
+  return ys[ys.length-1];
+}
+const gemmMs = (fam,R) => interp(MEAS.gemm.R, MEAS.gemm[fam], R);
+const wrapMs = (fam,R) => interp(MEAS.wrap.R, MEAS.wrap[fam], R);
+const sum = a => a.reduce((x,y)=>x+y,0);
+const f3 = x => x.toFixed(3);
+const ms = x => x*1000 >= 100 ? (x*1000).toFixed(0)+" ms"
+              : x*1000 >= 1 ? (x*1000).toFixed(2)+" ms" : (x*1e6).toFixed(0)+" µs";
+const secs = x => x >= 1 ? x.toFixed(3)+" s" : ms(x);
+
+/* T>660 의 BEFORE 는 T=660 프로파일을 선형 확대한 추정치 */
+function hostProfile(T){
+  if (MEAS.host[T]) return {p:MEAS.host[T], est:false};
+  const base = MEAS.host[660], k = T/660, p = {};
+  for (const key in base) p[key] = base[key]*k;
+  return {p, est:true};
+}
+
+/* ==================================================================
+   두 기계의 연산 목록. 단계 합계는 실측값을 그대로 쓰고,
+   expert 16명에게는 "형상"(host=행 수, device=측정 계단)으로 나눠 준다.
+================================================================== */
+function buildOps(mode, T){
+  const rows = MEAS.rows[T], ops = [];
+  let t = 0;
+  const push = (cat, ex, lbl, dur, e) => { ops.push({cat,ex,lbl,dur,e:e===undefined?-1:e,start:t,end:t+dur}); t += dur; };
+  const share = (total, shape) => { const s = sum(shape); return shape.map(v => s ? total*v/s : 0); };
+
+  if (mode === "before"){
+    const {p, est} = hostProfile(T);
+    push("gemm","HOST",`matmul_transposed(post, gate) → [${T},16]`, p.gate);
+    push("host","HOST",`Tensor({16}) × ${T} + route()`, p.route);
+    const g = share(p.gather,rows), s1 = share(p.w1,rows), si = share(p.silu,rows),
+          s3 = share(p.w3,rows), mu = share(p.mul,rows), s2 = share(p.w2,rows), sc = share(p.scatter,rows);
+    rows.forEach((R,e)=>{
+      if (!R) return;
+      push("move","HOST",`gather: input.at(i,j) ← flat.at()  · ${R}×4096`, g[e], e);
+      push("gemm","HOST",`matmul_transposed(input, w1[${e}])  M=${R}`, s1[e], e);
+      push("elem","HOST",`silu()`, si[e], e);
+      push("gemm","HOST",`matmul_transposed(input, w3[${e}])  M=${R}`, s3[e], e);
+      push("elem","HOST",`mul()`, mu[e], e);
+      push("gemm","HOST",`matmul_transposed(act, w2[${e}])  M=${R}`, s2[e], e);
+      push("move","HOST",`scatter: y.at() += 0.5f * out.at()  · ${R}×4096`, sc[e], e);
+    });
+    return {ops, total:t, measured:est ? p.total : MEAS.host[T].total, est};
+  }
+
+  const d = MEAS.dev[T];
+  const shpG = rows.map(R=>R?gemmMs("w1",R):0), shpG2 = rows.map(R=>R?gemmMs("w2",R):0);
+  const shpW = rows.map(R=>R?wrapMs("gather",R):0), shpS = rows.map(R=>R?wrapMs("scatter",R):0);
+  push("bus","BUS",`cudaMemcpy H2D post [${T},4096]`, d.h2d);
+  push("gemm","KERNEL",`gemm_nt_bias gate → [${T},16]`, d.gate);
+  push("bus","BUS",`cudaMemcpy D2H router [${T},16]`, d.rd2h);
+  push("host","HOST",`route_row() × ${T}  — 호스트에 남긴 단계`, d.route);
+  push("elem","KERNEL",`cudaMemset d_ff`, d.memset);
+  const gi = share(d.idx,rows), gg = share(d.gather,shpW), w1 = share(d.w1,shpG),
+        w3 = share(d.w3,shpG), sl = share(d.silu,rows), w2 = share(d.w2,shpG2), ss = share(d.scatter,shpS);
+  rows.forEach((R,e)=>{
+    if (!R) return;
+    push("bus","BUS",`cudaMemcpy H2D index[${R}]`, gi[e], e);
+    push("move","KERNEL",`gather_rows ‹‹${R},256››`, gg[e], e);
+    push("gemm","KERNEL",`gemm_nt_bias w1[${e}]  M=${R}`, w1[e], e);
+    push("gemm","KERNEL",`gemm_nt_bias w3[${e}]  M=${R}`, w3[e], e);
+    push("elem","KERNEL",`silu_mul  ${R}×448`, sl[e], e);
+    push("gemm","KERNEL",`gemm_nt_bias w2[${e}]  M=${R}`, w2[e], e);
+    push("move","KERNEL",`scatter_add_rows  += 0.5f`, ss[e], e);
+  });
+  push("bus","BUS",`cudaMemcpy D2H ff [${T},4096]`, d.ffd2h);
+  return {ops, total:t, measured:MEAS.devTotal[T], est:false};
+}
+
+/* ==================================================================
+   상태
+================================================================== */
+let T = 165, speed = 0.02, playing = false, clock = 0, raf = 0, last = 0;
+let B = buildOps("before",T), A = buildOps("after",T);
+const $ = id => document.getElementById(id);
+
+function segButtons(host, items, get, set){
+  host.innerHTML = "";
+  items.forEach(it=>{
+    const b = document.createElement("button");
+    b.textContent = it.label; b.onclick = ()=>{ set(it.value); paint(); };
+    host.appendChild(b); it.el = b;
+  });
+  host._sync = ()=> items.forEach(it => it.el.setAttribute("aria-pressed", String(get()===it.value)));
+  host._sync();
+}
+const tItems = MEAS.T.map(v=>({label:String(v), value:v}));
+const sItems = [{label:"느리게",value:0.005},{label:"보통",value:0.02},{label:"빠르게",value:0.1}];
+segButtons($("tsel"), tItems, ()=>T, v=>{ T=v; B=buildOps("before",T); A=buildOps("after",T); rewind(); });
+segButtons($("spd"), sItems, ()=>speed, v=>{ speed=v; });
+
+function rewind(){ clock = 0; playing = false; $("play").textContent = "▶ 동시 실행"; }
+$("play").onclick = ()=>{
+  const maxT = Math.max(B.total, A.total);
+  if (clock >= maxT) clock = 0;
+  playing = !playing;
+  $("play").textContent = playing ? "⏸ 멈춤" : "▶ 동시 실행";
+  last = performance.now(); if (playing) tick(last);
+};
+$("reset").onclick = ()=>{ rewind(); paint(); };
+$("step").onclick = ()=>{
+  playing = false; $("play").textContent = "▶ 동시 실행";
+  const bounds = [...B.ops.map(o=>o.end), ...A.ops.map(o=>o.end)].sort((a,b)=>a-b);
+  const nxt = bounds.find(v => v > clock + 1e-12);
+  clock = nxt === undefined ? Math.max(B.total,A.total) : nxt;
+  paint();
+};
+function tick(now){
+  if (!playing) return;
+  clock += (now - last)/1000 * speed; last = now;
+  const maxT = Math.max(B.total, A.total);
+  if (clock >= maxT){ clock = maxT; playing = false; $("play").textContent = "▶ 동시 실행"; }
+  paint(); if (playing) raf = requestAnimationFrame(tick);
+}
+
+/* ==================================================================
+   §1 두 기계
+================================================================== */
+function curIdx(run){
+  for (let i=0;i<run.ops.length;i++) if (clock < run.ops[i].end - 1e-15) return i;
+  return run.ops.length;
+}
+function paintLane(run, tag){
+  const i = curIdx(run), done = i >= run.ops.length;
+  const el = clock >= run.total ? run.total : clock;
+  $("clk"+tag).textContent = f3(el);
+  $("tot"+tag).textContent = f3(run.total) + (run.est ? "*" : "");
+  $("pr"+tag).style.width = (100*Math.min(1, el/run.total)).toFixed(2) + "%";
+  $("dn"+tag).textContent = done && clock > 0 ? "완료 · 대기" : "";
+  const cur = done ? null : run.ops[i];
+  $("st"+tag).textContent = clock === 0 ? "대기"
+    : done ? `${run.ops.length}개 연산 종료`
+    : (cur.e >= 0 ? `expert ${cur.e} · ` : "") + `연산 ${i+1}/${run.ops.length}`;
+
+  const box = $("op"+tag), from = Math.max(0, Math.min(i-2, run.ops.length-8));
+  box.innerHTML = "";
+  for (let j=from; j<Math.min(from+8, run.ops.length); j++){
+    const o = run.ops[j], row = document.createElement("div");
+    row.className = "op" + (j===i ? " on" : j<i ? " past" : "");
+    row.innerHTML = `<span class="ex" style="color:${o.ex==="KERNEL"?"var(--moss)":o.ex==="BUS"?"var(--copper)":"var(--hot)"}">${o.ex}</span>`
+      + `<span class="lbl">${o.lbl}</span><span class="val">${ms(o.dur)}</span>`;
+    box.appendChild(row);
+  }
+  const strip = $("es"+tag); strip.innerHTML = "";
+  for (let e=0;e<CFG.NE;e++){
+    const d = document.createElement("div");
+    const isCur = cur && cur.e === e;
+    const seen = run.ops.some(o => o.e === e && o.end <= clock + 1e-15);
+    const allDone = run.ops.filter(o=>o.e===e).every(o => o.end <= clock + 1e-15);
+    d.className = "e" + (isCur ? " cur" : (seen && allDone) ? " done" : "");
+    strip.appendChild(d);
+  }
+}
+function paintAxis(){
+  const lo = 1e-4, hi = 10, pos = v => 100*(Math.log10(Math.max(v,lo))-Math.log10(lo))/(Math.log10(hi)-Math.log10(lo));
+  const ax = $("axis"); ax.innerHTML = '<div class="track"></div>';
+  [[1e-4,"0.1 ms"],[1e-3,"1 ms"],[1e-2,"10 ms"],[1e-1,"0.1 s"],[1,"1 s"],[10,"10 s"]].forEach(([v,l])=>{
+    const t = document.createElement("div"); t.className="tick"; t.style.left = pos(v)+"%"; ax.appendChild(t);
+    const s = document.createElement("div"); s.className="tl"; s.style.left = pos(v)+"%"; s.textContent = l; ax.appendChild(s);
+  });
+  [[B,"b","BEFORE"],[A,"a","AFTER"]].forEach(([run,cls,nm])=>{
+    const v = clock === 0 ? lo : Math.min(clock, run.total);
+    const m = document.createElement("div"); m.className = "mk "+cls; m.style.left = pos(v)+"%"; ax.appendChild(m);
+    const l = document.createElement("div"); l.className = "ml"; l.style.left = pos(v)+"%";
+    l.style.color = cls==="b" ? "var(--hot)" : "var(--moss)";
+    l.textContent = `${nm} ${secs(v)}`; ax.appendChild(l);
+  });
+  $("axnote").textContent = `로그 눈금 · 레이어 1개 · T=${T} 토큰`;
+}
+
+/* ==================================================================
+   §2 단계 대조표
+================================================================== */
+const MAP = [
+  ["1. gate", "라우터 logit [T,16]", "matmul_transposed", "gemm_nt_bias (EXP-002 재사용)", "옮김"],
+  ["2. route", "양자화 + tie-eps top-2", "Tensor({16}) × T → route()", "route_row() × T", "그대로 호스트"],
+  ["3. gather", "expert가 맡은 행만 모음", "input.at(i,j) = flat.at(row,j)", "gather_rows ‹‹rows,256››", "새 커널"],
+  ["4. w1 / w3", "[R,4096] × [448,4096]ᵀ", "matmul_transposed × 2", "gemm_nt_bias × 2 (재사용)", "옮김"],
+  ["5. silu·mul", "silu(w1) * w3", "silu() + mul(), double exp", "silu_mul, expf", "새 커널 (융합)"],
+  ["6. w2 / scatter", "[R,448] × [4096,448]ᵀ 후 0.5씩 누적", "matmul_transposed + at() 누적", "gemm_nt_bias + scatter_add_rows", "새 커널"]
+];
+function paintMap(){
+  const t = $("maptab");
+  t.innerHTML = "<thead><tr><th>단계</th><th>하는 일</th><th>BEFORE (호스트)</th><th>AFTER (device)</th><th>변화</th></tr></thead><tbody>"
+    + MAP.map(r=>`<tr><td>${r[0]}</td><td style="text-align:left">${r[1]}</td>`
+      + `<td style="text-align:left;color:var(--hot)">${r[2]}</td>`
+      + `<td style="text-align:left;color:var(--moss)">${r[3]}</td>`
+      + `<td>${r[4]}</td></tr>`).join("") + "</tbody>";
+}
+
+/* ==================================================================
+   §3 시간 장부
+================================================================== */
+function bucket(run){
+  const b = {}; Object.keys(CAT).forEach(k=>b[k]=0);
+  run.ops.forEach(o => b[o.cat] += o.dur);
+  return b;
+}
+function drawLedger(el, buckets, scaleTotal){
+  el.innerHTML = "";
+  Object.keys(CAT).forEach(k=>{
+    if (buckets[k] <= 0) return;
+    const d = document.createElement("div");
+    d.style.width = (100*buckets[k]/scaleTotal) + "%";
+    d.style.background = CAT[k].c; d.title = `${CAT[k].nm} ${secs(buckets[k])}`;
+    el.appendChild(d);
+  });
+}
+function drawLegend(el, buckets, total){
+  el.innerHTML = Object.keys(CAT).filter(k=>buckets[k]>0).map(k=>
+    `<div class="row"><span class="sw" style="background:${CAT[k].c}"></span>`
+    + `<span class="nm">${CAT[k].nm}</span>`
+    + `<span class="vl">${secs(buckets[k])} · ${(100*buckets[k]/total).toFixed(1)}%</span></div>`).join("");
+}
+function paintLedger(){
+  const bb = bucket(B), ba = bucket(A);
+  $("ledT").textContent = `T=${T} · 레이어 1개`;
+  $("ledBt").textContent = secs(B.total) + (B.est ? " (추정)" : "");
+  $("ledAt").textContent = secs(A.total);
+  drawLedger($("ledB"), bb, B.total);
+  drawLedger($("ledA"), ba, B.total);
+  drawLedger($("ledA2"), ba, A.total);
+  drawLegend($("lgB"), bb, B.total);
+  drawLegend($("lgA"), ba, A.total);
+  $("slivpct").textContent = (100*A.total/B.total).toFixed(2) + "%";
+
+  const gap = B.total/A.total;
+  $("rgap").textContent = gap.toFixed(1) + "x";
+  const busShare = 100*(ba.bus)/A.total;
+  $("stats").innerHTML = [
+    ["배속", gap.toFixed(1)+"x", "레이어 1개 · 같은 T"],
+    ["BEFORE ×32 레이어", secs(B.total*32), B.est ? "추정" : "실측"],
+    ["AFTER ×32 레이어", secs(A.total*32), "실측"],
+    ["AFTER의 버스 지분", busShare.toFixed(0)+"%", "PCIe memcpy"],
+    ["AFTER의 GEMM 지분", (100*ba.gemm/A.total).toFixed(0)+"%", "gemm_nt_bias"],
+    ["expert당 평균 행", (sum(MEAS.rows[T])/16).toFixed(0), "합 = 2T (top-2)"],
+    ["AFTER 단계 합", secs(A.total), `sync 1회 실측 ${secs(A.measured)}`],
+    ["BEFORE 단계 합", secs(B.total), `호출 1회 실측 ${secs(B.measured)}`]
+  ].map(([k,v,s])=>`<div class="stat"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`).join("");
+
+  $("scaleNote").innerHTML = B.est
+    ? `T=${T}의 BEFORE는 <b>추정</b>이다. 호스트 경로는 T=660에서 이미 레이어당 2.3초라,`
+      + ` 32 레이어 × 19,803 토큰이면 <b>37분</b>이다 — 측정하지 않고 T=660 프로파일을 선형 확대했다.`
+      + ` AFTER는 전부 실측이다.`
+    : `둘 다 실측이다. BEFORE는 T≤660까지만 잴 수 있다 — 그 위는 레이어 하나가 분 단위로 넘어간다.`;
+
+  const t = $("runtab");
+  t.innerHTML = "<thead><tr><th></th><th>EXP-002</th><th>EXP-003</th><th>배속</th><th>검증</th></tr></thead><tbody>"
+    + RUN.rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td><b>${r[2]}</b></td><td>${r[3]}</td><td style="font-size:11px">${r[4]}</td></tr>`).join("")
+    + "</tbody>";
+
+  const PC = {moe:"var(--plum)", gemm:"var(--steel)", norm:"var(--hot)", d2h:"var(--copper)",
+              h2d:"var(--copper)", resid:"var(--idle)", attn:"var(--moss)", lm:"var(--line)"};
+  const PN = {moe:"moe", gemm:"gemm", norm:"norm (호스트)", d2h:"d2h", h2d:"h2d", resid:"resid (호스트)", attn:"attn (호스트)", lm:"lm_head"};
+  [["pf2",RUN.prof2],["pf3",RUN.prof3]].forEach(([id,p])=>{
+    const tot = sum(Object.values(p)), el = $(id); el.innerHTML = "";
+    Object.keys(p).forEach(k=>{
+      const d = document.createElement("div");
+      d.style.width = (100*p[k]/tot)+"%"; d.style.background = PC[k];
+      d.title = `${PN[k]} ${p[k].toFixed(3)}s (${(100*p[k]/tot).toFixed(1)}%)`;
+      el.appendChild(d);
+    });
+  });
+  const tot2 = sum(Object.values(RUN.prof2)), tot3 = sum(Object.values(RUN.prof3));
+  $("pfleg").innerHTML =
+    `<div class="row"><span class="sw" style="background:var(--plum)"></span><span class="nm">moe</span>`
+    + `<span class="vl">${(100*RUN.prof2.moe/tot2).toFixed(1)}% → ${(100*RUN.prof3.moe/tot3).toFixed(1)}%</span></div>`
+    + `<div class="row"><span class="sw" style="background:var(--hot)"></span><span class="nm">norm (호스트)</span>`
+    + `<span class="vl">${(100*RUN.prof2.norm/tot2).toFixed(1)}% → ${(100*RUN.prof3.norm/tot3).toFixed(1)}%</span></div>`
+    + `<div class="row"><span class="sw" style="background:var(--copper)"></span><span class="nm">PCIe h2d+d2h</span>`
+    + `<span class="vl">${(100*(RUN.prof2.h2d+RUN.prof2.d2h)/tot2).toFixed(1)}% → ${(100*(RUN.prof3.h2d+RUN.prof3.d2h)/tot3).toFixed(1)}%</span></div>`;
+}
+
+/* ==================================================================
+   §4 BEFORE의 분해
+================================================================== */
+function paintWhy(){
+  const Th = 660, p = MEAS.host[Th];
+  const mmT = p.w1+p.w3+p.w2, elT = p.silu+p.mul, mvT = p.gather+p.scatter;
+  const macs = sum(MEAS.rows[Th]) * (2*CFG.H*CFG.FF + CFG.FF*CFG.H);
+  const elems = sum(MEAS.rows[Th]) * CFG.H;
+  const items = [
+    ["matmul_transposed × 3", mmT, `${(macs/mmT/1e9).toFixed(2)} GMAC/s`, "var(--steel)"],
+    ["at() 원소 단위 gather/scatter", mvT, `${(mvT/(2*elems)*1e9).toFixed(1)} ns/원소`, "var(--plum)"],
+    ["silu + mul", elT, "-", "var(--moss)"],
+    ["gate matmul", p.gate, "-", "var(--steel)"],
+    ["토큰당 Tensor({16}) + route", p.route, `${(p.route/Th*1e9).toFixed(0)} ns/토큰`, "var(--idle)"]
+  ];
+  $("whybars").innerHTML = items.map(([nm,v,extra,c])=>
+    `<div style="margin-bottom:8px"><div style="display:flex;font-size:12px"><span>${nm}</span>`
+    + `<span class="mono" style="margin-left:auto">${(100*v/p.total).toFixed(1)}%</span></div>`
+    + `<div style="height:10px;background:var(--sunken);border-radius:2px;overflow:hidden">`
+    + `<div style="height:100%;width:${(100*v/p.total).toFixed(2)}%;background:${c}"></div></div></div>`).join("");
+
+  const dR = sum(MEAS.rows[Th])/16;
+  $("whytab").innerHTML = "<thead><tr><th>혐의</th><th>T=660 지분</th><th>실효</th></tr></thead><tbody>"
+    + items.map(([nm,v,extra])=>`<tr><td>${nm}</td><td>${(100*v/p.total).toFixed(1)}%</td><td>${extra}</td></tr>`).join("")
+    + "</tbody>";
+  $("whynote").innerHTML =
+    `유죄는 행렬곱이다. <code>at()</code>의 원소 단위 복사는 눈에 거슬리지만 ${(100*mvT/p.total).toFixed(1)}%뿐이고,`
+    + ` 토큰마다 <code>Tensor({16})</code>을 새로 만드는 것은 ${(100*p.route/p.total).toFixed(2)}%로 사실상 0이다.`
+    + ` <code>matmul_transposed</code>가 <b>${(macs/mmT/1e9).toFixed(2)} GMAC/s</b>에 묶여 있고 그것이 ${(100*mmT/p.total).toFixed(1)}%다.`
+    + ` 같은 행렬곱을 device에서 하면 expert 하나당 ${gemmMs("w1",dR).toFixed(3)} ms다 (R=${dR.toFixed(0)}).`
+    + ` <b>그래서 EXP-003은 행렬곱을 옮기는 실험이고, 커널 3개는 그것을 옮기기 위한 부속이다.</b>`;
+}
+
+/* ==================================================================
+   §5 라우터 실험실
+================================================================== */
+const NTOK = 12;
+let seed = 7, sel = 0, logits = [];
+function h32(a,b,c){
+  let x = (Math.imul(a,73856093)^Math.imul(b,19349663)^Math.imul(c,83492791))>>>0;
+  x = Math.imul(x^(x>>>16),2246822507); x = Math.imul(x^(x>>>13),3266489909);
+  return (x^(x>>>16))>>>0;
+}
+function reroll(){
+  logits = [];
+  for (let t=0;t<NTOK;t++){
+    const r = [];
+    for (let e=0;e<CFG.NE;e++){
+      const a = h32(seed,t,e)/4294967296, b = h32(seed+7919,t,e)/4294967296, c = h32(seed,t+104729,e)/4294967296;
+      r.push((a+b+c-1.5)*0.9);
+    }
+    logits.push(r);
+  }
+}
+function route(v){
+  const q = v.map(x => { const r = Math.floor(Math.abs(x)/CFG.Q + 0.5)*CFG.Q; return x<0 ? -r : r; });
+  const select = excl => { let best=-1, bv=-Infinity;
+    for (let e=0;e<q.length;e++){ if (e===excl) continue;
+      if (best<0 || q[e] > bv + CFG.TIE){ best=e; bv=q[e]; } } return best; };
+  const a = select(-1), b = select(a);
+  return {q, a, b};
+}
+function paintRouter(){
+  const routes = logits.map(route);
+  const g = $("rgrid");
+  g.style.gridTemplateColumns = `28px repeat(${CFG.NE},1fr)`;
+  let html = '<div class="hc"></div>' + Array.from({length:CFG.NE},(_,e)=>`<div class="hc">${e}</div>`).join("");
+  routes.forEach((r,t)=>{
+    html += `<div class="rl" data-tok="${t}" style="cursor:pointer">t${t}</div>`;
+    for (let e=0;e<CFG.NE;e++){
+      const cls = r.a===e ? "p1" : r.b===e ? "p2" : "";
+      html += `<div class="c ${cls}" data-tok="${t}" title="t${t} e${e}  logit ${logits[t][e].toFixed(4)}  → ${r.q[e].toFixed(3)}">`
+        + `${r.a===e?"1":r.b===e?"2":""}</div>`;
+    }
+  });
+  g.innerHTML = html;
+  g.querySelectorAll("[data-tok]").forEach(el => el.onclick = ()=>{ sel = +el.dataset.tok; paintRouter(); });
+
+  const r = routes[sel], mx = Math.max(...logits[sel].map(Math.abs), 0.2);
+  $("selTok").textContent = sel;
+  $("bars").innerHTML = logits[sel].map((v,e)=>{
+    const cls = r.a===e ? "a" : r.b===e ? "b" : "";
+    return `<div class="bar ${cls}" tabindex="0" data-e="${e}" title="logit ${v.toFixed(4)}">`
+      + `<div class="f" style="height:${(50+50*v/mx).toFixed(1)}%"></div><span class="n">${e}</span></div>`;
+  }).join("");
+  const bars = $("bars");
+  const setFromY = (e, clientY)=>{
+    const b = bars.children[e], rect = bars.getBoundingClientRect();
+    const frac = 1 - (clientY - rect.top)/rect.height;
+    logits[sel][e] = (frac*2 - 1)*mx; paintRouter();
+  };
+  Array.from(bars.children).forEach((b,e)=>{
+    b.onpointerdown = ev => { b.setPointerCapture(ev.pointerId); setFromY(e, ev.clientY); };
+    b.onpointermove = ev => { if (b.hasPointerCapture(ev.pointerId)) setFromY(e, ev.clientY); };
+    b.onkeydown = ev => {
+      if (ev.key==="ArrowUp"||ev.key==="ArrowDown"){ ev.preventDefault();
+        logits[sel][e] += (ev.key==="ArrowUp"?1:-1)*0.02; paintRouter(); bars.children[e].focus(); }
+    };
+  });
+
+  const gap = r.q[r.a] - r.q[r.b];
+  $("routeout").innerHTML =
+    `토큰 t${sel} → <b style="color:var(--copper)">expert ${r.a}</b> + <b style="color:var(--steel)">expert ${r.b}</b>, 각각 0.5<br>`
+    + `<span class="mono" style="font-size:11.5px">top1 ${r.q[r.a].toFixed(3)} · top2 ${r.q[r.b].toFixed(3)} · 간격 ${gap.toFixed(3)}`
+    + `${gap < CFG.TIE ? " ← tie-eps 2e-2 안" : ""}</span><br>`
+    + `<span style="font-size:12px">이 <b>집합</b>이 바뀌면 그 토큰의 출력이 O(0.1)만큼 달라진다. 순서만 바뀌면 무해하다 — 가중치가 둘 다 0.5니까.</span>`;
+
+  const cnt = new Array(CFG.NE).fill(0), lists = Array.from({length:CFG.NE},()=>[]);
+  routes.forEach((r,t)=>{ cnt[r.a]++; cnt[r.b]++; lists[r.a].push(t); lists[r.b].push(t); });
+  const mxc = Math.max(...cnt, 1);
+  $("chips").innerHTML = lists.map((L,e)=>
+    `<div class="chip"><span class="id">expert ${String(e).padStart(2)}</span>`
+    + `<span style="flex:1;height:8px;background:var(--sunken);border-radius:2px;overflow:hidden">`
+    + `<span style="display:block;height:100%;width:${(100*cnt[e]/mxc).toFixed(0)}%;background:${cnt[e]?"var(--steel)":"var(--sunken)"}"></span></span>`
+    + `<span class="rowlist" style="flex:1.3">${L.length?L.map(t=>"t"+t).join(" "):"— launch 없음"}</span>`
+    + `<span class="n">R=${cnt[e]}</span></div>`).join("");
+  $("rowsum").textContent = `행 합 ${sum(cnt)} = 2 × ${NTOK}`;
+}
+$("reroll").onclick = ()=>{ seed = (seed*1103515245 + 12345)>>>0; reroll(); paintRouter(); };
+
+/* ==================================================================
+   §6 타일 계단
+================================================================== */
+function paintStair(){
+  const R = MEAS.gemm.R, w1 = MEAS.gemm.w1, g1 = MEAS.gemm.w1g;
+  const W = 640, H = 200, pad = {l:44,r:12,t:10,b:26};
+  const x = i => pad.l + i*(W-pad.l-pad.r)/(R.length-1);
+  const maxG = 2100, yg = v => pad.t + (1 - v/maxG)*(H-pad.t-pad.b);
+  const maxM = 7.5,  ym = v => pad.t + (1 - v/maxM)*(H-pad.t-pad.b);
+  const idx = +$("rows").value;
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="행 수에 따른 GEMM 시간과 실효 성능">`;
+  [0,500,1000,1500,2000].forEach(v=>{
+    s += `<line x1="${pad.l}" y1="${yg(v)}" x2="${W-pad.r}" y2="${yg(v)}" stroke="var(--line-2)"/>`
+      + `<text x="${pad.l-6}" y="${yg(v)+3.5}" text-anchor="end" font-size="9" fill="var(--ink-3)" font-family="monospace">${v}</text>`;
+  });
+  s += `<polyline fill="none" stroke="var(--steel)" stroke-width="2" points="${g1.map((v,i)=>`${x(i)},${yg(v)}`).join(" ")}"/>`;
+  s += `<polyline fill="none" stroke="var(--copper)" stroke-width="2" stroke-dasharray="4 3" points="${w1.map((v,i)=>`${x(i)},${ym(v)}`).join(" ")}"/>`;
+  R.forEach((v,i)=>{
+    s += `<circle cx="${x(i)}" cy="${yg(g1[i])}" r="${i===idx?4.5:2.5}" fill="var(--steel)"/>`
+      + `<circle cx="${x(i)}" cy="${ym(w1[i])}" r="${i===idx?4.5:2.5}" fill="var(--copper)"/>`
+      + `<text x="${x(i)}" y="${H-8}" text-anchor="middle" font-size="8.5" fill="var(--ink-3)" font-family="monospace">${v}</text>`;
+  });
+  s += `<line x1="${x(idx)}" y1="${pad.t}" x2="${x(idx)}" y2="${H-pad.b}" stroke="var(--ink-3)" stroke-dasharray="2 3"/>`;
+  s += `<text x="${pad.l}" y="${pad.t+2}" font-size="10" fill="var(--steel)" font-family="monospace">— GFLOP/s</text>`;
+  s += `<text x="${pad.l+90}" y="${pad.t+2}" font-size="10" fill="var(--copper)" font-family="monospace">-- ms</text>`;
+  s += `</svg>`;
+  $("stair").innerHTML = s;
+
+  const Rv = R[idx];
+  $("rval").textContent = Rv; $("r2").textContent = Rv;
+  const tiles = Math.ceil(Rv/CFG.TILE), blocks = 14*tiles, waves = Math.ceil(blocks/CFG.SM);
+  const padRows = tiles*CFG.TILE - Rv;
+  $("tstats").innerHTML = [
+    ["호출 시간", w1[idx].toFixed(4)+" ms", "측정"],
+    ["실효 성능", g1[idx].toFixed(0)+" GFLOP/s", "피크 35,600의 " + (100*g1[idx]/35600).toFixed(1) + "%"],
+    ["블록 수", String(blocks), `14 × ⌈${Rv}/32⌉`],
+    ["SM 웨이브", String(waves), "SM 82개"],
+    ["낭비하는 행", String(padRows), padRows ? `${(100*padRows/(tiles*CFG.TILE)).toFixed(0)}%가 0 패딩` : "패딩 없음"],
+    ["expert 16명 합", (16*w1[idx]).toFixed(2)+" ms", "w1만"]
+  ].map(([k,v,sb])=>`<div class="stat"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${sb}</div></div>`).join("");
+
+  const tv = $("tileviz"); tv.innerHTML = "";
+  const showRows = Math.min(tiles, 10);
+  for (let r=0;r<showRows;r++) for (let c=0;c<14;c++){
+    const d = document.createElement("div");
+    const rowsHere = Math.min(CFG.TILE, Rv - r*CFG.TILE);
+    d.className = "t" + (rowsHere < CFG.TILE ? " pad" : "");
+    d.title = `블록 (${r},${c}) · 실제 행 ${Math.max(0,rowsHere)}/32`;
+    tv.appendChild(d);
+  }
+  $("tnote").innerHTML = blocks <= CFG.SM
+    ? `블록 ${blocks}개는 SM 82개에 <b>한 번에 다 올라간다</b>. 그래서 R을 1에서 ${Rv}로 늘려도 시간이 그대로다 —`
+      + ` GPU는 같은 시간에 32배 많은 행을 처리하고 있을 뿐이다. 이것이 AFTER가 작은 T에서 <b>토큰 수와 무관한 고정 비용</b>을 갖는 이유다.`
+    : `블록 ${blocks}개는 SM 82개를 ${waves}번 채운다. 여기서부터 시간이 R에 비례하고 성능이 ${g1[idx].toFixed(0)} GFLOP/s로 포화한다.`;
+}
+$("rows").oninput = paintStair;
+
+function paintFlat(){
+  const t = $("flattab");
+  const rowsFor = T2 => (sum(MEAS.rows[T2])/16);
+  t.innerHTML = "<thead><tr><th>T</th><th>expert당 행</th><th>w1 블록</th><th>AFTER 총시간</th><th>토큰당</th>"
+    + "<th>BEFORE 총시간</th><th>배속</th></tr></thead><tbody>"
+    + MEAS.T.map(T2=>{
+      const R2 = rowsFor(T2), blocks = 14*Math.ceil(R2/CFG.TILE);
+      const hp = hostProfile(T2);
+      const bt = hp.est ? hp.p.total : MEAS.host[T2].total;
+      return `<tr${T2===T?' style="background:var(--panel-2)"':''}><td>${T2}</td><td>${R2.toFixed(0)}</td>`
+        + `<td>${blocks}${blocks<=CFG.SM?" ≤ 82":""}</td><td><b>${secs(MEAS.devTotal[T2])}</b></td>`
+        + `<td>${(MEAS.devTotal[T2]/T2*1e6).toFixed(1)} µs</td>`
+        + `<td>${secs(bt)}${hp.est?"*":""}</td><td>${(bt/MEAS.devTotal[T2]).toFixed(0)}x</td></tr>`;
+    }).join("") + "</tbody>";
+  const r165 = MEAS.devTotal[165], r660 = MEAS.devTotal[660];
+  $("flatnote").innerHTML =
+    `T가 165 → 660으로 <b>4배</b>가 되어도 AFTER는 ${ms(r165)} → ${ms(r660)}로 <b>${(r660/r165).toFixed(2)}배</b>밖에 안 늘어난다.`
+    + ` 그 구간에서 expert당 행이 20 → 83이고 w1 블록은 ${14*Math.ceil(20/32)} → ${14*Math.ceil(83/32)}개 — 여전히 82 미만이다.`
+    + ` 남은 증가분은 거의 전부 PCIe(<code>h2d</code>+<code>ffd2h</code>)다.`
+    + ` 반대로 T=19803에서는 블록이 ${14*Math.ceil(sum(MEAS.rows[19803])/16/32)}개로 SM을 ${Math.ceil(14*Math.ceil(sum(MEAS.rows[19803])/16/32)/82)}번 채우고,`
+    + ` 실효 성능이 2,030 GFLOP/s(피크의 5.7%)로 포화한다. * = 추정.`;
+}
+
+/* ==================================================================
+   §7 자리
+================================================================== */
+function paintCalib(){
+  const modelBefore = MEAS.host[165].total*32, modelAfter = MEAS.devTotal[19803]*32;
+  $("calibtab").innerHTML = "<thead><tr><th>항목</th><th>이 모형</th><th>lab-note 실측</th><th>차이</th></tr></thead><tbody>"
+    + [
+      ["BEFORE 32레이어 (T=165)", secs(modelBefore), "28.007 s (EXP-002 t_moe)", (100*(modelBefore/28.007-1)).toFixed(0)+"%"],
+      ["AFTER 32레이어 (T=19803)", secs(modelAfter), "13.449 s (EXP-003 t_moe)", (100*(modelAfter/13.449-1)).toFixed(0)+"%"],
+      ["expert GEMM 실효", "2,030 GFLOP/s", "1,870 GFLOP/s (EXP-004 계산)", "+9%"]
+    ].map(r=>`<tr><td style="text-align:left">${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join("")
+    + "</tbody>";
+  $("assump").innerHTML = `
+    <p><b>측정한 것</b> — 두 경로의 모든 시간. BEFORE는 무수정 <code>obj/tensor.o</code>에 링크해
+    <code>PhiMoE::forward</code>의 루프를 그대로 돌렸고, AFTER는 39ee87c의 커널 4개
+    (<code>gemm_nt_bias</code>, <code>gather_rows</code>, <code>silu_mul</code>,
+    <code>scatter_add_rows</code>) 원문을 복사해 돌렸다. 타일 계단과 wrapper 커널 비용도 실측이다.</p>
+    <p style="margin-top:10px"><b>추정한 것</b> — T&gt;660의 BEFORE. 호스트 경로는 T=660에서 이미 레이어당 2.3초라
+    T=19803은 레이어당 69초, 32레이어에 37분이다. T=660 프로파일을 선형 확대했고 표에 <code>*</code>로 표시했다.
+    실제로는 스레드가 더 포화되므로 이 추정은 <b>보수적</b>이다(토큰당 비용이 4.41 → 4.19 → 3.49 ms로 아직 떨어지는 중이었다).</p>
+    <p style="margin-top:10px"><b>지어낸 것</b> — 가중치가 난수다(<code>model.bin</code> 15GB를 읽지 않는다).
+    shape·연산량·메모리 접근 패턴은 실제와 같지만 <b>라우팅 분포는 실제가 아니다</b>. 위 라우터 실험실의 logit도 합성이다 —
+    양자화와 tie-eps 규칙만 <code>layer.cu</code> 원문이다. 실제 분포가 더 치우쳐 있다면 작은 T에서의 고정 비용은 더 커진다.</p>
+    <p style="margin-top:10px"><b>lab-note 와 숫자가 다른 지점</b> — 여기서 호스트 <code>matmul_transposed</code>는
+    3.46 GMAC/s로 나온다. EXP-001에 기록된 1.2 GMAC/s는 <b>로그인 노드·32스레드</b> 측정이고 이것은
+    <b>계산 노드·64스레드</b>다. 어느 쪽이든 RTX 3090의 2,030 GFLOP/s(= 1,015 GMAC/s)와는 300배 차이다.</p>
+    <p style="margin-top:10px"><b>실측과 어긋나는 지점</b> — 모형의 BEFORE 32레이어가 실측 <code>t_moe</code>보다 17% 낮다.
+    난수 가중치·64스레드 차이 외에, 실측 <code>t_moe</code>에는 레이어마다
+    <code>Tensor ff({T,4096})</code> 324MB 재할당과 프로파일용 sync가 들어 있다. AFTER가 30% 낮은 것도 같은 이유다.</p>`;
+}
+
+/* ================== paint ================== */
+function paint(){
+  $("tsel")._sync(); $("spd")._sync();
+  paintLane(B,"B"); paintLane(A,"A"); paintAxis(); paintLedger(); paintFlat();
+}
+reroll(); paintMap(); paintWhy(); paintRouter(); paintStair(); paintFlat(); paintCalib(); paint();
+</script>

@@ -1,0 +1,896 @@
+<title>레지스터 작업대</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gothic+A1:wght@500;700;900&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#E7EBEF; --panel:#F9FAFB; --panel-2:#EFF3F6; --sunken:#E1E7EC;
+  --ink:#121920; --ink-2:#4A5765; --ink-3:#7A8794;
+  --line:#C7D0D8; --line-2:#DDE3E9;
+  --copper:#AE501D; --steel:#1E6383; --plum:#6A4A7B; --moss:#2C6B52; --idle:#9BA7B3; --hot:#93202C;
+  --copper-w:#F2E2D6; --steel-w:#D8E7EE; --moss-w:#D7E9E0; --hot-w:#F3DADD; --plum-w:#E7DEEE;
+  --shadow:0 1px 0 rgba(18,25,32,.04), 0 8px 24px -18px rgba(18,25,32,.5);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0C1116; --panel:#141B21; --panel-2:#1A232A; --sunken:#0F161B;
+    --ink:#E2E8EE; --ink-2:#9BA8B4; --ink-3:#6F7C88;
+    --line:#26313A; --line-2:#1D262E;
+    --copper:#E08A4B; --steel:#5CA6C4; --plum:#AC8BC4; --moss:#5AA981; --idle:#66727E; --hot:#DD6672;
+    --copper-w:#38251A; --steel-w:#152C38; --moss-w:#163024; --hot-w:#341A1E; --plum-w:#271E31;
+    --shadow:0 1px 0 rgba(0,0,0,.3), 0 10px 30px -20px #000;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0C1116; --panel:#141B21; --panel-2:#1A232A; --sunken:#0F161B;
+  --ink:#E2E8EE; --ink-2:#9BA8B4; --ink-3:#6F7C88;
+  --line:#26313A; --line-2:#1D262E;
+  --copper:#E08A4B; --steel:#5CA6C4; --plum:#AC8BC4; --moss:#5AA981; --idle:#66727E; --hot:#DD6672;
+  --copper-w:#38251A; --steel-w:#152C38; --moss-w:#163024; --hot-w:#341A1E; --plum-w:#271E31;
+  --shadow:0 1px 0 rgba(0,0,0,.3), 0 10px 30px -20px #000;
+}
+*{box-sizing:border-box}
+body{margin:0; background:var(--ground); color:var(--ink);
+  font-family:"IBM Plex Sans KR",system-ui,sans-serif; font-size:15px; line-height:1.6; -webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:"Gothic A1","IBM Plex Sans KR",sans-serif; text-wrap:balance; margin:0}
+h1{font-weight:900; font-size:clamp(26px,3.4vw,40px); letter-spacing:-.02em; line-height:1.15}
+h2{font-weight:900; font-size:22px; letter-spacing:-.01em}
+h3{font-weight:700; font-size:15px}
+p{margin:0}
+code,.mono,.num{font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums}
+code{font-size:.86em; background:var(--panel-2); padding:.1em .35em; border-radius:3px; color:var(--ink-2)}
+.wrap{max-width:1180px; margin:0 auto; padding:0 20px}
+.eyebrow{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3)}
+.lede{color:var(--ink-2); max-width:68ch}
+abbr[title]{text-decoration:underline dotted var(--ink-3); text-underline-offset:3px; cursor:help}
+
+.console{position:sticky; top:0; z-index:50; background:var(--panel); border-bottom:1px solid var(--line); box-shadow:var(--shadow)}
+.console .wrap{display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding-top:10px; padding-bottom:10px}
+.brand{display:flex; flex-direction:column; line-height:1.15; margin-right:auto}
+.brand b{font-family:"Gothic A1",sans-serif; font-weight:900; font-size:17px; letter-spacing:-.01em}
+.brand span{font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--ink-3); letter-spacing:.08em}
+.ctrls{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+button{font-family:inherit; font-size:13px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line);
+  border-radius:4px; padding:6px 12px; cursor:pointer; transition:background .12s, border-color .12s}
+button:hover{background:var(--sunken); border-color:var(--ink-3)}
+button:focus-visible{outline:2px solid var(--copper); outline-offset:2px}
+button[aria-pressed="true"]{background:var(--ink); color:var(--panel); border-color:var(--ink)}
+button.primary{background:var(--copper); border-color:var(--copper); color:#fff; font-weight:600; min-width:96px}
+button.primary:hover{filter:brightness(1.08); background:var(--copper)}
+.seg{display:flex; border:1px solid var(--line); border-radius:4px; overflow:hidden}
+.seg button{border:0; border-radius:0; border-left:1px solid var(--line); padding:6px 10px}
+.seg button:first-child{border-left:0}
+.readout{display:flex; gap:18px; align-items:baseline}
+.readout .r{display:flex; flex-direction:column; align-items:flex-end}
+.readout .v{font-family:"IBM Plex Mono",monospace; font-size:19px; font-weight:500; line-height:1.1; font-variant-numeric:tabular-nums}
+.readout .k{font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); font-family:"IBM Plex Mono",monospace}
+
+section{padding:44px 0 8px}
+.panel{background:var(--panel); border:1px solid var(--line-2); border-radius:6px; padding:18px; box-shadow:var(--shadow)}
+.grid{display:grid; gap:16px}
+.two{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.side{grid-template-columns:minmax(0,1fr) minmax(0,330px)}
+@media(max-width:980px){.two,.side{grid-template-columns:1fr}}
+.head{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:8px}
+.head .eyebrow{margin-left:auto}
+.note{font-size:13px; color:var(--ink-2)}
+.hr{height:1px; background:var(--line-2); margin:14px 0}
+.stack{display:flex; flex-direction:column; gap:16px}
+.scroll{overflow-x:auto}
+
+/* machines */
+.lane{border:1px solid var(--line-2); border-radius:6px; background:var(--panel); padding:16px; box-shadow:var(--shadow);
+  display:flex; flex-direction:column; gap:12px}
+.lane.before{border-top:3px solid var(--hot)}
+.lane.after{border-top:3px solid var(--moss)}
+.lane .tag{display:flex; align-items:baseline; gap:10px}
+.lane .tag b{font-family:"Gothic A1",sans-serif; font-weight:900; font-size:18px}
+.lane .who{font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--ink-3); letter-spacing:.05em}
+.lane .sub{font-size:12.5px; color:var(--ink-2)}
+
+/* outer product bench */
+.bench{display:grid; grid-template-columns:auto auto; grid-template-rows:auto auto; gap:8px; justify-content:center;
+  padding:14px 8px; background:var(--sunken); border-radius:5px}
+.bench .corner{display:flex; flex-direction:column; align-items:flex-end; justify-content:flex-end; gap:2px;
+  font-family:"IBM Plex Mono",monospace; font-size:9.5px; color:var(--ink-3); letter-spacing:.06em; text-align:right}
+.vec{display:grid; gap:4px}
+.vec.col{grid-auto-flow:row}
+.vec.row{grid-auto-flow:column}
+.cell{width:52px; height:34px; border-radius:3px; display:flex; align-items:center; justify-content:center;
+  font-family:"IBM Plex Mono",monospace; font-size:12px; font-variant-numeric:tabular-nums;
+  border:1px solid var(--line); background:var(--panel)}
+.cell.a{background:var(--copper-w); border-color:var(--copper); color:var(--copper); font-weight:600}
+.cell.b{background:var(--plum-w); border-color:var(--plum); color:var(--plum); font-weight:600}
+.accgrid{display:grid; gap:4px}
+.acc{width:52px; height:34px; border-radius:3px; display:flex; align-items:center; justify-content:center;
+  font-family:"IBM Plex Mono",monospace; font-size:11.5px; font-variant-numeric:tabular-nums;
+  border:1px solid var(--steel); background:var(--steel-w); color:var(--steel); font-weight:600;
+  transition:transform .1s}
+.acc.pulse{transform:scale(1.06)}
+.benchcap{display:flex; justify-content:space-between; align-items:center; gap:10px; font-family:"IBM Plex Mono",monospace;
+  font-size:11px; color:var(--ink-3); letter-spacing:.05em}
+.sync{padding:1px 7px; border-radius:99px; border:1px solid var(--line); color:var(--ink-3)}
+.sync.on{border-color:var(--copper); color:var(--copper); background:var(--copper-w)}
+
+.meters{display:grid; grid-template-columns:repeat(3,1fr); gap:8px}
+.meter{background:var(--panel-2); border-radius:4px; padding:8px 10px}
+.meter .k{font-size:9.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3); font-family:"IBM Plex Mono",monospace}
+.meter .v{font-family:"IBM Plex Mono",monospace; font-size:17px; font-variant-numeric:tabular-nums; line-height:1.25}
+.meter .v small{font-size:11px; color:var(--ink-3)}
+.prog{height:7px; background:var(--sunken); border-radius:99px; overflow:hidden}
+.prog i{display:block; height:100%; width:0; background:var(--steel); transition:width .08s linear}
+.lane.before .prog i{background:var(--hot)}
+.lane.after .prog i{background:var(--moss)}
+
+.verdict{display:flex; align-items:center; gap:14px; flex-wrap:wrap; background:var(--panel-2); border-radius:5px; padding:12px 14px}
+.verdict .big{font-family:"IBM Plex Mono",monospace; font-size:26px; font-weight:600; font-variant-numeric:tabular-nums; line-height:1}
+.verdict .cap{font-size:12.5px; color:var(--ink-2); max-width:56ch}
+
+/* tables */
+table{border-collapse:collapse; width:100%; font-size:13px}
+th,td{text-align:left; padding:6px 10px; border-bottom:1px solid var(--line-2); white-space:nowrap}
+th{font-family:"IBM Plex Mono",monospace; font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-3); font-weight:500}
+td.n{font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; text-align:right}
+tr.mark td{background:var(--moss-w)}
+tr.sel td{box-shadow:inset 0 -2px 0 var(--copper)}
+tr.markb td{background:var(--hot-w)}
+
+/* sliders */
+.ctl{display:flex; align-items:center; gap:10px; font-size:13px}
+.ctl label{font-family:"IBM Plex Mono",monospace; font-size:11.5px; color:var(--ink-2); min-width:3.5ch}
+input[type=range]{flex:1; accent-color:var(--copper); min-width:120px}
+.ctl .rv{font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; min-width:2.5ch; text-align:right}
+
+/* curve */
+svg{display:block; width:100%; height:auto; overflow:visible}
+.gline{stroke:var(--line-2); stroke-width:1}
+.glabel{font-family:"IBM Plex Mono",monospace; font-size:9.5px; fill:var(--ink-3)}
+
+/* bank map */
+.banks{display:grid; grid-template-columns:repeat(32,1fr); gap:2px; align-items:end; min-height:96px}
+.bankcol{display:flex; flex-direction:column-reverse; gap:2px; align-items:stretch}
+.chip{height:13px; border-radius:2px; background:var(--steel-w); border:1px solid var(--steel)}
+.bankcol.hot .chip{background:var(--hot-w); border-color:var(--hot)}
+.banknum{font-family:"IBM Plex Mono",monospace; font-size:8px; color:var(--ink-3); text-align:center; margin-top:3px}
+.badge{display:inline-flex; align-items:center; gap:6px; font-family:"IBM Plex Mono",monospace; font-size:11px;
+  padding:3px 9px; border-radius:99px; border:1px solid currentColor; letter-spacing:.05em}
+.badge.ok{color:var(--moss); background:var(--moss-w)}
+.badge.bad{color:var(--hot); background:var(--hot-w)}
+.badge.warn{color:var(--copper); background:var(--copper-w)}
+
+/* k ribbon */
+.ribbon{display:flex; gap:2px; flex-wrap:nowrap; overflow-x:auto; padding-bottom:6px}
+.kx{flex:none; width:24px; height:22px; border-radius:2px; background:var(--panel-2); border:1px solid var(--line-2);
+  font-family:"IBM Plex Mono",monospace; font-size:9.5px; color:var(--ink-3);
+  display:flex; align-items:center; justify-content:center}
+.kx.brk{border-left:2px solid var(--copper)}
+.kx.ell{width:auto; padding:0 8px; border:0; background:none}
+
+.src{font-family:"IBM Plex Mono",monospace; font-size:11.5px; line-height:1.65; background:var(--sunken);
+  border-radius:4px; padding:12px 14px; white-space:pre; overflow-x:auto; color:var(--ink-2)}
+.src b{color:var(--ink); font-weight:600}
+.src i{color:var(--ink-3); font-style:normal}
+
+/* ledger */
+.ledger{display:flex; height:26px; border-radius:3px; overflow:hidden; background:var(--sunken)}
+.ledger div{height:100%}
+.legend{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:5px 14px; font-size:12.5px}
+.legend .row{display:flex; align-items:center; gap:7px}
+.legend .sw{width:9px; height:9px; border-radius:2px; flex:none}
+.legend .nm{color:var(--ink-2)}
+.legend .vl{margin-left:auto; font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums}
+.stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px}
+.stat{background:var(--panel-2); border-radius:4px; padding:9px 11px}
+.stat .k{font-size:10px; letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3); font-family:"IBM Plex Mono",monospace}
+.stat .v{font-family:"IBM Plex Mono",monospace; font-size:18px; font-variant-numeric:tabular-nums; line-height:1.3}
+.stat .v small{font-size:11px; color:var(--ink-3)}
+
+.roof{position:relative; height:34px; background:var(--sunken); border-radius:4px; overflow:hidden}
+.roof i{position:absolute; left:0; top:0; bottom:0; border-radius:4px 0 0 4px}
+.roof span{position:absolute; top:50%; transform:translateY(-50%); font-family:"IBM Plex Mono",monospace; font-size:11px}
+
+footer{padding:40px 0 60px; color:var(--ink-3); font-size:12.5px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<header class="console">
+  <div class="wrap">
+    <div class="brand"><b>레지스터 작업대</b><span>EXP-005 · MICROWORLD · b19dfa4 · gemm_nt_bias</span></div>
+    <div class="ctrls">
+      <button id="play" class="primary">▶ 두 대 동시에</button>
+      <button id="step">한 칸</button>
+      <button id="reset">되감기</button>
+      <div class="seg" id="spd"></div>
+    </div>
+    <div class="readout">
+      <div class="r"><span class="v" id="rratio">—</span><span class="k">shared 읽기 비</span></div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+<section>
+  <p class="eyebrow">EXP-004 → EXP-005 · 커널 한 개</p>
+  <h1 style="margin-top:8px">곱셈 횟수는 그대로다.<br>창고에 다녀오는 횟수만 줄였다.</h1>
+  <p class="lede" style="margin-top:14px">
+    EXP-004까지 <abbr title="General Matrix Multiply. 행렬 곱셈. 딥러닝 추론 시간의 대부분이 여기 들어간다.">GEMM</abbr> 커널은
+    <b>스레드 한 명이 출력 한 칸</b>을 맡았다. 그 한 칸을 채우려면 곱셈 한 번마다
+    <abbr title="Shared memory. 한 블록의 스레드들이 함께 쓰는 작은 초고속 메모리. GPU의 '작업대 옆 선반'.">shared 메모리</abbr>에서
+    숫자를 <b>두 번</b> 꺼내야 했다. GPU는 곱셈이 모자라서가 아니라 <b>선반을 오가느라</b> 놀고 있었다 —
+    피크 성능의 6%.
+  </p>
+  <p class="lede" style="margin-top:10px">
+    EXP-005는 스레드 한 명에게 <b>4×4 = 16칸</b>을 맡겼다. 선반에서 A 4개, B 4개 —
+    총 <b>8개</b>만 꺼내오면 그것들을 서로 곱해 <b>16번</b>의 곱셈을 할 수 있다.
+    곱셈 1회당 선반 방문이 2회에서 0.5회로, <b>4분의 1</b>이 됐다.
+  </p>
+
+  <div class="verdict" style="margin-top:18px">
+    <div><div class="eyebrow">n=1024 전체 추론</div><div class="big" id="vBig">23.901 s → 6.344 s</div></div>
+    <div style="width:1px; align-self:stretch; background:var(--line-2)"></div>
+    <div><div class="eyebrow">배속</div><div class="big" style="color:var(--moss)">3.77×</div></div>
+    <div style="width:1px; align-self:stretch; background:var(--line-2)"></div>
+    <div class="cap">출력 파일은 EXP-004와 <b>비트 단위로 완전히 같다</b>. 계산을 바꾼 게 아니라
+      <b>같은 계산을 다른 순서로 날랐을 뿐</b>이라는 증거다.</div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>스레드 한 명의 작업대</h2>
+    <span class="eyebrow">k를 한 칸씩 전진 · 두 기계가 같은 k를 본다</span></div>
+  <p class="note" style="max-width:70ch; margin-bottom:14px">
+    GEMM은 <code>k</code>를 0부터 4095까지 훑으면서 조금씩 더해 나가는 일이다. 아래 두 작업대는
+    <b>같은 k</b>를 동시에 밟는다. 왼쪽은 EXP-004의 스레드, 오른쪽은 EXP-005의 스레드다.
+    <span style="color:var(--copper); font-weight:600">주황</span>은 선반에서 꺼내온 A 값,
+    <span style="color:var(--plum); font-weight:600">보라</span>는 B 값,
+    <span style="color:var(--steel); font-weight:600">파랑</span>은 스레드가 <abbr title="Register. 스레드가 개인적으로 쥐고 있는 가장 빠른 저장소. 선반(shared)보다 훨씬 빠르지만 개수가 적다.">레지스터</abbr>에 들고 있는 누적값이다.
+  </p>
+
+  <div class="grid two">
+    <div class="lane before" id="laneB">
+      <div class="tag"><b>BEFORE</b><span class="who">TILE=32 · 스레드당 1칸</span></div>
+      <div class="sub">A 1개 + B 1개를 꺼내 → 곱셈 <b>1번</b>.</div>
+      <div class="bench" id="benchB"></div>
+      <div class="benchcap"><span id="capB">k = 0 / 4096</span><span class="sync" id="syncB">타일 적재</span></div>
+      <div class="prog"><i id="prB"></i></div>
+      <div class="meters">
+        <div class="meter"><div class="k">shared 읽기</div><div class="v" id="mrB">0</div></div>
+        <div class="meter"><div class="k">곱셈(MAC)</div><div class="v" id="mmB">0</div></div>
+        <div class="meter"><div class="k">읽기 / 곱셈</div><div class="v" id="mqB">—</div></div>
+      </div>
+    </div>
+
+    <div class="lane after" id="laneA">
+      <div class="tag"><b>AFTER</b><span class="who">BM/BN=64 · BK=16 · TM=TN=4</span></div>
+      <div class="sub">A 4개 + B 4개를 꺼내 → 서로 곱해 곱셈 <b>16번</b>.</div>
+      <div class="bench" id="benchA"></div>
+      <div class="benchcap"><span id="capA">k = 0 / 4096</span><span class="sync" id="syncA">타일 적재</span></div>
+      <div class="prog"><i id="prA"></i></div>
+      <div class="meters">
+        <div class="meter"><div class="k">shared 읽기</div><div class="v" id="mrA">0</div></div>
+        <div class="meter"><div class="k">곱셈(MAC)</div><div class="v" id="mmA">0</div></div>
+        <div class="meter"><div class="k">읽기 / 곱셈</div><div class="v" id="mqA">—</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:16px">
+    <div class="head"><h3>블록 전체로 보면 더 분명하다</h3><span class="eyebrow">k 한 칸당 · 블록 1개</span></div>
+    <p class="note" style="margin-bottom:12px; max-width:72ch">
+      스레드 수까지 세면 반전이 하나 있다. 두 블록이 k 한 칸에서 shared를 두드리는 <b>총 횟수는 2048번으로 똑같다</b>.
+      AFTER는 스레드가 4분의 1(1024→256)이지만 스레드마다 8번씩 읽기 때문이다.
+      같은 양을 퍼가서 <b>4배 많은 곱셈</b>을 한다 — 그게 이 실험의 전부다.
+    </p>
+    <div class="scroll"><table id="blocktab"></table></div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>왜 하필 4×4였나</h2><span class="eyebrow">타일 모양을 직접 바꿔보기</span></div>
+  <p class="note" style="max-width:70ch; margin-bottom:14px">
+    한 스레드가 맡는 칸을 늘릴수록 읽기 비율은 <code>(TM+TN)/(TM×TN)</code>로 떨어진다.
+    그러면 8×8은 왜 안 썼을까? 슬라이더를 움직여 보면 대가가 보인다 —
+    누적값을 담을 <b>레지스터</b>가 그만큼 필요해지고, 블록의 스레드 수가 줄어
+    <abbr title="Occupancy. GPU 코어 하나가 동시에 굴리는 스레드의 비율. 낮으면 메모리 대기를 다른 일로 가릴 수 없다.">점유율</abbr>과
+    한 스레드가 감당할 적재량이 나빠진다.
+  </p>
+  <div class="grid side">
+    <div class="panel">
+      <div class="head"><h3>읽기 / 곱셈 곡선</h3><span class="eyebrow" id="curveNote">—</span></div>
+      <div id="curve"></div>
+      <div class="hr"></div>
+      <div class="scroll"><table id="tiletab"></table></div>
+    </div>
+    <div class="stack">
+      <div class="panel">
+        <div class="head"><h3>손잡이</h3></div>
+        <div class="stack" style="gap:10px">
+          <div class="ctl"><label>TM</label><input type="range" id="sTM" min="1" max="8" step="1" value="4"><span class="rv" id="vTM">4</span></div>
+          <div class="ctl"><label>TN</label><input type="range" id="sTN" min="1" max="8" step="1" value="4"><span class="rv" id="vTN">4</span></div>
+          <div class="ctl"><label>BK</label><input type="range" id="sBK" min="4" max="32" step="4" value="16"><span class="rv" id="vBK">16</span></div>
+        </div>
+        <div class="hr"></div>
+        <div class="stats" id="tstats"></div>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>판정</h3></div>
+        <div id="tverdict" class="note"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>왜 <code>+1</code>이 아니라 <code>+4</code>인가</h2><span class="eyebrow">shared 창구 32개</span></div>
+  <p class="note" style="max-width:70ch; margin-bottom:14px">
+    shared 메모리에는 창구(<abbr title="Bank. shared 메모리는 32개의 독립 창구로 나뉜다. 같은 창구에 여러 스레드가 몰리면 순서대로 줄을 서야 해서 느려진다.">bank</abbr>)가 32개 있고,
+    <code>float</code> 주소를 32로 나눈 나머지가 창구 번호다. 한 <abbr title="Warp. 32개 스레드가 한 몸처럼 같은 명령을 실행하는 단위.">워프</abbr>의
+    32개 스레드가 서로 다른 창구로 가면 한 번에 끝나고, 같은 창구에 4명이 몰리면 4배 걸린다.
+    아래는 AFTER 커널이 A 타일을 <b>전치해서 적재</b>하는 순간(<code>as[lc][lr]</code>)의 창구 배치다.
+    한 줄의 길이(<code>stride</code>)만 바꿔 보라.
+  </p>
+  <div class="grid side">
+    <div class="panel">
+      <div class="head"><h3>워프 0의 32개 스레드가 선 줄</h3><span class="eyebrow" id="bkNote">—</span></div>
+      <div class="banks" id="banks"></div>
+      <div style="display:grid; grid-template-columns:repeat(32,1fr); gap:2px" id="banknums"></div>
+      <div class="hr"></div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center">
+        <span class="badge" id="bConf">—</span>
+        <span class="badge" id="bAlign">—</span>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="panel">
+        <div class="head"><h3>한 줄의 길이</h3></div>
+        <div class="seg" id="strideSel" style="margin-bottom:10px"></div>
+        <div id="strideNote" class="note"></div>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>세 후보의 성적표</h3></div>
+        <div class="scroll"><table id="stridetab"></table></div>
+        <p class="note" style="margin-top:10px; font-size:12.5px">
+          BEFORE 커널은 <code>[32][33]</code>, 즉 <code>+1</code>로 충돌을 피했다. AFTER는
+          <code>float4</code>로 4개를 한 번에 읽어야 해서 줄 길이가 <b>4의 배수</b>여야 한다 —
+          <code>+1</code>이라는 고전적 해법이 봉쇄된다. <code>+4</code>는 정렬을 지키면서 줄서기를 절반으로 줄이는 타협이다.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>그런데 답은 한 비트도 안 변했다</h2><span class="eyebrow">안전망</span></div>
+  <div class="grid two">
+    <div class="panel">
+      <p class="note" style="margin-bottom:12px">
+        <abbr title="부동소수점 덧셈은 순서를 바꾸면 결과의 마지막 비트가 달라진다. 이 프로젝트에서는 그 미세한 차이가 MoE 라우터의 top-2 선택을 뒤집어 출력을 크게 망칠 수 있다.">부동소수점 덧셈은 순서를 바꾸면 결과가 달라진다.</abbr>
+        타일 크기는 32에서 16으로 바뀌었지만, <b>출력 한 칸이 보는 k의 순서</b>는 양쪽 모두 0, 1, 2, … 오름차순 그대로다.
+        더하는 식도 <code>acc += a * b</code> 그대로 — 컴파일러가 다른 형태의 FMA를 내지 않는다.
+        그래서 결과가 같을 수밖에 없다.
+      </p>
+      <div class="eyebrow" style="margin-bottom:5px">BEFORE · 타일 경계 32마다</div>
+      <div class="ribbon" id="ribB"></div>
+      <div class="eyebrow" style="margin:10px 0 5px">AFTER · 타일 경계 16마다</div>
+      <div class="ribbon" id="ribA"></div>
+      <p class="note" style="margin-top:10px; font-size:12.5px">경계(주황 선)는 달라졌지만 칸의 <b>순서</b>는 같다.</p>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>내부 루프 원문</h3><span class="eyebrow">src/model.cu</span></div>
+      <div class="src">// BEFORE — 읽기 2 : 곱셈 1
+for (int i = 0; i &lt; TILE; ++i)
+  <b>acc += as[ty][i] * bs[tx][i];</b>
+
+// AFTER — 읽기 8 : 곱셈 16
+const float4 ar = *(float4*)&amp;as[p][ty*TM];   <i>// A 4개</i>
+const float4 br = *(float4*)&amp;bs[p][tx*TN];   <i>// B 4개</i>
+for (int i = 0; i &lt; TM; ++i)
+  for (int j = 0; j &lt; TN; ++j)
+    <b>acc[i][j] += av4[i] * bv4[j];</b></div>
+      <div class="hr"></div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center">
+        <span class="badge ok">cmp exp004_n1024.bin exp005_n1024.bin → 차이 없음</span>
+      </div>
+      <p class="note" style="margin-top:10px; font-size:12.5px">
+        성능 실험에서 이보다 강한 안전망은 없다. 정답과의 오차(1.79e-04)도 소수점까지 동일하다.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>시계는 이렇게 움직였다</h2><span class="eyebrow">n=1024 · APS_PROFILE=1 · 같은 세션 연속 측정</span></div>
+  <div class="grid two">
+    <div class="stack">
+      <div class="panel">
+        <div class="head"><h3>BEFORE (EXP-004)</h3><span class="eyebrow">23.901 s</span></div>
+        <div class="ledger" id="ledB"></div>
+        <div style="height:10px"></div>
+        <div class="legend" id="lgB"></div>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>AFTER (EXP-005)</h3><span class="eyebrow">6.344 s</span></div>
+        <div class="note" style="font-size:12px; margin-bottom:6px">같은 눈금 위에서는 이만큼이다.</div>
+        <div class="ledger" id="ledA"></div>
+        <div style="height:12px"></div>
+        <div class="note" style="font-size:12px; margin-bottom:6px">AFTER만 다시 100%로 늘린 것.</div>
+        <div class="ledger" id="ledA2"></div>
+        <div style="height:10px"></div>
+        <div class="legend" id="lgA"></div>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="panel">
+        <div class="head"><h3>피크 대비 실효 성능</h3><span class="eyebrow">RTX 3090 fp32 35.6 TFLOP/s</span></div>
+        <div class="stack" style="gap:8px" id="roofs"></div>
+        <div class="hr"></div>
+        <p class="note" style="font-size:12.5px">
+          6% → 44%. "shared 대역폭에 막혔다"는 진단이 맞았다는 뜻이다. 진단이 틀렸다면
+          읽기를 줄여도 시간은 안 줄었을 것이다.
+        </p>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>기록</h3><span class="eyebrow">docs/lab-note.md</span></div>
+        <div class="scroll"><table id="runtab"></table></div>
+        <div class="hr"></div>
+        <div class="stats" id="finalstats"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>병목이 사라진 게 아니라 평평해졌다</h2><span class="eyebrow">다음 실험이 볼 곳</span></div>
+  <div class="grid two">
+    <div class="panel">
+      <p class="note" style="margin-bottom:12px">
+        EXP-004에서는 GEMM 하나가 87%였다. 지금은 가장 큰 항목이 27%고, 나머지가 고만고만하게 남았다.
+        단일 최대 레버가 없다는 건 다음 한 걸음의 기대값이 작아졌다는 뜻이다.
+      </p>
+      <div class="scroll"><table id="nexttab"></table></div>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>남은 후보</h3></div>
+      <div class="stack" style="gap:12px">
+        <div>
+          <div class="badge warn">2.5 s · 40%</div>
+          <p class="note" style="margin-top:6px"><b>attention을 커널로.</b> 호스트 attention 1.13s에
+          더해, 그것 때문에 q/k/v를 내리고 context를 올리는 왕복 1.41s가 붙어 있다. 둘은 한 덩어리다.
+          sliding window 2047 + <abbr title="Grouped Query Attention. Q 헤드 16개가 K/V 헤드 4개를 나눠 쓴다.">GQA</abbr>(16Q/4KV)라 flash 스타일 구현이 필요하다.</p>
+        </div>
+        <div>
+          <div class="badge warn">1.28 s · 20%</div>
+          <p class="note" style="margin-top:6px"><b>expert 16개를 한 번에.</b> expert GEMM은 피크의 30%에 그친다.
+          M이 평균 2,475행뿐인 GEMM 16개로 쪼개져 있어 tail과 launch 낭비가 있다. grouped GEMM 1회로 묶는 것.</p>
+        </div>
+        <div>
+          <div class="badge">측정 안 됨</div>
+          <p class="note" style="margin-top:6px"><b>호스트 라우팅.</b> 634k회 직렬 <code>route_row</code>가
+          <code>moe</code> 시간에 섞여 있어 아직 따로 재지 않았다. 재는 것이 먼저다.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="wrap">
+  <div class="hr"></div>
+  EXP-005 · <span class="mono">b19dfa4</span> · Phi-tiny-MoE-instruct · RTX 3090 1장 ·
+  수치는 <span class="mono">docs/lab-note.md</span>의 실측값이다. 애니메이션의 셀 값은 설명용 난수이며,
+  읽기·곱셈 카운터와 창구 배치는 커널 원문에서 그대로 계산한다.
+</footer>
+</main>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const el = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; };
+const fmt = n => n.toLocaleString("en-US");
+
+/* ---------- 실측값 (docs/lab-note.md EXP-004 / EXP-005) ---------- */
+const PROFILE = [
+  { k: "gemm",    b: 13.133, a: 1.704, c: "var(--hot)"   },
+  { k: "moe",     b:  7.273, a: 1.276, c: "var(--copper)"},
+  { k: "attn",    b:  1.148, a: 1.126, c: "var(--plum)"  },
+  { k: "d2h",     b:  0.938, a: 0.865, c: "var(--steel)" },
+  { k: "h2d",     b:  0.524, a: 0.548, c: "var(--moss)"  },
+  { k: "norm",    b:  0.349, a: 0.352, c: "var(--idle)"  },
+  { k: "lm_head", b:  0.147, a: 0.085, c: "var(--ink-3)" },
+  { k: "resid",   b:  0.074, a: 0.074, c: "var(--line)"  },
+];
+const TOT = { b: 23.901, a: 6.344 };
+const PEAK = 35.6;
+
+/* ================= 1. 스레드 작업대 ================= */
+const K_TOTAL = 4096;
+const sim = { k: 0, playing: false, spd: 8, raf: 0 };
+
+function hashf(i) { let x = Math.imul(i ^ 0x9e3779b9, 0x85ebca6b); x ^= x >>> 13; x = Math.imul(x, 0xc2b2ae35); x ^= x >>> 16; return ((x >>> 8) & 0xffff) / 32768 - 1; }
+const aVal = (r, k) => hashf(k * 61 + r * 7 + 11);
+const bVal = (c, k) => hashf(k * 97 + c * 13 + 3);
+
+// BEFORE: 1 output. AFTER: 4x4 outputs.
+const accB = [0];
+const accA = new Array(16).fill(0);
+
+function buildBench(host, tm, tn) {
+  host.innerHTML = "";
+  const corner = el("div", "corner");
+  corner.appendChild(el("div", null, "A · " + tm + "개"));
+  corner.appendChild(el("div", null, "B ↓ " + tn + "개"));
+  host.appendChild(corner);
+
+  const brow = el("div", "vec row");
+  for (let j = 0; j < tn; j++) { const c = el("div", "cell b"); c.dataset.b = j; brow.appendChild(c); }
+  host.appendChild(brow);
+
+  const acol = el("div", "vec col");
+  for (let i = 0; i < tm; i++) { const c = el("div", "cell a"); c.dataset.a = i; acol.appendChild(c); }
+  host.appendChild(acol);
+
+  const g = el("div", "accgrid");
+  g.style.gridTemplateColumns = "repeat(" + tn + ", auto)";
+  for (let i = 0; i < tm; i++) for (let j = 0; j < tn; j++) {
+    const c = el("div", "acc"); c.dataset.i = i * tn + j; g.appendChild(c);
+  }
+  host.appendChild(g);
+}
+
+function paint() {
+  const k = Math.min(sim.k, K_TOTAL - 1);
+  // BEFORE
+  $("#benchB").querySelector('[data-a="0"]').textContent = aVal(0, k).toFixed(2);
+  $("#benchB").querySelector('[data-b="0"]').textContent = bVal(0, k).toFixed(2);
+  $("#benchB").querySelector('[data-i="0"]').textContent = accB[0].toFixed(2);
+  // AFTER
+  const bA = $("#benchA");
+  for (let i = 0; i < 4; i++) bA.querySelector('[data-a="' + i + '"]').textContent = aVal(i, k).toFixed(2);
+  for (let j = 0; j < 4; j++) bA.querySelector('[data-b="' + j + '"]').textContent = bVal(j, k).toFixed(2);
+  for (let i = 0; i < 16; i++) bA.querySelector('[data-i="' + i + '"]').textContent = accA[i].toFixed(2);
+
+  const done = sim.k;
+  const rB = done * 2, mB = done * 1;
+  const rA = done * 8, mA = done * 16;
+  $("#mrB").textContent = fmt(rB); $("#mmB").textContent = fmt(mB);
+  $("#mrA").textContent = fmt(rA); $("#mmA").textContent = fmt(mA);
+  $("#mqB").innerHTML = done ? '2.00 <small>회</small>' : "—";
+  $("#mqA").innerHTML = done ? '0.50 <small>회</small>' : "—";
+  $("#capB").textContent = "k = " + fmt(done) + " / " + fmt(K_TOTAL);
+  $("#capA").textContent = "k = " + fmt(done) + " / " + fmt(K_TOTAL);
+  $("#prB").style.width = (100 * done / K_TOTAL) + "%";
+  $("#prA").style.width = (100 * done / K_TOTAL) + "%";
+  $("#syncB").classList.toggle("on", done % 32 === 0 && done > 0);
+  $("#syncA").classList.toggle("on", done % 16 === 0 && done > 0);
+  $("#rratio").textContent = done ? "4.0×" : "—";
+}
+
+function advance(n) {
+  for (let s = 0; s < n && sim.k < K_TOTAL; s++) {
+    const k = sim.k;
+    accB[0] += aVal(0, k) * bVal(0, k);
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) accA[i * 4 + j] += aVal(i, k) * bVal(j, k);
+    sim.k++;
+  }
+  paint();
+  if (sim.k >= K_TOTAL) stop();
+}
+function loop() { if (!sim.playing) return; advance(sim.spd); sim.raf = requestAnimationFrame(loop); }
+function stop() { sim.playing = false; cancelAnimationFrame(sim.raf); $("#play").textContent = "▶ 두 대 동시에"; $("#play").setAttribute("aria-pressed", "false"); }
+function start() { if (sim.k >= K_TOTAL) resetSim(); sim.playing = true; $("#play").textContent = "❙❙ 멈춤"; $("#play").setAttribute("aria-pressed", "true"); loop(); }
+function resetSim() { stop(); sim.k = 0; accB[0] = 0; accA.fill(0); paint(); }
+
+buildBench($("#benchB"), 1, 1);
+buildBench($("#benchA"), 4, 4);
+$("#play").onclick = () => sim.playing ? stop() : start();
+$("#step").onclick = () => { stop(); advance(1); };
+$("#reset").onclick = resetSim;
+
+[["느리게", 1], ["보통", 8], ["빠르게", 64]].forEach(([lbl, v]) => {
+  const b = el("button", null, lbl);
+  b.setAttribute("aria-pressed", String(v === sim.spd));
+  b.onclick = () => { sim.spd = v; [...$("#spd").children].forEach(c => c.setAttribute("aria-pressed", String(c === b))); };
+  $("#spd").appendChild(b);
+});
+paint();
+
+/* 블록 대조표 */
+(() => {
+  const rows = [
+    ["출력 타일", "32 × 32", "64 × 64"],
+    ["블록의 스레드", "1,024", "256"],
+    ["스레드당 출력", "1칸", "16칸 (4×4)"],
+    ["스레드당 누적 레지스터", "1", "16"],
+    ["k 한 칸당 shared 읽기 (블록)", "2,048회", "2,048회"],
+    ["k 한 칸당 곱셈 (블록)", "1,024회", "4,096회"],
+    ["shared 사용량", "2×32×33×4 = 8,448 B", "2×16×68×4 = 8,704 B"],
+    ["global 적재", "float 1개씩", "float4 1개씩"],
+  ];
+  const t = $("#blocktab");
+  t.innerHTML = "<tr><th>항목</th><th>BEFORE · TILE 32</th><th>AFTER · 64×64 / 4×4</th></tr>";
+  rows.forEach(r => {
+    const tr = el("tr");
+    tr.appendChild(el("td", null, r[0]));
+    tr.appendChild(el("td", "n", r[1]));
+    tr.appendChild(el("td", "n", r[2]));
+    if (r[0].startsWith("k 한 칸당")) tr.className = "mark";
+    t.appendChild(tr);
+  });
+})();
+
+/* ================= 2. 타일 모양 탐색 ================= */
+const BM = 64, BN = 64;
+function tileCalc(tm, tn, bk, bm, bn) {
+  bm = bm || BM; bn = bn || BN;
+  const threads = (bm / tm) * (bn / tn);
+  const readsPerMac = (tm + tn) / (tm * tn);
+  const accRegs = tm * tn;
+  const regs = accRegs + tm + tn + 14;           // 누적 + 피연산자 + 주소/인덱스 대략
+  const sharedB = 2 * bk * (bm + 4) * 4;
+  const loadPerThread = (bm * bk + bn * bk) / threads;  // 스레드당 적재해야 할 float 수
+  return { threads, readsPerMac, accRegs, regs, sharedB, loadPerThread };
+}
+function tileRender() {
+  const tm = +$("#sTM").value, tn = +$("#sTN").value, bk = +$("#sBK").value;
+  $("#vTM").textContent = tm; $("#vTN").textContent = tn; $("#vBK").textContent = bk;
+  const c = tileCalc(tm, tn, bk);
+  const ok = BM % tm === 0 && BN % tn === 0 && c.threads >= 32 && c.threads <= 1024;
+
+  $("#tstats").innerHTML = "";
+  const put = (k, v, sub) => {
+    const d = el("div", "stat"); d.appendChild(el("div", "k", k));
+    const vv = el("div", "v"); vv.innerHTML = v + (sub ? ' <small>' + sub + '</small>' : "");
+    d.appendChild(vv); $("#tstats").appendChild(d);
+  };
+  put("읽기 / 곱셈", c.readsPerMac.toFixed(3), "회");
+  put("BEFORE 대비", (2 / c.readsPerMac).toFixed(1), "× 절감");
+  put("블록 스레드", fmt(c.threads));
+  put("누적 레지스터", fmt(c.accRegs), "/ 스레드");
+  put("추정 레지스터", "~" + fmt(c.regs));
+  put("shared", fmt(c.sharedB), "B");
+
+  const v = $("#tverdict"); v.innerHTML = "";
+  const add = (cls, txt, note) => {
+    const w = el("div"); w.style.marginBottom = "8px";
+    w.appendChild(el("span", "badge " + cls, txt));
+    if (note) { const p = el("p", "note", note); p.style.marginTop = "5px"; p.style.fontSize = "12.5px"; w.appendChild(p); }
+    v.appendChild(w);
+  };
+  if (tm === 1 && tn === 1) {
+    add("bad", "이게 BEFORE다 · 읽기 2.00회",
+      "곱셈 1번에 선반 2번. 그리고 64×64 타일을 1칸씩 맡으면 스레드가 4,096개 필요해 블록 한계 1,024를 넘는다 — BEFORE가 32×32 타일밖에 쓸 수 없었던 이유다. 피크의 6%.");
+  } else if (!ok) {
+    add("bad", "성립 안 함",
+      "64가 TM·TN으로 나누어떨어져야 하고, 블록 스레드는 32~1,024여야 한다. 지금은 " + fmt(c.threads) + "개다.");
+  } else if (tm === 4 && tn === 4) {
+    add("ok", "이게 AFTER다", "읽기 0.50회. 레지스터 ~30개대라 블록당 스레드 256개를 넉넉히 굴릴 수 있고, A/B 타일이 각각 256개의 float4라 스레드당 적재가 정확히 1회씩이다.");
+  } else if (c.accRegs >= 64) {
+    add("warn", "읽기는 더 줄지만", "누적값만 " + c.accRegs + "개다. 레지스터가 255개 한계에 가까워지면 스필이 나고, 워프 수가 줄어 메모리 대기를 가릴 수 없다. 읽기 비율만으로는 못 고른다.");
+  } else if (c.threads < 128) {
+    add("warn", "스레드가 " + c.threads + "개뿐", "적재는 스레드 수로 나눠 하는 일이라, 스레드가 적으면 스레드당 " + c.loadPerThread.toFixed(0) + " float을 혼자 날라야 한다.");
+  } else {
+    add("ok", "성립함", "읽기 " + c.readsPerMac.toFixed(3) + "회. BEFORE 대비 " + (2 / c.readsPerMac).toFixed(1) + "배 절감.");
+  }
+  if (bk !== 16 && ok) {
+    const f4 = (BM * bk / 4) === c.threads;
+    add(f4 ? "ok" : "warn", "BK=" + bk + (f4 ? " · float4 적재 1회씩" : " · float4 적재 " + (BM * bk / 4 / c.threads).toFixed(2) + "회씩"),
+      "A 타일은 64×" + bk + " = " + fmt(BM * bk / 4) + "개의 float4다. 스레드 " + c.threads + "개로 나누어떨어질 때 코드가 가장 단순해진다.");
+  }
+  $("#curveNote").textContent = "TM=" + tm + " TN=" + tn + " · " + c.readsPerMac.toFixed(3) + " 회/곱셈";
+  drawCurve(tm, tn);
+  tileTable(tm, tn, bk);
+}
+function drawCurve(selTM, selTN) {
+  const W = 520, H = 210, PL = 42, PR = 12, PT = 12, PB = 30;
+  const pts = [];
+  for (let t = 1; t <= 8; t++) if (64 % t === 0) pts.push({ t, r: (2 * t) / (t * t) });
+  const maxR = 2, minR = 0.25;
+  const x = t => PL + (Math.log2(t) / 3) * (W - PL - PR);
+  const y = r => PT + (1 - (r - minR) / (maxR - minR)) * (H - PT - PB);
+  let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="정사각 타일 크기에 따른 곱셈당 shared 읽기 횟수">';
+  [2, 1.5, 1, 0.5, 0.25].forEach(r => {
+    s += '<line class="gline" x1="' + PL + '" y1="' + y(r) + '" x2="' + (W - PR) + '" y2="' + y(r) + '"/>';
+    s += '<text class="glabel" x="' + (PL - 6) + '" y="' + (y(r) + 3) + '" text-anchor="end">' + r.toFixed(2) + '</text>';
+  });
+  [1, 2, 4, 8].forEach(t => s += '<text class="glabel" x="' + x(t) + '" y="' + (H - 10) + '" text-anchor="middle">' + t + '×' + t + '</text>');
+  s += '<polyline fill="none" stroke="var(--steel)" stroke-width="2" points="' + pts.map(p => x(p.t) + "," + y(p.r)).join(" ") + '"/>';
+  pts.forEach(p => {
+    const isB = p.t === 1, isA = p.t === 4;
+    const col = isB ? "var(--hot)" : isA ? "var(--moss)" : "var(--steel)";
+    s += '<circle cx="' + x(p.t) + '" cy="' + y(p.r) + '" r="' + (isB || isA ? 6 : 4) + '" fill="' + col + '" stroke="var(--panel)" stroke-width="2"/>';
+    if (isB) s += '<text class="glabel" x="' + (x(p.t) + 10) + '" y="' + (y(p.r) + 4) + '" style="fill:var(--hot)">BEFORE</text>';
+    if (isA) s += '<text class="glabel" x="' + (x(p.t) + 10) + '" y="' + (y(p.r) + 4) + '" style="fill:var(--moss)">AFTER</text>';
+  });
+  if (selTM === selTN && 64 % selTM === 0) {
+    s += '<circle cx="' + x(selTM) + '" cy="' + y(2 / selTM) + '" r="10" fill="none" stroke="var(--copper)" stroke-width="2"/>';
+  }
+  s += '<text class="glabel" x="' + PL + '" y="' + (H - 10) + '" text-anchor="start" opacity="0"></text></svg>';
+  $("#curve").innerHTML = s;
+}
+function tileTable(selTM, selTN, bk) {
+  const cand = [[1, 1], [2, 2], [4, 4], [8, 8], [2, 4], [4, 8], [8, 4]];
+  const t = $("#tiletab");
+  t.innerHTML = "<tr><th>TM×TN</th><th>읽기/곱셈</th><th>스레드</th><th>누적 레지스터</th><th>스레드당 적재</th></tr>";
+  cand.forEach(([tm, tn]) => {
+    const base = (tm === 1 && tn === 1);          // BEFORE 는 32×32 타일 · BK 32
+    const c = tileCalc(tm, tn, base ? 32 : bk, base ? 32 : BM, base ? 32 : BN);
+    const tr = el("tr");
+    tr.appendChild(el("td", "mono", tm + "×" + tn + (base ? "  (32² 타일)" : "")));
+    tr.appendChild(el("td", "n", c.readsPerMac.toFixed(3)));
+    tr.appendChild(el("td", "n", fmt(c.threads)));
+    tr.appendChild(el("td", "n", fmt(c.accRegs)));
+    tr.appendChild(el("td", "n", c.loadPerThread.toFixed(0) + " float"));
+    if (tm === 1 && tn === 1) tr.className = "markb";
+    if (tm === 4 && tn === 4) tr.className = "mark";
+    if (tm === selTM && tn === selTN) tr.classList.add("sel");
+    t.appendChild(tr);
+  });
+}
+["#sTM", "#sTN", "#sBK"].forEach(s => $(s).addEventListener("input", tileRender));
+tileRender();
+
+/* ================= 3. shared 창구 ================= */
+// AFTER 커널의 전치 적재: as[lc + j][lr],  lr = tid/4 (0..7),  lc = (tid%4)*4
+// float 인덱스 = (lc + j) * stride + lr,  창구 = 인덱스 % 32.  아래는 j = 0.
+let STRIDE = 68;
+function bankOf(tid, stride) {
+  const lr = Math.floor(tid / 4), lc = (tid % 4) * 4;
+  return (lc * stride + lr) % 32;
+}
+function bankStats(stride) {
+  const cnt = new Array(32).fill(0);
+  for (let tid = 0; tid < 32; tid++) cnt[bankOf(tid, stride)]++;
+  return { cnt, worst: Math.max(...cnt), aligned: stride % 4 === 0 };
+}
+function bankRender() {
+  const { cnt, worst, aligned } = bankStats(STRIDE);
+  const host = $("#banks"); host.innerHTML = "";
+  for (let b = 0; b < 32; b++) {
+    const col = el("div", "bankcol" + (cnt[b] === worst && worst > 1 ? " hot" : ""));
+    for (let i = 0; i < cnt[b]; i++) col.appendChild(el("div", "chip"));
+    host.appendChild(col);
+  }
+  const nums = $("#banknums"); nums.innerHTML = "";
+  for (let b = 0; b < 32; b++) nums.appendChild(el("div", "banknum", b % 4 === 0 ? String(b) : ""));
+
+  $("#bkNote").textContent = "stride = " + STRIDE + " float · 칸 하나 = 스레드 하나";
+  const c = $("#bConf");
+  c.className = "badge " + (worst === 1 ? "ok" : worst <= 2 ? "warn" : "bad");
+  c.textContent = worst === 1 ? "충돌 없음 · 1회에 끝남" : worst + "명이 한 창구 · " + worst + "배 줄서기";
+  const a = $("#bAlign");
+  a.className = "badge " + (aligned ? "ok" : "bad");
+  a.textContent = aligned ? "float4 정렬 OK (" + STRIDE + " % 4 = 0)" : "float4 정렬 실패 (" + STRIDE + " % 4 = " + (STRIDE % 4) + ")";
+
+  const notes = {
+    64: "패딩 없음. 줄 길이가 32의 배수라 <code>lc</code>가 무엇이든 창구는 <code>lr</code>만으로 정해진다 — 스레드 32명이 창구 8개에 4명씩 몰린다.",
+    65: "고전적인 <code>+1</code> 패딩. 줄서기는 <code>+4</code>와 똑같이 2배까지 줄어든다. 그런데 65는 4의 배수가 아니라 <b>float4로 읽을 수 없다</b> — AFTER의 내부 루프가 아예 성립하지 않는다. 그래서 탈락이다.",
+    68: "<code>+4</code>. 68 × 4B = 272B로 <b>16B 정렬을 지키면서</b>, 창구가 16개로 흩어져 줄서기가 4배에서 2배로 줄어든다. 두 조건을 동시에 만족하는 가장 작은 패딩이다.",
+  };
+  $("#strideNote").innerHTML = notes[STRIDE];
+  [...$("#strideSel").children].forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.s === STRIDE)));
+}
+[[64, "64 (패딩 없음)"], [65, "65 (+1)"], [68, "68 (+4)"]].forEach(([v, lbl]) => {
+  const b = el("button", null, lbl); b.dataset.s = v;
+  b.onclick = () => { STRIDE = v; bankRender(); };
+  $("#strideSel").appendChild(b);
+});
+(() => {
+  const t = $("#stridetab");
+  t.innerHTML = "<tr><th>stride</th><th>최대 줄서기</th><th>float4</th><th>판정</th></tr>";
+  [64, 65, 68].forEach(s => {
+    const st = bankStats(s);
+    const tr = el("tr");
+    tr.appendChild(el("td", "mono", String(s)));
+    tr.appendChild(el("td", "n", st.worst + "배"));
+    tr.appendChild(el("td", "n", st.aligned ? "가능" : "불가"));
+    tr.appendChild(el("td", null, s === 68 ? "채택" : s === 65 ? "정렬 탈락" : "충돌 탈락"));
+    if (s === 68) tr.className = "mark";
+    t.appendChild(tr);
+  });
+})();
+bankRender();
+
+/* ================= 4. 누적 순서 리본 ================= */
+function ribbon(host, brk) {
+  const h = $(host); h.innerHTML = "";
+  for (let k = 0; k < 40; k++) {
+    const d = el("div", "kx" + (k > 0 && k % brk === 0 ? " brk" : ""), String(k));
+    h.appendChild(d);
+  }
+  h.appendChild(el("div", "kx ell", "…  4095"));
+}
+ribbon("#ribB", 32);
+ribbon("#ribA", 16);
+
+/* ================= 5. 시계 ================= */
+function ledger(host, key, total) {
+  const h = $(host); h.innerHTML = "";
+  let acc = 0;
+  PROFILE.forEach(p => {
+    const d = el("div");
+    d.style.width = (100 * p[key] / total) + "%";
+    d.style.background = p.c;
+    d.title = p.k + " " + p[key].toFixed(3) + " s";
+    h.appendChild(d); acc += p[key];
+  });
+  const rest = el("div"); rest.style.width = (100 * Math.max(0, total - acc) / total) + "%";
+  rest.style.background = "var(--sunken)"; rest.title = "기타"; h.appendChild(rest);
+}
+ledger("#ledB", "b", TOT.b);
+ledger("#ledA", "a", TOT.b);   // 같은 눈금
+ledger("#ledA2", "a", TOT.a);  // 자기 100%
+function legend(host, key, total) {
+  const h = $(host); h.innerHTML = "";
+  PROFILE.forEach(p => {
+    const r = el("div", "row");
+    const sw = el("span", "sw"); sw.style.background = p.c; r.appendChild(sw);
+    r.appendChild(el("span", "nm", p.k));
+    r.appendChild(el("span", "vl", p[key].toFixed(3) + " s · " + Math.round(100 * p[key] / total) + "%"));
+    h.appendChild(r);
+  });
+}
+legend("#lgB", "b", TOT.b);
+legend("#lgA", "a", TOT.a);
+
+(() => {
+  const rows = [
+    { nm: "projection + gate + lm_head", b: 2.04, a: 15.7 },
+    { nm: "MoE expert", b: 1.87, a: 10.7 },
+  ];
+  const h = $("#roofs"); h.innerHTML = "";
+  rows.forEach(r => {
+    const wrap = el("div");
+    wrap.appendChild(el("div", "eyebrow", r.nm));
+    [["BEFORE", r.b, "var(--hot)"], ["AFTER", r.a, "var(--moss)"]].forEach(([lbl, v, c]) => {
+      const bar = el("div", "roof"); bar.style.marginTop = "5px";
+      const i = el("div"); i.style.width = (100 * v / PEAK) + "%"; i.style.background = c;
+      bar.appendChild(i);
+      const s = el("span", null, lbl + "  " + v.toFixed(1) + " TFLOP/s · 피크의 " + Math.round(100 * v / PEAK) + "%");
+      s.style.left = "10px"; s.style.color = (100 * v / PEAK) > 40 ? "#fff" : "var(--ink-2)";
+      bar.appendChild(s);
+      wrap.appendChild(bar);
+    });
+    h.appendChild(wrap);
+  });
+})();
+
+(() => {
+  const t = $("#runtab");
+  t.innerHTML = "<tr><th>n</th><th>EXP-004</th><th>EXP-005</th><th>배속</th><th>검증</th></tr>";
+  [["8", "0.727 s", "0.456 s", "1.59×", "PASSED"],
+   ["1024", "23.901 s", "6.344 s", "3.77×", "PASSED"]].forEach(r => {
+    const tr = el("tr");
+    tr.appendChild(el("td", "mono", r[0]));
+    tr.appendChild(el("td", "n", r[1]));
+    tr.appendChild(el("td", "n", r[2]));
+    tr.appendChild(el("td", "n", r[3]));
+    tr.appendChild(el("td", "n", r[4]));
+    if (r[0] === "1024") tr.className = "mark";
+    t.appendChild(tr);
+  });
+  const s = $("#finalstats"); s.innerHTML = "";
+  const put = (k, v, sub) => {
+    const d = el("div", "stat"); d.appendChild(el("div", "k", k));
+    const vv = el("div", "v"); vv.innerHTML = v + (sub ? ' <small>' + sub + '</small>' : ""); d.appendChild(vv);
+    s.appendChild(d);
+  };
+  put("제출", "160.33", "seq/s");
+  put("직전 최고", "42.68", "seq/s");
+  put("baseline 대비", "4,846", "×");
+  put("런 간 변동", "0.01", "%");
+})();
+
+(() => {
+  const t = $("#nexttab");
+  t.innerHTML = "<tr><th>단계</th><th>EXP-004</th><th>EXP-005</th><th>지금 비중</th></tr>";
+  PROFILE.forEach(p => {
+    const tr = el("tr");
+    tr.appendChild(el("td", null, p.k));
+    tr.appendChild(el("td", "n", p.b.toFixed(3)));
+    tr.appendChild(el("td", "n", p.a.toFixed(3)));
+    tr.appendChild(el("td", "n", Math.round(100 * p.a / TOT.a) + "%"));
+    if (p.k === "attn") tr.className = "mark";
+    t.appendChild(tr);
+  });
+})();
+</script>

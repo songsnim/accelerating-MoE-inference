@@ -1,0 +1,1138 @@
+<title>국경을 넘는 GEMM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hahmlet:wght@400;500;700&family=IBM+Plex+Sans+KR:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+:root{
+  --ground:#EFEDE8; --panel:#F8F7F4; --panel-2:#E9E6DF; --sunken:#E2DED5;
+  --ink:#17191A; --ink-2:#4E5354; --ink-3:#83888A;
+  --line:#C9C4B8; --line-2:#DED9CE;
+  --host:#A6431B; --dev:#0F6E78; --bus:#6B4A93; --hot:#96162F; --idle:#9EA09B;
+  --host-soft:rgba(166,67,27,.10); --dev-soft:rgba(15,110,120,.10); --bus-soft:rgba(107,74,147,.10);
+  --shadow:0 1px 0 rgba(23,25,26,.04), 0 10px 28px -20px rgba(23,25,26,.55);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0C0E0D; --panel:#15181A; --panel-2:#1C2124; --sunken:#101314;
+    --ink:#E6E4DE; --ink-2:#A0A49E; --ink-3:#737872;
+    --line:#2A2F30; --line-2:#1F2426;
+    --host:#E48B4E; --dev:#46B2BC; --bus:#A98BD4; --hot:#E0637C; --idle:#6A6F69;
+    --host-soft:rgba(228,139,78,.13); --dev-soft:rgba(70,178,188,.13); --bus-soft:rgba(169,139,212,.13);
+    --shadow:0 1px 0 rgba(0,0,0,.35), 0 12px 34px -24px #000;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0C0E0D; --panel:#15181A; --panel-2:#1C2124; --sunken:#101314;
+  --ink:#E6E4DE; --ink-2:#A0A49E; --ink-3:#737872;
+  --line:#2A2F30; --line-2:#1F2426;
+  --host:#E48B4E; --dev:#46B2BC; --bus:#A98BD4; --hot:#E0637C; --idle:#6A6F69;
+  --host-soft:rgba(228,139,78,.13); --dev-soft:rgba(70,178,188,.13); --bus-soft:rgba(169,139,212,.13);
+  --shadow:0 1px 0 rgba(0,0,0,.35), 0 12px 34px -24px #000;
+}
+*{box-sizing:border-box}
+body{margin:0; background:var(--ground); color:var(--ink);
+  font-family:"IBM Plex Sans KR",system-ui,sans-serif; font-size:15px; line-height:1.65;
+  -webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:Hahmlet,"IBM Plex Sans KR",serif; text-wrap:balance; margin:0; font-weight:700}
+h1{font-size:clamp(28px,4vw,46px); letter-spacing:-.02em; line-height:1.12}
+h2{font-size:24px; letter-spacing:-.01em}
+h3{font-size:15.5px; font-weight:500}
+p{margin:0}
+code,.mono,.num{font-family:"JetBrains Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums}
+code{font-size:.86em; background:var(--panel-2); padding:.1em .36em; border-radius:3px; color:var(--ink-2)}
+.wrap{max-width:1200px; margin:0 auto; padding:0 22px}
+.eyebrow{font-family:"JetBrains Mono",monospace; font-size:10.5px; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--ink-3)}
+.lede{color:var(--ink-2); max-width:64ch}
+.note{font-size:13.2px; color:var(--ink-2)}
+.hr{height:1px; background:var(--line-2); margin:16px 0}
+
+/* 용어 풍선 */
+.tt{border-bottom:1px dotted var(--ink-3); cursor:help; position:relative; outline:none}
+.tt:hover::after,.tt:focus-visible::after{
+  content:attr(data-tip); position:absolute; left:0; top:calc(100% + 7px); z-index:90;
+  width:min(320px,74vw); background:var(--ink); color:var(--ground);
+  font-family:"IBM Plex Sans KR",sans-serif; font-size:12.5px; line-height:1.55;
+  padding:9px 11px; border-radius:5px; box-shadow:0 12px 30px -14px rgba(0,0,0,.6)}
+.tt:focus-visible{border-bottom-style:solid; border-bottom-color:var(--dev)}
+
+/* 콘솔 */
+.console{position:sticky; top:0; z-index:60; background:var(--panel);
+  border-bottom:1px solid var(--line); box-shadow:var(--shadow)}
+.console .wrap{display:flex; align-items:center; gap:16px 20px; flex-wrap:wrap; padding:9px 22px}
+.brand{display:flex; flex-direction:column; line-height:1.2; margin-right:auto}
+.brand b{font-family:Hahmlet,serif; font-size:16px; letter-spacing:-.01em}
+.brand span{font-family:"JetBrains Mono",monospace; font-size:10px; color:var(--ink-3); letter-spacing:.09em}
+.ctrls{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+button{font-family:inherit; font-size:13px; color:var(--ink); background:var(--panel-2);
+  border:1px solid var(--line); border-radius:4px; padding:6px 12px; cursor:pointer;
+  transition:background .12s, border-color .12s, color .12s}
+button:hover{background:var(--sunken); border-color:var(--ink-3)}
+button:focus-visible{outline:2px solid var(--dev); outline-offset:2px}
+button[aria-pressed="true"]{background:var(--ink); color:var(--ground); border-color:var(--ink)}
+button.primary{background:var(--dev); border-color:var(--dev); color:#fff; font-weight:600; min-width:86px}
+button.primary:hover{background:var(--dev); filter:brightness(1.1)}
+.seg{display:flex; border:1px solid var(--line); border-radius:4px; overflow:hidden}
+.seg button{border:0; border-radius:0; border-left:1px solid var(--line); padding:6px 11px}
+.seg button:first-child{border-left:0}
+.swap{display:flex; border:1px solid var(--line); border-radius:4px; overflow:hidden; font-weight:600}
+.swap button{border:0; border-radius:0; padding:7px 15px; font-size:13px}
+.swap button[data-m="before"][aria-pressed="true"]{background:var(--host); border-color:var(--host); color:#fff}
+.swap button[data-m="after"][aria-pressed="true"]{background:var(--dev); border-color:var(--dev); color:#fff}
+.readout{display:flex; gap:20px; align-items:baseline}
+.readout .r{display:flex; flex-direction:column; align-items:flex-end}
+.readout .v{font-family:"JetBrains Mono",monospace; font-size:19px; font-weight:500;
+  line-height:1.15; font-variant-numeric:tabular-nums}
+.readout .k{font-size:9.5px; letter-spacing:.11em; text-transform:uppercase;
+  color:var(--ink-3); font-family:"JetBrains Mono",monospace}
+input[type=range]{accent-color:var(--dev)}
+.slider{display:flex; align-items:center; gap:9px; font-family:"JetBrains Mono",monospace; font-size:12px}
+.slider input[type=range]{flex:1; min-width:110px}
+
+/* 레이아웃 */
+section{padding:46px 0 6px}
+.panel{background:var(--panel); border:1px solid var(--line-2); border-radius:6px;
+  padding:18px; box-shadow:var(--shadow)}
+.grid{display:grid; gap:16px}
+.two{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.side{grid-template-columns:minmax(0,1fr) minmax(0,330px)}
+.wide{grid-template-columns:minmax(0,1.35fr) minmax(0,1fr)}
+@media(max-width:900px){.two,.side,.wide{grid-template-columns:1fr}}
+.head{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:8px}
+.head .eyebrow{margin-left:auto}
+.stack{display:flex; flex-direction:column; gap:16px}
+
+/* 히어로 */
+.hero{padding:52px 0 10px}
+.bignum{display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap; margin-top:6px}
+.bignum .b{font-family:"JetBrains Mono",monospace; font-size:clamp(30px,5.4vw,58px);
+  font-weight:500; line-height:1; font-variant-numeric:tabular-nums}
+.bignum .arrow{color:var(--ink-3); font-size:26px; padding-bottom:5px}
+.bignum .cap{font-size:12px; color:var(--ink-3); font-family:"JetBrains Mono",monospace;
+  padding-bottom:7px; letter-spacing:.05em}
+.tagrow{display:flex; gap:8px; flex-wrap:wrap; margin-top:14px}
+.tag{font-family:"JetBrains Mono",monospace; font-size:11px; letter-spacing:.05em;
+  padding:3px 9px; border-radius:99px; border:1px solid var(--line); color:var(--ink-2);
+  background:var(--panel)}
+
+/* 국경 보드 */
+.board{position:relative; height:640px; background:var(--sunken);
+  border:1px solid var(--line-2); border-radius:6px; overflow:hidden}
+.lanebg{position:absolute; top:0; bottom:0; border-left:1px dashed var(--line);
+  border-right:1px dashed var(--line)}
+.lanetag{position:absolute; top:9px; font-family:"JetBrains Mono",monospace; font-size:10.5px;
+  letter-spacing:.13em; text-transform:uppercase; transform:translateX(-50%); text-align:center;
+  line-height:1.45}
+.lanetag b{display:block; font-size:11.5px; letter-spacing:.1em}
+.st{position:absolute; height:38px; border-radius:4px; border:1px solid var(--line);
+  background:var(--panel); display:flex; align-items:center; gap:8px; padding:0 10px;
+  font-size:12.5px; transform:translateX(-50%);
+  transition:left .62s cubic-bezier(.65,.02,.3,1), top .5s cubic-bezier(.4,0,.2,1),
+             opacity .35s, background .2s, border-color .2s, box-shadow .2s}
+.st .nm{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.st .ms{font-family:"JetBrains Mono",monospace; font-size:11.5px; color:var(--ink-3)}
+.st .dot{width:7px; height:7px; border-radius:99px; flex:none}
+.st.host{border-left:3px solid var(--host)} .st.host .dot{background:var(--host)}
+.st.dev{border-left:3px solid var(--dev)}   .st.dev .dot{background:var(--dev)}
+.st.bus{border-left:3px solid var(--bus); border-style:dashed} .st.bus .dot{background:var(--bus)}
+.st.moe{border-left:3px solid var(--hot)}   .st.moe .dot{background:var(--hot)}
+.st.gone{opacity:0; pointer-events:none}
+.st.live{box-shadow:0 0 0 2px currentColor inset, 0 6px 20px -10px rgba(0,0,0,.5); background:var(--panel-2)}
+.st.live.host{color:var(--host)} .st.live.dev{color:var(--dev)}
+.st.live.bus{color:var(--bus)} .st.live.moe{color:var(--hot)}
+.st.did{background:var(--panel-2)}
+.board svg.links{position:absolute; inset:0; width:100%; height:100%; pointer-events:none}
+.board .hint{position:absolute; left:50%; bottom:10px; transform:translateX(-50%);
+  font-family:"JetBrains Mono",monospace; font-size:10.5px; color:var(--ink-3)}
+
+/* 계기 */
+.stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(112px,1fr)); gap:11px}
+.stat{background:var(--panel-2); border-radius:4px; padding:9px 11px}
+.stat .k{font-size:9.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3);
+  font-family:"JetBrains Mono",monospace}
+.stat .v{font-family:"JetBrains Mono",monospace; font-size:16.5px; margin-top:1px;
+  font-variant-numeric:tabular-nums}
+.stat .s{font-size:11px; color:var(--ink-3)}
+.tape{display:grid; grid-template-columns:repeat(32,1fr); gap:2px; height:16px}
+.tape .l{background:var(--sunken); border-radius:1px}
+.tape .l.done{background:var(--dev)} .tape .l.cur{background:var(--host)}
+.ledger{display:flex; height:26px; border-radius:3px; overflow:hidden; background:var(--sunken)}
+.ledger div{height:100%; transition:width .2s linear}
+.legend{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:5px 16px; font-size:12.5px}
+.legend .row{display:flex; align-items:center; gap:7px}
+.legend .sw{width:9px; height:9px; border-radius:2px; flex:none}
+.legend .nm{color:var(--ink-2)} .legend .vl{margin-left:auto; font-family:"JetBrains Mono",monospace}
+.barrow{display:grid; grid-template-columns:88px 1fr 92px; align-items:center; gap:10px;
+  font-family:"JetBrains Mono",monospace; font-size:12px; margin-bottom:5px}
+.barrow .bar{height:15px; background:var(--sunken); border-radius:2px; overflow:hidden}
+.barrow .bar i{display:block; height:100%}
+.barrow .v{text-align:right; font-variant-numeric:tabular-nums}
+table{border-collapse:collapse; width:100%; font-family:"JetBrains Mono",monospace; font-size:12px}
+th,td{padding:4px 8px; text-align:right; border-bottom:1px solid var(--line-2); white-space:nowrap}
+th{color:var(--ink-3); font-weight:400; font-size:10.5px; letter-spacing:.08em; text-transform:uppercase}
+td:first-child,th:first-child{text-align:left}
+tr.hi td{background:var(--dev-soft)}
+.scroll{overflow-x:auto}
+.src{font-family:"JetBrains Mono",monospace; font-size:11.8px; line-height:1.75; white-space:pre;
+  background:var(--sunken); border:1px solid var(--line-2); border-radius:4px; padding:11px 12px;
+  overflow-x:auto; color:var(--ink-2)}
+.src b{color:var(--ink); font-weight:500}
+.src .del{color:var(--host)} .src .add{color:var(--dev)}
+
+/* 타일 격자 */
+.tilewrap{overflow:auto; background:var(--sunken); border:1px solid var(--line-2);
+  border-radius:4px; padding:10px}
+.tilegrid{display:grid; gap:1px}
+.tilegrid .c{aspect-ratio:1; border-radius:1px; min-width:3px}
+.banks{display:grid; grid-template-columns:repeat(32,1fr); gap:2px}
+.banks .b{aspect-ratio:.55; border-radius:1px; font-family:"JetBrains Mono",monospace;
+  font-size:8px; display:flex; align-items:center; justify-content:center; color:var(--ground)}
+.pill{font-family:"JetBrains Mono",monospace; font-size:10px; letter-spacing:.06em;
+  text-transform:uppercase; padding:2px 7px; border-radius:99px; border:1px solid currentColor}
+footer{padding:44px 0 60px; color:var(--ink-3); font-size:12.5px}
+@media (prefers-reduced-motion:reduce){*{transition-duration:.01ms !important; animation-duration:.01ms !important}}
+</style>
+
+<div class="console">
+  <div class="wrap">
+    <div class="brand"><b>국경을 넘는 GEMM</b><span>EXP-002 · MICROWORLD · d12b957</span></div>
+    <div class="ctrls">
+      <div class="swap" id="mode">
+        <button data-m="before">before</button><button data-m="after">after</button>
+      </div>
+      <button class="primary" id="play">재생</button>
+      <button id="reset">처음</button>
+      <div class="seg" id="speed"></div>
+    </div>
+    <div class="slider" style="min-width:210px">
+      <label for="tok">n</label><input type="range" id="tok" min="1" max="64" value="8">
+      <span id="tokv" style="min-width:15ch; text-align:right"></span>
+    </div>
+    <div class="readout">
+      <div class="r"><span class="v" id="ro-el">0.00</span><span class="k">모형 초</span></div>
+      <div class="r"><span class="v" id="ro-sp">—</span><span class="k">모형 배율</span></div>
+    </div>
+  </div>
+</div>
+
+<main>
+<section class="hero"><div class="wrap">
+  <div class="eyebrow">실험 002 · 2026-08-24 · RTX 3090 (SM 82개) + Xeon (OMP 64스레드)</div>
+  <h1>같은 곱셈을, 다른 나라에서</h1>
+  <p class="lede" style="margin-top:14px">
+    <code>q_proj</code> · <code>k_proj</code> · <code>v_proj</code> · <code>o_proj</code> · <code>lm_head</code>.
+    이 다섯 개는 전부 <span class="tt" tabindex="0" data-tip="General Matrix Multiply. 행렬 × 행렬. 딥러닝 추론 연산량의 대부분이 이 모양입니다.">GEMM</span> 한 종류이고,
+    EXP-001까지는 전부 <b>CPU</b>에서 돌았습니다. EXP-002는 이 다섯 개만 <b>GPU</b>로 넘깁니다.
+    나머지(<span class="tt" tabindex="0" data-tip="layer normalization. 한 토큰의 4096개 숫자를 평균 0, 분산 1로 맞추고 가중치를 곱하는 정규화 연산.">norm</span>,
+    attention, <span class="tt" tabindex="0" data-tip="Mixture of Experts. 전문가 신경망 16개 중 토큰마다 2개만 골라 통과시키는 구조. 이 모델에서 곱셈량의 34%.">MoE</span>)는 손대지 않습니다.
+    가설 하나, 변경 하나. 위 스위치가 그 하나를 켜고 끕니다.
+  </p>
+  <div class="bignum">
+    <span class="cap">32 레이어 projection GEMM (T=165)</span>
+    <span class="b" style="color:var(--host)">26.28 s</span>
+    <span class="arrow">→</span>
+    <span class="b" style="color:var(--dev)">0.153 s</span>
+    <span class="cap" style="color:var(--dev)">172배</span>
+  </div>
+  <div class="bignum" style="margin-top:4px">
+    <span class="cap">그런데 실측 전체 시간 (n=8)</span>
+    <span class="b" style="font-size:clamp(22px,3.4vw,34px); color:var(--host)">62.27 s</span>
+    <span class="arrow">→</span>
+    <span class="b" style="font-size:clamp(22px,3.4vw,34px); color:var(--dev)">36.87 s</span>
+    <span class="cap">1.69배</span>
+  </div>
+  <div class="tagrow">
+    <span class="tag">172배를 얻고 1.69배가 되는 이유가 이 실험의 전부</span>
+    <span class="tag">검증 PASSED · 최대 오차 8.77e-05 (기준 3e-3)</span>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="head"><h2>국경</h2><span class="eyebrow">decoder layer 1개 · 실행 위치</span></div>
+  <p class="note" style="max-width:66ch; margin-bottom:14px">
+    왼쪽은 CPU(host)의 땅, 오른쪽은 GPU(device)의 땅, 가운데는
+    <span class="tt" tabindex="0" data-tip="PCI Express. CPU 메모리와 GPU 메모리를 잇는 통로. 측정값 대략 10~17 GB/s. GPU 내부 메모리 대역폭(936 GB/s)보다 훨씬 좁습니다.">PCIe 버스</span>입니다.
+    <b>before → after</b>를 누르면 상자 네 개가 국경을 넘습니다. 넘어간 대가로 가운데 점선 상자
+    네 개(복사)가 새로 생깁니다. 재생을 누르면 측정된 시간 비율 그대로 토큰이 흐릅니다.
+  </p>
+  <div class="grid wide">
+    <div class="board" id="board">
+      <svg class="links" id="links"></svg>
+      <div class="hint">상자를 누르면 그 단계의 숫자가 오른쪽에 뜹니다</div>
+    </div>
+    <div class="stack">
+      <div class="panel">
+        <div class="head"><h3>지금 흐르는 곳</h3><span class="eyebrow" id="stwhere">host</span></div>
+        <div id="inspect"></div>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>레이어 진행</h3><span class="eyebrow" id="lyv">0 / 32</span></div>
+        <div class="tape" id="tape"></div>
+        <div class="hr"></div>
+        <div class="head"><h3>모형 시간 원장</h3></div>
+        <div class="ledger" id="live"></div>
+        <div class="legend" id="livelg" style="margin-top:9px"></div>
+      </div>
+    </div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="head"><h2>무엇이 어디로 갔는가</h2><span class="eyebrow">src/model.cu · include/model.h</span></div>
+  <div class="grid two">
+    <div class="panel">
+      <div class="head"><h3>가중치의 거주지</h3><span class="pill" style="color:var(--bus)">생성자에서 1회</span></div>
+      <div class="src"><span class="del">- Linear q_proj, k_proj, v_proj, o_proj;   // Tensor = host RAM</span>
+<span class="add">+ DeviceLinear q_proj, k_proj, v_proj, o_proj;</span>
+
+DeviceLinear::DeviceLinear(loader, w, b) {
+  { const Tensor host = loader.load(w);   <b>// host에 잠깐</b>
+    weight = device_copy(host); }         <b>// H2D 후 즉시 소멸</b>
+  if (loader.has(b)) bias = device_copy(loader.load(b));
+}</div>
+      <p class="note" style="margin-top:11px">
+        레이어당 <b class="mono">20,971,520</b>개 = <b class="mono">80.0 MB</b>,
+        32 레이어 + lm_head 합쳐 <b class="mono">3,061 MB</b>가 VRAM으로 이사합니다.
+        측정 업로드 시간 <b class="mono">0.371 s</b> — 모델 생성 시점, 즉 <b>시간 측정 구간 밖</b>입니다.
+        host 사본을 바로 버리므로 host RAM도 3 GB 절약합니다.
+      </p>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>호출 지점</h3><span class="pill" style="color:var(--dev)">레이어마다 32회</span></div>
+      <div class="src"><span class="del">- Tensor q, k, v;</span>
+<span class="del">- layer.q_proj.forward(normed, q);   // host matmul_transposed</span>
+<span class="add">+ to_device(d_in.get(), normed);                  // H2D 1회</span>
+<span class="add">+ layer.q_proj.forward(d_in.get(), d_q.get(), total);</span>
+<span class="add">+ layer.k_proj.forward(d_in.get(), d_k.get(), total);</span>
+<span class="add">+ layer.v_proj.forward(d_in.get(), d_v.get(), total);</span>
+<span class="add">+ to_host(q, d_q.get()); to_host(k, ...); to_host(v, ...);</span></div>
+      <p class="note" style="margin-top:11px">
+        <code>normed</code>를 <b>한 번</b> 올려 세 개의 커널이 같이 씁니다. attention은 host에 남아 있으니
+        q/k/v는 다시 내려와야 하고, 그 결과 <code>context</code>가 또 올라가 <code>o_proj</code>를 거쳐 내려옵니다.
+        레이어당 국경 통과 <b>6번</b>. 이게 after의 새 비용입니다.
+      </p>
+    </div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="head"><h2>172배를 얻고 1.69배가 된 이유</h2><span class="eyebrow">암달의 법칙 · 몫을 무엇으로 세는가</span></div>
+  <div class="grid side">
+    <div class="panel">
+      <div class="head"><h3>같은 작업, 두 가지 몫</h3></div>
+      <div id="shares"></div>
+      <div class="hr"></div>
+      <p class="note" id="sharenote"></p>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>projection을 X배 빠르게</h3></div>
+      <div class="slider"><label for="acc">X</label>
+        <input type="range" id="acc" min="0" max="100" value="100">
+        <span id="accv" style="min-width:9ch; text-align:right"></span></div>
+      <div id="curve" style="margin-top:10px"></div>
+      <p class="note" id="curvenote" style="margin-top:10px"></p>
+    </div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="head"><h2>커널 한 개의 속</h2><span class="eyebrow">gemm_nt_bias · TILE × TILE 블록</span></div>
+  <p class="note" style="max-width:68ch; margin-bottom:14px">
+    EXP-002가 추가한 커널은 하나입니다. <code>C[M,N] = A[M,K] · B[N,K]ᵀ + bias[N]</code>.
+    스레드 하나가 C의 한 칸을 맡고, TILE×TILE 스레드가 한
+    <span class="tt" tabindex="0" data-tip="같은 블록의 스레드들만 함께 쓰는 아주 빠른 작은 메모리. RTX 3090은 블록당 48 KB. GPU 전역 메모리보다 100배 가깝습니다.">shared memory</span>
+    조각을 함께 읽어 TILE번 재사용합니다. 아래 값을 바꿔 보세요 — 시간은 전부 실측입니다.
+  </p>
+  <div class="grid side">
+    <div class="panel">
+      <div class="ctrls" style="margin-bottom:12px">
+        <span class="eyebrow">shape</span><div class="seg" id="shape"></div>
+        <span class="eyebrow">TILE</span><div class="seg" id="tile"></div>
+      </div>
+      <div class="tilewrap"><div class="tilegrid" id="tg"></div></div>
+      <div class="legend" style="margin-top:11px">
+        <div class="row"><span class="sw" style="background:var(--dev)"></span><span class="nm">쓰는 칸 (C에 실제로 있는 출력)</span></div>
+        <div class="row"><span class="sw" style="background:var(--idle)"></span><span class="nm">버리는 칸 (M·N 밖 · 계산은 하고 결과는 던짐)</span></div>
+        <div class="row"><span class="sw" style="border:1px solid var(--ink-3); background:transparent"></span><span class="nm">블록 경계 = TILE</span></div>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="panel">
+        <div class="head"><h3>실측 시간</h3><span class="eyebrow" id="kshape"></span></div>
+        <div id="kbars"></div>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>계산으로 나오는 값</h3></div>
+        <div id="kstats"></div>
+      </div>
+    </div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="head"><h2>숫자 하나가 1.92배</h2><span class="eyebrow">__shared__ float bs[TILE][TILE + 1]</span></div>
+  <div class="grid side">
+    <div class="panel">
+      <div class="head"><h3>워프 32개 스레드가 두드리는 <span class="tt" tabindex="0" data-tip="shared memory는 32개의 은행(bank)으로 나뉩니다. 4바이트씩 순환 배정. 한 순간에 서로 다른 은행이면 동시에 읽지만, 같은 은행이면 줄을 서야 합니다.">뱅크</span></h3>
+        <div class="ctrls" style="margin-left:auto"><div class="seg" id="pad"></div></div></div>
+      <div class="banks" id="banks"></div>
+      <p class="note" style="margin-top:12px" id="banknote"></p>
+      <div class="src" style="margin-top:12px">for (int i = 0; i &lt; TILE; ++i)
+  acc += as[ty][i] * <b>bs[tx][i]</b>;   <b>// 워프 안에서 tx가 0..31로 다르다</b></div>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>패딩만 뺀 대조군</h3><span class="pill" style="color:var(--dev)">실측</span></div>
+      <div class="scroll"><table id="padtab"></table></div>
+      <p class="note" style="margin-top:11px">
+        커널의 다른 모든 줄은 같습니다. <code>[TILE][TILE]</code> → <code>[TILE][TILE+1]</code>,
+        선언에서 <b>+1</b> 하나. TILE=32에서 <b>1.92배</b>, TILE=16에서 1.10배.
+        TILE=16이 덜 손해 보는 이유는 한 워프에 <code>tx</code>가 0..15밖에 없어 충돌하는 스레드가
+        절반뿐이기 때문입니다.
+      </p>
+    </div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="head"><h2>버스는 병목이 아니었다</h2><span class="eyebrow">레이어당 국경 통과 6회 · pageable memcpy 실측</span></div>
+  <div class="grid side">
+    <div class="panel">
+      <div class="head"><h3>T = <span id="bT" class="mono"></span>에서 레이어 1개가 나르는 것</h3></div>
+      <div class="scroll"><table id="bustab"></table></div>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>32 레이어 합</h3></div>
+      <div id="busstats"></div>
+      <p class="note" style="margin-top:12px" id="busnote"></p>
+    </div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="head"><h2>답은 그대로인가</h2><span class="eyebrow">host 대조 · 최대 절대 오차</span></div>
+  <div class="grid two">
+    <div class="panel">
+      <div class="head"><h3>같은 shape, 같은 입력, 두 기계</h3></div>
+      <div id="acctab"></div>
+      <p class="note" style="margin-top:12px">
+        커널의 k 루프는 <b>0부터 오름차순</b>입니다. host <code>matmul_transposed</code>와 더하는 순서를
+        맞춰야 부동소수점 반올림이 같은 방향으로 쌓입니다. 남는 차이는 GPU가
+        <span class="tt" tabindex="0" data-tip="Fused Multiply-Add. 곱셈과 덧셈을 한 번에 하며 중간 반올림을 생략합니다. 결과가 더 정확하지만, CPU가 두 단계로 계산한 값과 마지막 자리가 달라집니다.">FMA</span>로
+        곱셈·덧셈을 융합해 중간 반올림을 건너뛰기 때문입니다. 값의 크기가 100 정도인데 차이는
+        <b class="mono">6e-05</b> — 상대오차 <b class="mono">6e-07</b>입니다.
+      </p>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>전체 파이프라인 누적 오차</h3></div>
+      <div id="accbar"></div>
+      <p class="note" style="margin-top:12px">
+        32 레이어를 통과하고 <span class="tt" tabindex="0" data-tip="residual stream. 각 레이어의 출력을 입력에 더해 계속 이어가는 주 신호. 오차가 여기에 누적됩니다.">residual</span>에
+        계속 더해도 최종 logit 오차는 EXP-001의 6.87e-05에서 8.77e-05로 늘어난 것이 전부입니다.
+        기준선 3e-3의 <b>2.9%</b>. 이 여유가 이후 실험(EXP-003, EXP-004)의 예산입니다.
+      </p>
+    </div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="head"><h2>이 모형이 서 있는 자리</h2><span class="eyebrow">측정 · 유도 · 어긋남</span></div>
+  <div class="grid two">
+    <div class="panel">
+      <div class="head"><h3>기록된 실측과 대조</h3></div>
+      <div class="scroll"><table id="calib"></table></div>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>측정한 것 / 계산한 것 / 안 맞는 것</h3></div>
+      <div class="note" id="assump"></div>
+    </div>
+  </div>
+</div></section>
+
+<footer class="wrap">
+  측정: 2026-08-24, aps 파티션 계산 노드 1개(<code>--exclusive</code>, OMP 64스레드, RTX 3090).
+  무수정 <code>obj/tensor.o</code>의 host <code>matmul_transposed</code>와 EXP-002가 추가한
+  <code>gemm_nt_bias</code>를 같은 바이너리에서 나란히 잰 값입니다.
+  벤치 원본 <code>docs/microworld/exp-002-gpu-gemm-bench.cu</code>,
+  실행 기록 <code>docs/lab-note.md</code> EXP-002, 커밋 <code>d12b957</code>.
+</footer>
+</main>
+
+<script>
+"use strict";
+/* ==================================================================
+   측정값. 2026-08-24, RTX 3090 + OMP 64스레드, 단일 바이너리.
+   host = tensor_ops::matmul_transposed + bias 루프 (Linear::forward 원문)
+   t32/t16/t8 = gemm_nt_bias<TILE>, naive = shared memory 없는 대조군. 단위 ms.
+================================================================== */
+const G = {
+  q : {K:4096,N:2048, lab:"q_proj",        M:[1,8,32,64,165,330,660,1320],
+       host:[50.133,50.178,64.702,112.534,324.676,622.609,1200.713,2380.447],
+       t32 :[0.3440,0.3458,0.3444,0.6815,1.7014,3.0697,5.7462,11.1499],
+       t16 :[0.2081,0.2084,0.3711,0.6159,1.4830,2.6556,5.2454,10.2538],
+       t8  :[0.1540,0.1552,0.3591,0.6538,1.5842,3.1227,6.1383,12.2002],
+       nv  :[0.2096,0.5859,2.3135,4.5951,9.8204,18.9444,37.2811,74.5195],
+       df  :[3.433e-5,4.959e-5,4.959e-5,4.959e-5,4.959e-5,6.104e-5,6.104e-5,6.104e-5]},
+  kv: {K:4096,N:512,  lab:"k_proj / v_proj", M:[1,8,32,64,165,330,660,1320],
+       host:[13.776,18.535,25.903,43.533,83.113,155.241,305.645,594.515],
+       t32 :[0.3397,0.3398,0.3402,0.3417,0.6824,1.0240,1.6995,3.0650],
+       t16 :[0.1704,0.1704,0.1695,0.2027,0.4517,0.7701,1.4193,2.6658],
+       t8  :[0.1273,0.1279,0.1313,0.2014,0.4593,0.8500,1.6040,3.0947],
+       nv  :[0.1934,0.5802,2.3078,2.3105,2.6821,5.1953,9.7507,19.0618],
+       df  :[3.052e-5,4.196e-5,4.196e-5,4.196e-5,4.578e-5,4.578e-5,5.722e-5,5.722e-5]},
+  o : {K:2048,N:4096, lab:"o_proj",        M:[1,8,32,64,165,330,660,1320],
+       host:[50.339,50.446,90.425,113.951,330.479,624.886,1206.536,2400.660],
+       t32 :[0.3434,0.3442,0.3441,0.6811,1.7086,3.0644,5.6238,11.1523],
+       t16 :[0.1877,0.1878,0.3096,0.5479,1.4132,2.6276,5.2132,10.2357],
+       t8  :[0.1090,0.1079,0.3273,0.6163,1.5671,3.0861,6.0948,12.1520],
+       nv  :[0.2123,0.7700,2.3041,4.5915,9.5422,18.8295,37.0058,74.1760],
+       df  :[2.098e-5,2.670e-5,3.052e-5,3.052e-5,3.433e-5,3.433e-5,3.433e-5,3.815e-5]},
+  lm: {K:4096,N:32064,lab:"lm_head",       M:[1,8,32,64,165],
+       host:[762.300,778.257,1136.716,1785.057,4986.861],
+       t32 :[4.4011,4.3977,4.4107,8.4680,24.9739],
+       t16 :[2.0183,2.0273,3.9138,7.7534,21.1647],
+       t8  :[1.2838,1.2927,4.8626,9.6493,25.2101],
+       nv  :[1.4910,7.4715,29.8063,57.3217,144.9101],
+       df  :[3.433e-5,4.959e-5,6.104e-5,6.104e-5,6.104e-5]}
+};
+// pageable cudaMemcpy. bus[width] = {T:[...], h2d:[ms], d2h:[ms]}
+const BUS = {
+  4096:{T:[165,660,1320], h2d:[0.2028,0.6622,2.1811], d2h:[0.2789,0.9803,1.9353]},
+  2048:{T:[165,660,1320], h2d:[0.1133,0.3308,0.6634], d2h:[0.1410,0.5002,0.9794]},
+  512 :{T:[165,660,1320], h2d:[0.0345,0.1139,0.1854], d2h:[0.0401,0.1406,0.2598]}
+};
+// shared memory 패딩만 뺀 대조군, M=165 / M=1320
+const PAD = [
+  {tag:"q_proj",  M:165, p32:1.6980,n32:3.2433,p16:1.4700,n16:1.6344},
+  {tag:"q_proj",  M:1320,p32:11.1401,n32:21.3804,p16:10.2813,n16:11.4924},
+  {tag:"k/v_proj",M:165, p32:0.6765,n32:1.2972,p16:0.4460,n16:0.4761},
+  {tag:"k/v_proj",M:1320,p32:3.0450,n32:5.8308,p16:2.6706,n16:2.9509},
+  {tag:"o_proj",  M:165, p32:1.6888,n32:3.2422,p16:1.4134,n16:1.5709},
+  {tag:"o_proj",  M:1320,p32:11.1525,n32:21.3869,p16:10.2523,n16:11.4658},
+  {tag:"lm_head", M:165, p32:24.9646,n32:47.9273,p16:21.1784,n16:23.7357}
+];
+// 기록된 실행. lab-note EXP-001/002, APS_PROFILE=1 (T=165, n=8)
+const REC = {
+  wall_before:62.270, wall_after:36.869, seqs:8, T:165,
+  prof:{norm:0.140,h2d:0.016,gemm:0.153,d2h:0.040,attn:0.094,moe:28.007,resid:0.095,lm:0.005},
+  diff_before:6.87e-5, diff_after:8.77e-5, thresh:3e-3,
+  upload_MB:3061.0, upload_s:0.371, layer_MB:80.0, layer_params:20971520
+};
+const HW = {sms:82, clk:1.74, shmem:49152, maxThreadsSM:1536, maxThreadsBlk:1024, maxBlocksSM:16};
+const CFG = {H:4096,L:32,QDIM:2048,KVDIM:512,V:32064,NE:16,K:2,FF:448};
+// 토큰당 레이어당 MAC
+const MAC = {
+  proj: 4096*2048 + 2*(4096*512) + 2048*4096,
+  moe : 2*(4096*448*2 + 448*4096),
+  gate: 4096*16
+};
+
+/* ---------- 보간 ---------- */
+function interp(xs, ys, x){
+  if (x <= xs[0]) return ys[0];
+  const last = xs.length-1;
+  if (x >= xs[last]) return ys[last] * x / xs[last];      // 큰 M에서는 선형 외삽
+  for (let i=0;i<last;i++) if (x <= xs[i+1])
+    return ys[i] + (ys[i+1]-ys[i])*(x-xs[i])/(xs[i+1]-xs[i]);
+  return ys[last];
+}
+const gem = (f,k,M) => interp(G[f].M, G[f][k], M);
+const bus = (w,dir,T) => interp(BUS[w].T, BUS[w][dir], T);
+const batchOf = T => Math.max(1, Math.round(T/20.625));   // n=8 -> 165 토큰, 평균 20.6
+
+/* ---------- 모형: generate() 한 번의 단계별 초 ---------- */
+function budget(T){
+  const b = batchOf(T), s = T/REC.T;                       // host 잔여 단계는 T에 선형
+  const projHost = CFG.L*(gem("q","host",T) + 2*gem("kv","host",T) + gem("o","host",T))/1000;
+  const projDev  = CFG.L*(gem("q","t32", T) + 2*gem("kv","t32", T) + gem("o","t32", T))/1000;
+  const h2d = CFG.L*(bus(4096,"h2d",T) + bus(2048,"h2d",T))/1000;
+  const d2h = CFG.L*(bus(2048,"d2h",T) + 2*bus(512,"d2h",T) + bus(4096,"d2h",T))/1000;
+  const host = {norm:REC.prof.norm*s, attn:REC.prof.attn*s, moe:REC.prof.moe*s, resid:REC.prof.resid*s};
+  return {
+    T, batch:b,
+    before:{...host, proj:projHost, bus:0, lm:gem("lm","host",b)/1000},
+    after :{...host, proj:projDev,  bus:h2d+d2h, lm:gem("lm","t32",b)/1000, h2d, d2h}
+  };
+}
+const ORD = ["norm","proj","bus","attn","moe","resid","lm"];
+const CAT = {
+  norm :{nm:"layer_norm (host)",       c:"var(--host)"},
+  proj :{nm:"q/k/v/o projection",      c:"var(--dev)"},
+  bus  :{nm:"H2D + D2H 복사",          c:"var(--bus)"},
+  attn :{nm:"attention (host)",        c:"var(--idle)"},
+  moe  :{nm:"MoE (host)",              c:"var(--hot)"},
+  resid:{nm:"residual add (host)",     c:"var(--ink-3)"},
+  lm   :{nm:"lm_head",                 c:"var(--dev)"}
+};
+const sum = o => ORD.reduce((a,k)=>a+(o[k]||0),0);
+
+/* ---------- 보드: 단계 목록 ---------- */
+function stations(T){
+  const bd = budget(T), mo = m => bd[m];
+  const L = CFG.L;
+  const per = (m,k) => mo(m)[k]/L;                       // 레이어 1개분
+  const gq=(k)=>gem("q",k,T)/1000, gk=(k)=>gem("kv",k,T)/1000, go=(k)=>gem("o",k,T)/1000;
+  const S = [];
+  const add = (id,nm,lane,cat,tb,ta,det) => S.push({id,nm,lane,cat,tb,ta,det});
+  add("n1","layer_norm (input)","host","norm", per("before","norm")/2, per("after","norm")/2,
+      "4096개 숫자를 토큰마다 정규화. host, OpenMP.");
+  add("q","q_proj  [T,4096]×[2048,4096]ᵀ","move","proj", gq("host"), gq("t32"),
+      "8.39 MMAC/token. before는 host 64스레드, after는 GPU 커널.");
+  add("k","k_proj  [T,4096]×[512,4096]ᵀ","move","proj", gk("host"), gk("t32"),
+      "2.10 MMAC/token. q와 같은 d_in을 재사용합니다.");
+  add("v","v_proj  [T,4096]×[512,4096]ᵀ","move","proj", gk("host"), gk("t32"),
+      "2.10 MMAC/token.");
+  add("a","attention (+rope)","host","attn", per("before","attn"), per("after","attn"),
+      "EXP-001이 다시 쓴 배치 attention. 짧은 시퀀스라 이미 싸다.");
+  add("o","o_proj  [T,2048]×[4096,2048]ᵀ","move","proj", go("host"), go("t32"),
+      "8.39 MMAC/token.");
+  add("r1","residual add","host","resid", per("before","resid")/2, per("after","resid")/2,
+      "attn 출력에 입력을 더합니다.");
+  add("n2","layer_norm (post)","host","norm", per("before","norm")/2, per("after","norm")/2, "");
+  add("moe","MoE · router + expert 16개","host","moe", per("before","moe"), per("after","moe"),
+      "토큰마다 Tensor({16}) 새로 할당 + at()으로 원소 단위 gather/scatter. 손대지 않았습니다.");
+  add("r2","residual add","host","resid", per("before","resid")/2, per("after","resid")/2, "");
+  // after 에서만 생기는 국경 통과
+  const B = [
+    {id:"h1", nm:"H2D  normed [T,4096]",  after:0, w:4096, dir:"h2d", at:1},
+    {id:"d1", nm:"D2H  q [T,2048]",       w:2048, dir:"d2h", at:4},
+    {id:"d2", nm:"D2H  k,v [T,512]×2",    w:512,  dir:"d2h", at:4, x2:true},
+    {id:"h2", nm:"H2D  context [T,2048]", w:2048, dir:"h2d", at:5},
+    {id:"d3", nm:"D2H  attn [T,4096]",    w:4096, dir:"d2h", at:6}
+  ];
+  B.forEach(b=>{
+    const ms = bus(b.w,b.dir,T) * (b.x2?2:1);
+    S.push({id:b.id, nm:b.nm, lane:"bus", cat:"bus", tb:0, ta:ms/1000, busOnly:true, at:b.at,
+            det:`${(T*b.w*4/1048576).toFixed(2)} MB · pageable cudaMemcpy 실측 ${ms.toFixed(4)} ms`});
+  });
+  return S;
+}
+function ordered(S, mode){
+  const base = S.filter(s=>!s.busOnly);
+  if (mode==="before") return base;
+  const out = [];
+  base.forEach((s,i)=>{
+    S.filter(b=>b.busOnly && b.at===i).forEach(b=>out.push(b));
+    out.push(s);
+  });
+  S.filter(b=>b.busOnly && b.at>=base.length).forEach(b=>out.push(b));
+  return out;
+}
+
+/* ---------- 상태 ---------- */
+const $ = id => document.getElementById(id);
+let nSeq = 8, T = 165, mode = "after", speed = 20;
+const tokOf = n => n===8 ? REC.T : Math.round(n*20.625);   // n=8 은 실측 지점(165 토큰)
+let ST = stations(T), BD = budget(T);
+let playing = false, simT = 0, layer = 0, stIdx = 0, stT = 0, lastFrame = 0;
+let picked = null;
+
+function seg(host, items, get, set){
+  host.innerHTML = "";
+  items.forEach(it=>{
+    const b = document.createElement("button");
+    b.textContent = it.label;
+    b.setAttribute("aria-pressed", String(get()===it.value));
+    b.onclick = ()=>{ set(it.value);
+      [...host.children].forEach((c,i)=>c.setAttribute("aria-pressed", String(items[i].value===get()))); };
+    host.appendChild(b);
+  });
+}
+const f3 = x => x.toFixed(3), f2 = x => x.toFixed(2);
+const ms = x => x<1 ? (x*1000).toFixed(1)+" ms" : x.toFixed(3)+" s";
+const mb = x => (x/1048576).toFixed(2);
+const big = n => n.toLocaleString("en-US");
+
+/* ---------- 보드 그리기 ---------- */
+const LANE = {host:17, bus:50, dev:83};
+function laneOf(s, m){
+  if (s.lane==="bus") return LANE.bus;
+  if (s.lane==="move") return m==="before" ? LANE.host : LANE.dev;
+  return LANE.host;
+}
+function buildBoard(){
+  const board = $("board");
+  [...board.querySelectorAll(".st,.lanebg,.lanetag")].forEach(e=>e.remove());
+  const bg = (l,r,cls)=>{const d=document.createElement("div");d.className="lanebg";
+    d.style.left=l+"%"; d.style.width=(r-l)+"%"; d.style.background=cls; board.appendChild(d);};
+  bg(2,33,"var(--host-soft)"); bg(35,65,"var(--bus-soft)"); bg(67,98,"var(--dev-soft)");
+  const tag=(x,t,s,c)=>{const d=document.createElement("div");d.className="lanetag";
+    d.style.left=x+"%"; d.style.color=c; d.innerHTML=`<b>${t}</b>${s}`; board.appendChild(d);};
+  tag(LANE.host,"HOST","CPU · OMP 64스레드","var(--host)");
+  tag(LANE.bus,"PCIe","cudaMemcpy","var(--bus)");
+  tag(LANE.dev,"DEVICE",`RTX 3090 · SM ${HW.sms}개`,"var(--dev)");
+  ST.forEach(s=>{
+    const d = document.createElement("div");
+    d.className = "st"; d.id = "st-"+s.id; d.tabIndex = 0;
+    d.innerHTML = `<span class="dot"></span><span class="nm"></span><span class="ms"></span>`;
+    d.querySelector(".nm").textContent = s.nm;
+    d.onclick = ()=>{ picked = s.id; drawInspect(); };
+    d.onkeydown = e=>{ if(e.key==="Enter"||e.key===" "){e.preventDefault(); picked=s.id; drawInspect();} };
+    board.appendChild(d);
+  });
+  layoutBoard();
+}
+function layoutBoard(){
+  const list = ordered(ST, mode);
+  const H = 640, top = 62, rows = list.length;
+  const step = Math.min(46, (H-top-34)/rows);
+  const bw = $("board").clientWidth;
+  const w = Math.max(96, Math.min(bw*0.29, bw/3 - 14));
+  ST.forEach(s=>{
+    const el = $("st-"+s.id);
+    const i = list.indexOf(s);
+    el.style.width = w+"px";
+    el.style.left = laneOf(s,mode)+"%";
+    if (i<0){ el.classList.add("gone"); el.style.top = (top+rows*step/2)+"px"; return; }
+    el.classList.remove("gone");
+    el.style.top = (top + i*step)+"px";
+    el.className = el.className.replace(/\b(host|dev|bus|moe)\b/g,"").replace(/\s+/g," ").trim();
+    const lane = s.lane==="bus" ? "bus" : (s.cat==="moe" ? "moe" : (laneOf(s,mode)===LANE.dev ? "dev":"host"));
+    el.classList.add(lane);
+    el.querySelector(".ms").textContent = ms(mode==="before"?s.tb:s.ta);
+  });
+  drawLinks();
+}
+function drawLinks(){
+  const svg = $("links");
+  svg.innerHTML = "";
+  if (mode!=="after") return;
+  const list = ordered(ST, mode);
+  const bw = $("board").clientWidth, bh = 640;
+  const pos = s => {
+    const i = list.indexOf(s), H=640, top=62, step=Math.min(46,(H-top-34)/list.length);
+    return {y: top + i*step + 19, x: laneOf(s,mode)/100*bw};
+  };
+  const line = (a,b,c)=>{
+    const p = document.createElementNS("http://www.w3.org/2000/svg","path");
+    const A=pos(a), B=pos(b), mx=(A.x+B.x)/2;
+    p.setAttribute("d",`M${A.x},${A.y} C${mx},${A.y} ${mx},${B.y} ${B.x},${B.y}`);
+    p.setAttribute("fill","none"); p.setAttribute("stroke",c);
+    p.setAttribute("stroke-width","1.2"); p.setAttribute("stroke-dasharray","3 3");
+    p.setAttribute("opacity",".55"); svg.appendChild(p);
+  };
+  const by = id => ST.find(s=>s.id===id);
+  [["n1","h1"],["h1","q"],["h1","k"],["h1","v"],["q","d1"],["k","d2"],["v","d2"],
+   ["d1","a"],["d2","a"],["a","h2"],["h2","o"],["o","d3"],["d3","r1"]]
+   .forEach(([a,b])=>line(by(a),by(b),"var(--bus)"));
+  svg.setAttribute("viewBox",`0 0 ${bw} ${bh}`);
+}
+
+/* ---------- 재생 ---------- */
+function resetRun(){ simT=0; layer=0; stIdx=0; stT=0;
+  ST.forEach(s=>{const e=$("st-"+s.id); e.classList.remove("live","did");});
+  drawTape(); drawLive(); drawInspect(); }
+function stepDur(s){ return (mode==="before"?s.tb:s.ta); }
+function tick(now){
+  if (!playing) { lastFrame = now; requestAnimationFrame(tick); return; }
+  const dt = Math.min(0.05,(now-lastFrame)/1000); lastFrame = now;
+  let simDt = dt*speed;
+  const list = ordered(ST, mode);
+  let guard = 0;
+  while (simDt > 0 && layer < CFG.L && guard++ < 4000){
+    const s = list[stIdx];
+    const d = stepDur(s);
+    const left = d - stT;
+    if (simDt >= left){
+      simDt -= left; simT += left; stT = 0;
+      $("st-"+s.id).classList.remove("live"); $("st-"+s.id).classList.add("did");
+      stIdx++;
+      if (stIdx >= list.length){ stIdx = 0; layer++;
+        ST.forEach(x=>$("st-"+x.id).classList.remove("did")); }
+    } else { stT += simDt; simT += simDt; simDt = 0; }
+    if (layer < CFG.L) $("st-"+list[stIdx].id).classList.add("live");
+  }
+  if (layer >= CFG.L){
+    // lm_head 는 마지막에 한 번
+    simT = sum(BD[mode]); playing = false; $("play").textContent = "재생";
+  }
+  drawTape(); drawLive(); drawStatus();
+  requestAnimationFrame(tick);
+}
+function drawTape(){
+  const t = $("tape");
+  if (t.children.length !== CFG.L){ t.innerHTML="";
+    for(let i=0;i<CFG.L;i++){const d=document.createElement("div");d.className="l";t.appendChild(d);} }
+  [...t.children].forEach((c,i)=>{ c.className = "l" + (i<layer?" done":(i===layer?" cur":"")); });
+  $("lyv").textContent = `${Math.min(layer,CFG.L)} / ${CFG.L}`;
+}
+function drawStatus(){
+  const list = ordered(ST, mode), s = list[Math.min(stIdx,list.length-1)];
+  $("ro-el").textContent = simT.toFixed(2);
+  const b = sum(BD.before), a = sum(BD.after);
+  $("ro-sp").textContent = (b/a).toFixed(2)+"x";
+  $("stwhere").textContent = s.lane==="bus" ? "pcie" : (laneOf(s,mode)===LANE.dev ? "device":"host");
+}
+function drawLive(){
+  const bd = BD[mode], tot = sum(bd);
+  const frac = Math.min(1, simT/tot);
+  const el = $("live"); el.innerHTML = "";
+  ORD.forEach(k=>{
+    const v = bd[k]||0; if (!v) return;
+    const d = document.createElement("div");
+    d.style.background = CAT[k].c; d.style.width = (v/tot*100*frac).toFixed(3)+"%";
+    d.title = CAT[k].nm; el.appendChild(d);
+  });
+  const lg = $("livelg"); lg.innerHTML = "";
+  ORD.forEach(k=>{
+    const v = bd[k]||0; if (!v) return;
+    const r = document.createElement("div"); r.className="row";
+    r.innerHTML = `<span class="sw" style="background:${CAT[k].c}"></span>
+      <span class="nm">${CAT[k].nm}</span><span class="vl">${ms(v)} · ${(v/tot*100).toFixed(1)}%</span>`;
+    lg.appendChild(r);
+  });
+}
+function drawInspect(){
+  const s = ST.find(x=>x.id===picked) || ST.find(x=>x.id==="moe");
+  const tb=s.tb, ta=s.ta;
+  const rows = [
+    ["실행 위치 (before)", s.lane==="bus" ? "—" : "host"],
+    ["실행 위치 (after)", s.lane==="bus" ? "PCIe" : (s.lane==="move" ? "device" : "host")],
+    ["레이어 1개 · before", tb ? ms(tb) : "없음"],
+    ["레이어 1개 · after",  ta ? ms(ta) : "없음"],
+    ["32 레이어 · before", tb ? ms(tb*CFG.L) : "없음"],
+    ["32 레이어 · after",  ta ? ms(ta*CFG.L) : "없음"]
+  ];
+  if (tb && ta) rows.push(["배율", (tb/ta).toFixed(1)+"x"]);
+  $("inspect").innerHTML =
+    `<div class="mono" style="font-size:13px; margin-bottom:8px">${s.nm}</div>
+     <dl style="display:grid; grid-template-columns:auto 1fr; gap:2px 14px; margin:0;
+       font-family:'JetBrains Mono',monospace; font-size:12px">
+     ${rows.map(([k,v])=>`<dt style="color:var(--ink-3)">${k}</dt>
+       <dd style="margin:0; text-align:right">${v}</dd>`).join("")}</dl>
+     <p class="note" style="margin-top:10px; font-size:12.5px">${s.det||""}</p>`;
+}
+
+/* ---------- 암달 ---------- */
+function drawShares(){
+  const bd = BD.before, tot = sum(bd);
+  const macProj = MAC.proj, macAll = MAC.proj + MAC.moe + MAC.gate;
+  const timeProj = bd.proj + bd.lm, timeAll = tot;
+  const rows = [
+    {k:"곱셈 몫 (MAC)", p:macProj/macAll,
+     d:`토큰·레이어당 projection ${(macProj/1e6).toFixed(2)}M / MoE ${(MAC.moe/1e6).toFixed(2)}M MAC`},
+    {k:"시간 몫 (실측)", p:timeProj/timeAll,
+     d:`projection ${ms(timeProj)} / generate 전체 ${ms(timeAll)}`}
+  ];
+  $("shares").innerHTML = rows.map(r=>`
+    <div style="margin-bottom:14px">
+      <div class="barrow"><span>${r.k}</span>
+        <span class="bar"><i style="width:${(r.p*100).toFixed(1)}%; background:var(--dev)"></i></span>
+        <span class="v">${(r.p*100).toFixed(1)}%</span></div>
+      <div class="barrow"><span style="color:var(--ink-3)">암달 상한</span>
+        <span class="bar"><i style="width:${Math.min(100,(1/(1-r.p))/3*100).toFixed(1)}%;
+          background:var(--host)"></i></span>
+        <span class="v">${(1/(1-r.p)).toFixed(2)}x</span></div>
+      <div class="note" style="font-size:12px; margin-top:2px">${r.d}</div>
+    </div>`).join("") + `
+    <div class="barrow" style="margin-top:6px"><span>모형 예측</span>
+      <span class="bar"><i style="width:${Math.min(100,(sum(BD.before)/sum(BD.after))/3*100).toFixed(1)}%;
+        background:var(--bus)"></i></span>
+      <span class="v">${(sum(BD.before)/sum(BD.after)).toFixed(2)}x</span></div>
+    <div class="barrow"><span>기록된 실측</span>
+      <span class="bar"><i style="width:${(REC.wall_before/REC.wall_after/3*100).toFixed(1)}%;
+        background:var(--hot)"></i></span>
+      <span class="v">${(REC.wall_before/REC.wall_after).toFixed(2)}x</span></div>`;
+  const rProj = REC.T*CFG.L*MAC.proj/bd.proj/1e9, rMoe = REC.T*CFG.L*MAC.moe/bd.moe/1e9;
+  $("sharenote").innerHTML =
+    `랩노트는 곱셈 몫 <b>${(macProj/macAll*100).toFixed(0)}%</b>로 <b>2.9x</b>를 예상했고 실측은
+     <b>1.69x</b>였습니다. 두 몫이 다른 이유는 host가 두 작업을 같은 속도로 하지 않기 때문입니다 —
+     projection은 초당 <b class="mono">${rProj.toFixed(2)} GMAC</b>, MoE는
+     <b class="mono">${rMoe.toFixed(2)} GMAC</b>. MoE의 곱셈 하나가
+     <b>${(rProj/rMoe).toFixed(1)}배</b> 비싸서, 곱셈 몫 34%가 시간 몫
+     <b>${(bd.moe/tot*100).toFixed(0)}%</b>로 부풀어 있었습니다.
+     암달의 법칙에 넣어야 하는 건 <b>시간 몫</b>입니다.`;
+}
+function drawCurve(){
+  const bd = BD.before, tot = sum(bd), p = (bd.proj+bd.lm)/tot;
+  const raw = +$("acc").value;
+  const X = Math.pow(10, raw/100*3);                       // 1 ~ 1000배
+  $("accv").textContent = X<10 ? X.toFixed(1)+"x" : Math.round(X)+"x";
+  const W=300,H=130, pts=[];
+  for(let i=0;i<=100;i++){
+    const x = Math.pow(10, i/100*3);
+    const sp = 1/((1-p) + p/x);
+    pts.push([i/100*W, H - (sp-1)/(1/(1-p)-1)*(H-8)]);
+  }
+  const sp = 1/((1-p)+p/X), cx = raw/100*W, cy = H-(sp-1)/(1/(1-p)-1)*(H-8);
+  const realX = bd.proj/BD.after.proj;
+  const rx = Math.log10(Math.min(1000,realX))/3*W;
+  const rsp = 1/((1-p)+p/realX), ry = H-(rsp-1)/(1/(1-p)-1)*(H-8);
+  $("curve").innerHTML = `
+  <svg viewBox="0 0 ${W} ${H+20}" style="width:100%; height:auto; overflow:visible">
+    <line x1="0" y1="8" x2="${W}" y2="8" stroke="var(--line)" stroke-dasharray="3 3"/>
+    <text x="${W}" y="4" text-anchor="end" font-family="JetBrains Mono" font-size="9"
+      fill="var(--ink-3)">상한 ${(1/(1-p)).toFixed(2)}x</text>
+    <polyline points="${pts.map(p=>p.join(",")).join(" ")}" fill="none"
+      stroke="var(--dev)" stroke-width="1.6"/>
+    <line x1="${rx}" y1="${H}" x2="${rx}" y2="${ry}" stroke="var(--hot)" stroke-dasharray="2 2"/>
+    <circle cx="${rx}" cy="${ry}" r="3.5" fill="var(--hot)"/>
+    <text x="${rx+6}" y="${ry-4}" font-family="JetBrains Mono" font-size="9" fill="var(--hot)"
+      >실측 커널 ${Math.round(realX)}x</text>
+    <circle cx="${cx}" cy="${cy}" r="4" fill="var(--bus)"/>
+    <line x1="0" y1="${H}" x2="${W}" y2="${H}" stroke="var(--line)"/>
+    <text x="0" y="${H+13}" font-family="JetBrains Mono" font-size="9" fill="var(--ink-3)">1x</text>
+    <text x="${W/2}" y="${H+13}" text-anchor="middle" font-family="JetBrains Mono" font-size="9"
+      fill="var(--ink-3)">32x</text>
+    <text x="${W}" y="${H+13}" text-anchor="end" font-family="JetBrains Mono" font-size="9"
+      fill="var(--ink-3)">1000x</text>
+  </svg>`;
+  $("curvenote").innerHTML =
+    `projection만 <b>${X<10?X.toFixed(1):Math.round(X)}배</b> 빠르게 하면 전체는
+     <b>${sp.toFixed(2)}배</b>. 실제 커널은 <b>${Math.round(realX)}배</b>를 냈지만 전체는
+     <b>${(1/((1-p)+p/realX)).toFixed(2)}배</b>에서 멈춥니다. 곡선이 이미 평평합니다 —
+     이 지점에서 GEMM을 더 깎는 건 의미가 없고, 남은 <b>${((1-p)*100).toFixed(0)}%</b>를 건드려야 합니다.
+     그 대부분이 MoE입니다. → EXP-003.`;
+}
+
+/* ---------- 커널 미세세계 ---------- */
+let kShape = "q", kTile = 32;
+function drawKernel(){
+  const S = G[kShape], M = (kShape==="lm" ? batchOf(T) : T), N = S.N, K = S.K, TL = kTile;
+  const rb = Math.ceil(M/TL), cb = Math.ceil(N/TL), blocks = rb*cb;
+  const thr = blocks*TL*TL, useful = M*N, waste = 1-useful/thr;
+  const ktiles = Math.ceil(K/TL);
+  const loadsTiled = blocks*ktiles*TL*TL*2, loadsNaive = M*N*K*2;
+  const shmem = 2*TL*(TL+1)*4;
+  const blkPerSM = Math.min(Math.floor(HW.shmem/shmem),
+                            Math.floor(HW.maxThreadsSM/(TL*TL)), HW.maxBlocksSM);
+  const occ = blkPerSM*TL*TL/HW.maxThreadsSM;
+  const waves = blocks/(HW.sms*blkPerSM);
+  // 격자: 행 블록 x 열 블록. 열은 32개까지만 보여준다.
+  const showCb = Math.min(cb, 40), cellN = showCb, cellM = Math.min(rb, 26);
+  const g = $("tg");
+  g.style.gridTemplateColumns = `repeat(${cellN}, minmax(4px,1fr))`;
+  let html = "";
+  for (let r=0;r<cellM;r++) for (let c=0;c<cellN;c++){
+    const rowsIn = Math.min(TL, M-r*TL), colsIn = Math.min(TL, N-c*TL);
+    const full = rowsIn===TL && colsIn===TL;
+    const part = rowsIn>0 && colsIn>0 && !full;
+    const col = full ? "var(--dev)" : (part ? "var(--bus)" : "var(--idle)");
+    const op  = full ? 1 : (part ? .75 : .35);
+    html += `<div class="c" style="background:${col}; opacity:${op}"></div>`;
+  }
+  g.innerHTML = html;
+  const clipped = (rb>cellM || cb>showCb);
+  $("kshape").textContent = `${S.lab} · M=${M} K=${K} N=${N}`
+    + (kShape==="lm" ? "  (M = 시퀀스 수)" : "")
+    + (clipped ? `  · 격자는 ${cellM}×${cellN}만 표시 (실제 ${rb}×${cb})` : "");
+  const bars = [
+    {k:`host (CPU 64스레드)`, v:gem(kShape,"host",M), c:"var(--host)"},
+    {k:`naive (shared 없음)`, v:gem(kShape,"nv",M),   c:"var(--idle)"},
+    {k:`TILE=8`,  v:gem(kShape,"t8",M),  c:"var(--dev)"},
+    {k:`TILE=16`, v:gem(kShape,"t16",M), c:"var(--dev)"},
+    {k:`TILE=32`, v:gem(kShape,"t32",M), c:"var(--dev)"}
+  ];
+  const mx = Math.max(...bars.map(b=>b.v));
+  $("kbars").innerHTML = bars.map(b=>{
+    const on = b.k.includes("TILE="+TL);
+    return `<div class="barrow"><span style="${on?"color:var(--ink); font-weight:500":"color:var(--ink-3)"}">${b.k}</span>
+      <span class="bar"><i style="width:${(Math.sqrt(b.v/mx)*100).toFixed(1)}%; background:${b.c};
+        opacity:${on?1:.5}"></i></span>
+      <span class="v">${b.v.toFixed(3)} ms</span></div>`;
+  }).join("") + `<p class="note" style="margin-top:8px; font-size:12px">
+    막대는 √눈금(작은 값도 보이게). 기록된 프로파일이 쓴 값은 <b>TILE=32</b>입니다 —
+    이 shape·M에서는 TILE=16이 <b>${(gem(kShape,"t32",M)/gem(kShape,"t16",M)).toFixed(2)}배</b>
+    빠릅니다. 아직 안 주운 이득입니다.</p>`;
+  const st = [
+    ["블록 수", `${big(blocks)}`, `${rb} × ${cb}`],
+    ["스레드 수", big(thr), `블록당 ${TL*TL}`],
+    ["버리는 스레드", (waste*100).toFixed(1)+"%", `M=${M} → ${rb*TL}행 계산`],
+    ["shared memory", shmem+" B", `블록당 / 한계 ${HW.shmem} B`],
+    ["SM당 블록", blkPerSM, `점유율 ${(occ*100).toFixed(0)}% · 한계 ${HW.maxBlocksSM}블록`],
+    ["웨이브", waves.toFixed(1), `SM ${HW.sms}개`],
+    ["전역 읽기", (loadsTiled/1e6).toFixed(1)+"M", `naive ${(loadsNaive/1e9).toFixed(1)}G`],
+    ["재사용 배수", (loadsNaive/loadsTiled).toFixed(1)+"x", `타일 1개를 ${TL}번`]
+  ];
+  $("kstats").innerHTML = `<div class="stats">` + st.map(([k,v,s])=>
+    `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`
+  ).join("") + `</div>
+  <p class="note" style="margin-top:11px; font-size:12.5px">
+    TILE=32는 블록당 스레드가 1024개라 SM 하나에 <b>블록 1개</b>밖에 못 올립니다
+    (한 SM은 스레드 1536개까지). 점유율 67%. TILE=16은 256개짜리 블록 6개가 올라가 100%가 됩니다.
+    실측에서 TILE=16이 이기는 이유가 여기 있습니다. 반대로 M이 아주 작으면
+    (T=1, 즉 lm_head 한 줄) TILE이 클수록 버리는 스레드가 많아집니다.</p>`;
+}
+
+/* ---------- 뱅크 ---------- */
+let padOn = true;
+function drawBanks(){
+  const TL = 32, stride = TL + (padOn?1:0);
+  const cells = [];
+  for (let tx=0; tx<32; tx++){
+    const bank = (tx*stride + 0) % 32;                     // i=0 순간
+    cells.push({tx, bank});
+  }
+  const count = {};
+  cells.forEach(c=>count[c.bank]=(count[c.bank]||0)+1);
+  const worst = Math.max(...Object.values(count));
+  $("banks").innerHTML = cells.map(c=>{
+    const clash = count[c.bank] > 1;
+    return `<div class="b" style="background:${clash?"var(--hot)":"var(--dev)"}"
+      title="thread tx=${c.tx} → bank ${c.bank}">${c.bank}</div>`;
+  }).join("");
+  $("banknote").innerHTML =
+    `<code>bs[tx][i]</code>의 주소는 <code>tx × ${stride} + i</code>. 뱅크는 그 값을 32로 나눈 나머지입니다.
+     지금 <b>${padOn?"패딩 있음 (stride 33)":"패딩 없음 (stride 32)"}</b> →
+     32개 스레드가 <b>${Object.keys(count).length}개</b> 뱅크를 두드리고, 가장 붐비는 뱅크에
+     <b>${worst}개</b>가 몰립니다. ${padOn
+      ? "33 mod 32 = 1이라 서로 다른 뱅크로 흩어집니다. 한 번에 다 읽습니다."
+      : "전원이 같은 뱅크입니다. 32번 줄을 서야 합니다."}
+     실측 차이 <b>${padOn?"기준":"1.92배 느림"}</b>.`;
+  $("padtab").innerHTML =
+    `<tr><th>shape</th><th>M</th><th>TILE=32 패딩</th><th>패딩 없음</th><th>배율</th>
+     <th>TILE=16 패딩</th><th>없음</th><th>배율</th></tr>` +
+    PAD.map(p=>`<tr${p.M===T||(T>660&&p.M===1320)?' class="hi"':''}>
+      <td>${p.tag}</td><td>${p.M}</td><td>${p.p32.toFixed(3)}</td><td>${p.n32.toFixed(3)}</td>
+      <td style="color:var(--hot)">${(p.n32/p.p32).toFixed(2)}x</td>
+      <td>${p.p16.toFixed(3)}</td><td>${p.n16.toFixed(3)}</td>
+      <td>${(p.n16/p.p16).toFixed(2)}x</td></tr>`).join("");
+}
+
+/* ---------- 버스 ---------- */
+function drawBus(){
+  $("bT").textContent = T;
+  const rows = [
+    ["H2D","normed",4096,"h2d",1],["D2H","q",2048,"d2h",1],["D2H","k",512,"d2h",1],
+    ["D2H","v",512,"d2h",1],["H2D","context",2048,"h2d",1],["D2H","attn",4096,"d2h",1]
+  ];
+  let tot=0, bytes=0;
+  $("bustab").innerHTML = `<tr><th>방향</th><th>무엇</th><th>모양</th><th>MB</th><th>ms</th><th>GB/s</th></tr>` +
+    rows.map(([dir,nm,w,key])=>{
+      const t = bus(w,key,T), B = T*w*4; tot+=t; bytes+=B;
+      return `<tr><td style="color:var(--bus)">${dir}</td><td>${nm}</td>
+        <td>[${T}, ${w}]</td><td>${mb(B)}</td><td>${t.toFixed(4)}</td>
+        <td>${(B/(t/1000)/1e9).toFixed(1)}</td></tr>`;
+    }).join("") +
+    `<tr style="font-weight:600"><td>합</td><td>레이어 1개</td><td></td><td>${mb(bytes)}</td>
+     <td>${tot.toFixed(4)}</td><td></td></tr>`;
+  const bd = BD.after, all = sum(bd);
+  $("busstats").innerHTML = `<div class="stats">
+    <div class="stat"><div class="k">복사 합</div><div class="v">${ms(bd.bus)}</div>
+      <div class="s">generate의 ${(bd.bus/all*100).toFixed(2)}%</div></div>
+    <div class="stat"><div class="k">GEMM 합</div><div class="v">${ms(bd.proj)}</div>
+      <div class="s">복사의 ${(bd.proj/bd.bus).toFixed(1)}배</div></div>
+    <div class="stat"><div class="k">MoE (host)</div><div class="v">${ms(bd.moe)}</div>
+      <div class="s">generate의 ${(bd.moe/all*100).toFixed(1)}%</div></div>
+    <div class="stat"><div class="k">나른 양</div><div class="v">${(bytes*32/1073741824).toFixed(2)} GB</div>
+      <div class="s">32 레이어</div></div></div>`;
+  $("busnote").innerHTML =
+    `"CPU-GPU 통신 때문에 GPU가 손해"라는 걱정은 이 실험에서는 <b>틀렸습니다</b>.
+     복사가 GEMM보다도 작습니다. 다만 이건 <b>무료라서</b>가 아니라 남은 host 작업(MoE)이
+     너무 커서 무엇이든 작아 보이는 것입니다. MoE까지 GPU로 가면 복사는 사라지고
+     (EXP-003) 그 다음엔 residual까지 device에 남겨 복사 자체를 없앱니다 (EXP-004).`;
+}
+
+/* ---------- 정확도 · 캘리브레이션 ---------- */
+function drawAcc(){
+  const fams = ["q","kv","o","lm"];
+  $("acctab").innerHTML = `<table><tr><th>shape</th><th>M</th><th>최대 |차이|</th>
+    <th>값의 크기</th><th>상대</th></tr>` +
+    fams.map(f=>{
+      const S=G[f], i=Math.min(S.M.length-1, S.M.findIndex(m=>m>=Math.min(T,S.M[S.M.length-1])));
+      const j = i<0 ? S.M.length-1 : i;
+      return `<tr><td>${S.lab}</td><td>${S.M[j]}</td><td>${S.df[j].toExponential(2)}</td>
+        <td>~1e+02</td><td>~${(S.df[j]/100).toExponential(0)}</td></tr>`;
+    }).join("") + `</table>`;
+  const w = v => (Math.log10(v/1e-6)/Math.log10(3e-3/1e-6)*100).toFixed(1);
+  $("accbar").innerHTML = `
+    <div class="barrow"><span>EXP-001</span>
+      <span class="bar"><i style="width:${w(REC.diff_before)}%; background:var(--host)"></i></span>
+      <span class="v">${REC.diff_before.toExponential(2)}</span></div>
+    <div class="barrow"><span>EXP-002</span>
+      <span class="bar"><i style="width:${w(REC.diff_after)}%; background:var(--dev)"></i></span>
+      <span class="v">${REC.diff_after.toExponential(2)}</span></div>
+    <div class="barrow"><span style="color:var(--hot)">기준선</span>
+      <span class="bar"><i style="width:100%; background:var(--hot); opacity:.35"></i></span>
+      <span class="v">${REC.thresh.toExponential(0)}</span></div>
+    <p class="note" style="font-size:12px; margin-top:6px">가로는 로그 눈금(1e-6 ~ 3e-3).</p>`;
+}
+function drawCalib(){
+  const b = budget(REC.T), P = REC.prof;
+  const rows = [
+    ["gemm (32 레이어)", b.after.proj, P.gemm],
+    ["h2d", b.after.h2d, P.h2d],
+    ["d2h", b.after.d2h, P.d2h],
+    ["moe", b.after.moe, P.moe],
+    ["norm+attn+resid", b.after.norm+b.after.attn+b.after.resid, P.norm+P.attn+P.resid],
+    ["lm_head", b.after.lm, P.lm]
+  ];
+  const mySum = sum(b.after), profSum = Object.values(P).reduce((a,c)=>a+c,0);
+  $("calib").innerHTML = `<tr><th>단계 (T=165)</th><th>이 모형</th><th>APS_PROFILE=1</th><th>차이</th></tr>` +
+    rows.map(([k,m,p])=>`<tr><td>${k}</td><td>${f3(m)} s</td><td>${f3(p)} s</td>
+      <td style="color:${Math.abs(m-p)>Math.max(0.02,p*0.3)?"var(--hot)":"var(--ink-3)"}">
+      ${p>0?((m/p-1)*100).toFixed(0)+"%":"—"}</td></tr>`).join("") +
+    `<tr style="font-weight:600"><td>generate 합</td><td>${f3(mySum)} s</td>
+      <td>${f3(profSum)} s</td><td>${((mySum/profSum-1)*100).toFixed(1)}%</td></tr>
+     <tr><td>generate 밖 (로드 등)</td><td colspan="2">${f3(REC.wall_after-profSum)} s</td>
+      <td>실측 wall ${f3(REC.wall_after)} s</td></tr>
+     <tr><td>before wall 예측</td>
+      <td colspan="2">${f3(sum(b.before)+(REC.wall_after-profSum))} s</td>
+      <td style="color:var(--ink-3)">실측 ${f3(REC.wall_before)} s</td></tr>`;
+  const items = [
+    ["<b>측정</b>", `이 페이지의 모든 ms 값. host <code>matmul_transposed</code>,
+      <code>gemm_nt_bias&lt;8/16/32&gt;</code>, 패딩 없는 대조군, shared memory 없는 대조군,
+      pageable H2D/D2H, 가중치 업로드. 같은 노드·같은 바이너리·같은 입력.`],
+    ["<b>기록</b>", `wall 62.270 s / 36.869 s, <code>APS_PROFILE=1</code> 단계 시간,
+      검증 오차 — 랩노트 EXP-001/EXP-002의 실행 기록.`],
+    ["<b>계산</b>", `블록·스레드·점유율·뱅크 번호·재사용 배수·MAC 수는 측정이 아니라
+      shape와 sm_86 한계(SM당 스레드 1536, shared memory 48 KB)에서 나온 산수입니다.`],
+    ["<b>유도</b>", `T를 슬라이더로 바꿀 때: host 잔여 단계(norm/attn/moe/resid)는 T에 선형이라고
+      가정하고 프로파일 값을 비례로 늘립니다. 시퀀스 길이 분포가 그대로일 때만 맞습니다.
+      GEMM·복사는 측정 격자 사이를 선형 보간하고, 격자 밖(T&gt;1320)은 선형 외삽합니다.`],
+    ["<b style='color:var(--hot)'>안 맞는 것 1</b>",
+      `복사 시간: 이 벤치는 h2d 0.010 s / d2h 0.016 s인데 실제 런의 프로파일은 0.016 / 0.040 s입니다.
+      실제 런은 VRAM에 3 GB가 상주하고 host 쪽 페이지 상태도 달라 2배 이상 느립니다.
+      둘 다 무시 가능한 크기라 결론은 바뀌지 않지만, 이 페이지 수치가 낙관적입니다.`],
+    ["<b style='color:var(--hot)'>안 맞는 것 2</b>",
+      `커밋 메시지는 host <code>matmul_transposed</code>를 "shape와 무관하게 1.2 GMAC/s"라고 적었습니다.
+      이 벤치로는 M=1에서 0.17 GMAC/s, M≥64에서 4.2~4.7 GMAC/s입니다 (스레드 64개가
+      출력 행 M만 나눠 갖기 때문). 플랫한 건 GMAC/s가 아니라 <b>작은 M에서의 호출 시간</b>입니다.
+      결론(projection이 시간 몫의 절반)은 그대로입니다.`],
+    ["<b style='color:var(--hot)'>안 맞는 것 3</b>",
+      `작은 n(1~2)에서는 이 모형이 MoE를 과소평가합니다. MoE 시간을 T에 선형으로 늘렸지만,
+      expert GEMM은 행이 1개여도 호출당 고정비(exp-000 측정 12 ms)를 내기 때문에 실제로는
+      T가 줄어도 그만큼 줄지 않습니다. 그래서 n이 작은 쪽 배율은 낙관적입니다.
+      n=8 지점만 실측과 맞물려 있습니다.`],
+    ["<b style='color:var(--hot)'>안 맞는 것 4</b>",
+      `모형의 before/after 비는 ${(sum(BD.before)/sum(BD.after)).toFixed(2)}x인데 실측 wall 비는 1.69x입니다.
+      generate 밖 고정비 ${f3(REC.wall_after-profSum)} s(모델 로드 등)가 분모·분자에
+      같이 얹히기 때문입니다. 커널이 몇 배 빨라졌는지는 <b>generate</b> 기준으로 봐야 합니다.`]
+  ];
+  $("assump").innerHTML = items.map(([k,v])=>
+    `<p style="margin-bottom:9px">${k} — ${v}</p>`).join("");
+}
+
+/* ---------- 배선 ---------- */
+function rebuild(){
+  ST = stations(T); BD = budget(T);
+  buildBoard(); resetRun(); drawStatus();
+  drawShares(); drawCurve(); drawKernel(); drawBanks(); drawBus(); drawAcc(); drawCalib();
+}
+seg($("mode"), [{label:"before",value:"before"},{label:"after",value:"after"}],
+  ()=>mode, v=>{ mode=v; layoutBoard(); resetRun(); drawStatus(); });
+$("mode").querySelectorAll("button").forEach(b=>b.dataset.m=b.textContent);
+seg($("speed"), [{label:"5x",value:5},{label:"20x",value:20},{label:"60x",value:60}],
+  ()=>speed, v=>speed=v);
+seg($("shape"), [{label:"q",value:"q"},{label:"k/v",value:"kv"},{label:"o",value:"o"},
+  {label:"lm_head",value:"lm"}], ()=>kShape, v=>{kShape=v; drawKernel();});
+seg($("tile"), [{label:"8",value:8},{label:"16",value:16},{label:"32",value:32}],
+  ()=>kTile, v=>{kTile=v; drawKernel();});
+seg($("pad"), [{label:"[TILE][TILE+1]",value:true},{label:"[TILE][TILE]",value:false}],
+  ()=>padOn, v=>{padOn=v; drawBanks();});
+$("tok").oninput = e=>{
+  nSeq = +e.target.value; T = tokOf(nSeq);
+  $("tokv").textContent = `n=${nSeq} · T=${T} tok`;
+  rebuild();
+};
+$("acc").oninput = drawCurve;
+$("play").onclick = ()=>{ playing = !playing;
+  $("play").textContent = playing ? "정지" : "재생";
+  if (playing && layer>=CFG.L) resetRun();
+  lastFrame = performance.now(); };
+$("reset").onclick = ()=>{ playing=false; $("play").textContent="재생"; resetRun(); };
+window.addEventListener("resize", ()=>{ layoutBoard(); });
+$("tokv").textContent = `n=${nSeq} · T=${T} tok`;
+picked = "q";
+rebuild();
+requestAnimationFrame(tick);
+</script>

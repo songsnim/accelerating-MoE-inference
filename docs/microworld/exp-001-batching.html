@@ -1,0 +1,1012 @@
+<title>두 기계실</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gothic+A1:wght@500;700;900&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ground:#E7EBEF; --panel:#F9FAFB; --panel-2:#EFF3F6; --sunken:#E1E7EC;
+  --ink:#121920; --ink-2:#4A5765; --ink-3:#7A8794;
+  --line:#C7D0D8; --line-2:#DDE3E9;
+  --copper:#AE501D; --steel:#1E6383; --plum:#6A4A7B; --moss:#2C6B52; --idle:#9BA7B3; --hot:#93202C;
+  --shadow:0 1px 0 rgba(18,25,32,.04), 0 8px 24px -18px rgba(18,25,32,.5);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0C1116; --panel:#141B21; --panel-2:#1A232A; --sunken:#0F161B;
+    --ink:#E2E8EE; --ink-2:#9BA8B4; --ink-3:#6F7C88;
+    --line:#26313A; --line-2:#1D262E;
+    --copper:#E08A4B; --steel:#5CA6C4; --plum:#AC8BC4; --moss:#5AA981; --idle:#66727E; --hot:#DD6672;
+    --shadow:0 1px 0 rgba(0,0,0,.3), 0 10px 30px -20px #000;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0C1116; --panel:#141B21; --panel-2:#1A232A; --sunken:#0F161B;
+  --ink:#E2E8EE; --ink-2:#9BA8B4; --ink-3:#6F7C88;
+  --line:#26313A; --line-2:#1D262E;
+  --copper:#E08A4B; --steel:#5CA6C4; --plum:#AC8BC4; --moss:#5AA981; --idle:#66727E; --hot:#DD6672;
+  --shadow:0 1px 0 rgba(0,0,0,.3), 0 10px 30px -20px #000;
+}
+*{box-sizing:border-box}
+body{margin:0; background:var(--ground); color:var(--ink);
+  font-family:"IBM Plex Sans KR",system-ui,sans-serif; font-size:15px; line-height:1.6; -webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:"Gothic A1","IBM Plex Sans KR",sans-serif; text-wrap:balance; margin:0}
+h1{font-weight:900; font-size:clamp(26px,3.4vw,40px); letter-spacing:-.02em; line-height:1.15}
+h2{font-weight:900; font-size:22px; letter-spacing:-.01em}
+h3{font-weight:700; font-size:15px}
+p{margin:0}
+code,.mono,.num{font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums}
+code{font-size:.86em; background:var(--panel-2); padding:.1em .35em; border-radius:3px; color:var(--ink-2)}
+b.g{border-bottom:1px dotted var(--ink-3); cursor:help; font-weight:600}
+.wrap{max-width:1180px; margin:0 auto; padding:0 20px}
+.eyebrow{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3)}
+.lede{color:var(--ink-2); max-width:68ch}
+
+.console{position:sticky; top:0; z-index:50; background:var(--panel); border-bottom:1px solid var(--line); box-shadow:var(--shadow)}
+.console .wrap{display:flex; align-items:center; gap:18px; flex-wrap:wrap; padding-top:10px; padding-bottom:10px}
+.brand{display:flex; flex-direction:column; line-height:1.15; margin-right:auto}
+.brand b{font-family:"Gothic A1",sans-serif; font-weight:900; font-size:17px; letter-spacing:-.01em}
+.brand span{font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--ink-3); letter-spacing:.08em}
+.ctrls{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+button{font-family:inherit; font-size:13px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line);
+  border-radius:4px; padding:6px 12px; cursor:pointer; transition:background .12s, border-color .12s}
+button:hover{background:var(--sunken); border-color:var(--ink-3)}
+button:focus-visible{outline:2px solid var(--copper); outline-offset:2px}
+button[aria-pressed="true"]{background:var(--ink); color:var(--panel); border-color:var(--ink)}
+button.primary{background:var(--copper); border-color:var(--copper); color:#fff; font-weight:600; min-width:82px}
+button.primary:hover{filter:brightness(1.08); background:var(--copper)}
+.seg{display:flex; border:1px solid var(--line); border-radius:4px; overflow:hidden}
+.seg button{border:0; border-radius:0; border-left:1px solid var(--line); padding:6px 10px}
+.seg button:first-child{border-left:0}
+.readout{display:flex; gap:20px; align-items:baseline}
+.readout .r{display:flex; flex-direction:column; align-items:flex-end}
+.readout .v{font-family:"IBM Plex Mono",monospace; font-size:19px; font-weight:500; line-height:1.1; font-variant-numeric:tabular-nums}
+.readout .k{font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); font-family:"IBM Plex Mono",monospace}
+
+section{padding:44px 0 8px}
+.panel{background:var(--panel); border:1px solid var(--line-2); border-radius:6px; padding:18px; box-shadow:var(--shadow)}
+.grid{display:grid; gap:16px}
+.two{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+@media(max-width:900px){.two{grid-template-columns:1fr}}
+.head{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:6px}
+.head .eyebrow{margin-left:auto}
+.note{font-size:13px; color:var(--ink-2)}
+.hr{height:1px; background:var(--line-2); margin:14px 0}
+.lab{display:grid; gap:18px; grid-template-columns:minmax(0,1fr) minmax(0,360px)}
+@media(max-width:900px){.lab{grid-template-columns:1fr}}
+.slider{display:flex; align-items:center; gap:10px; font-family:"IBM Plex Mono",monospace; font-size:12px}
+input[type=range]{flex:1; accent-color:var(--copper); background:transparent}
+input[type=range]:focus-visible{outline:2px solid var(--copper); outline-offset:3px}
+table{border-collapse:collapse; width:100%; font-size:12.5px; font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums}
+th,td{text-align:right; padding:4px 8px; border-bottom:1px solid var(--line-2)}
+th{color:var(--ink-3); font-weight:500; font-size:11px; letter-spacing:.06em; text-transform:uppercase}
+th:first-child,td:first-child{text-align:left}
+.scroll{overflow-x:auto}
+.src{font-family:"IBM Plex Mono",monospace; font-size:11.5px; color:var(--ink-2); background:var(--sunken);
+  border-left:2px solid var(--line); padding:8px 10px; white-space:pre; overflow-x:auto; border-radius:0 3px 3px 0; line-height:1.5}
+.src .add{color:var(--moss)} .src .del{color:var(--hot)} .src .hi{color:var(--ink); font-weight:500}
+.pill{font-family:"IBM Plex Mono",monospace; font-size:10px; letter-spacing:.06em; text-transform:uppercase;
+  padding:2px 6px; border-radius:99px; border:1px solid currentColor}
+.stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:10px}
+.stat{background:var(--panel-2); border-radius:4px; padding:9px 11px}
+.stat .k{font-size:10px; letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3); font-family:"IBM Plex Mono",monospace}
+.stat .v{font-family:"IBM Plex Mono",monospace; font-size:16px; font-variant-numeric:tabular-nums; margin-top:1px}
+.stat .s{font-size:11px; color:var(--ink-3)}
+.legend{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:5px 14px; font-size:12.5px}
+.legend .row{display:flex; align-items:center; gap:7px}
+.legend .sw{width:9px; height:9px; border-radius:2px; flex:none}
+.legend .nm{color:var(--ink-2)}
+.legend .vl{margin-left:auto; font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums}
+
+/* ---- 두 기계실 ---- */
+.lane{background:var(--panel); border:1px solid var(--line-2); border-radius:6px; padding:16px; box-shadow:var(--shadow);
+  display:flex; flex-direction:column; gap:12px; position:relative; overflow:hidden}
+.lane.after{border-color:var(--moss)}
+.lane.before{border-color:var(--line)}
+.lane .tag{display:flex; align-items:baseline; gap:10px}
+.lane .tag b{font-family:"Gothic A1",sans-serif; font-weight:900; font-size:18px}
+.lane .tag span{font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--ink-3)}
+.lane .big{font-family:"IBM Plex Mono",monospace; font-size:30px; line-height:1; font-variant-numeric:tabular-nums; margin-left:auto; text-align:right}
+.lane .big em{display:block; font-style:normal; font-size:10.5px; color:var(--ink-3); letter-spacing:.02em; margin-top:3px}
+.lane.fin::after{content:"완주"; position:absolute; top:12px; right:16px; font-family:"IBM Plex Mono",monospace;
+  font-size:10px; letter-spacing:.1em; color:var(--moss); border:1px solid var(--moss); border-radius:99px; padding:2px 8px}
+.slab{display:flex; gap:4px; align-items:flex-end; height:104px; padding:6px; background:var(--sunken); border-radius:4px}
+.slab .m{background:var(--line); border-radius:2px; position:relative; transition:background .15s, opacity .15s; min-width:9px}
+.slab .m.on{background:var(--steel)}
+.slab .m.dim{opacity:.32}
+.slab .m .lab{position:absolute; bottom:100%; left:0; right:0; text-align:center;
+  font-family:"IBM Plex Mono",monospace; font-size:9px; color:var(--ink-3)}
+.callpath{display:flex; flex-direction:column; gap:2px; font-family:"IBM Plex Mono",monospace; font-size:12px}
+.cp{display:flex; gap:8px; padding:3px 8px; border-radius:3px; color:var(--ink-3); border-left:2px solid transparent}
+.cp.on{color:var(--ink); background:var(--panel-2); border-left-color:var(--copper)}
+.cp .lbl{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.cp .val{color:var(--ink-2)}
+.layertape{display:grid; grid-template-columns:repeat(32,1fr); gap:2px; height:14px}
+.layertape .l{background:var(--sunken); border-radius:1px}
+.layertape .l.done{background:var(--steel)}
+.layertape .l.cur{background:var(--copper)}
+.ledger{display:flex; height:18px; border-radius:3px; overflow:hidden; background:var(--sunken)}
+.ledger div{height:100%}
+.passes{display:flex; gap:3px; flex-wrap:wrap}
+.passes .p{width:11px; height:11px; border-radius:2px; background:var(--sunken)}
+.passes .p.done{background:var(--plum)}
+.passes .p.cur{background:var(--copper)}
+
+/* ---- 포장기 ---- */
+.packer{display:flex; gap:26px; align-items:flex-end; justify-content:center; min-height:210px; padding:14px 0}
+.col{display:flex; flex-direction:column-reverse; gap:0; align-items:center}
+.col .blk{width:64px; border-radius:2px; position:relative; transition:margin .35s cubic-bezier(.4,0,.2,1)}
+.col .blk .n{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  font-family:"IBM Plex Mono",monospace; font-size:10px; color:#fff; opacity:.9}
+.colcap{font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--ink-3); margin-top:8px; text-align:center}
+canvas{max-width:100%; display:block; image-rendering:pixelated; border-radius:3px}
+.badge{display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--ink-2); padding:2px 0}
+.badge .d{width:7px; height:7px; border-radius:99px; flex:none}
+.wf{display:flex; flex-direction:column; gap:9px}
+.wfrow{display:grid; grid-template-columns:150px minmax(0,1fr) 92px; gap:10px; align-items:center; font-size:12.5px}
+.wfbar{height:26px; background:var(--sunken); border-radius:3px; position:relative; overflow:hidden}
+.wfbar i{position:absolute; top:0; bottom:0; border-radius:3px; display:block}
+.wfrow .amt{font-family:"IBM Plex Mono",monospace; text-align:right; font-variant-numeric:tabular-nums}
+footer{padding:40px 0 60px; color:var(--ink-3); font-size:12.5px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<header class="console">
+  <div class="wrap">
+    <div class="brand"><b>두 기계실</b><span>57ffaeb → 8f09c7f · EXP-001 batching</span></div>
+    <div class="ctrls">
+      <button id="play" class="primary">▶ 동시 실행</button>
+      <button id="step">한 연산</button>
+      <button id="reset">되감기</button>
+      <div class="seg" id="nsel"></div>
+      <div class="seg" id="spd"></div>
+    </div>
+    <div class="readout">
+      <div class="r"><span class="v" id="clock">0.00</span><span class="k">모의 초</span></div>
+      <div class="r"><span class="v" id="gap">—</span><span class="k">배수</span></div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+<section>
+  <h1>같은 일을 두 번 다르게 시킨다</h1>
+  <p class="lede" style="margin-top:12px">
+    EXP-001 이 바꾼 것은 <b>일의 양</b>이 아니다. 곱해야 할 수의 개수는 전과 똑같다. 바뀐 것은
+    <b>일을 몇 덩어리로 나눠 주느냐</b>다. 왼쪽 기계실은 시퀀스를 하나씩 32개 레이어에 통과시키고,
+    오른쪽 기계실은 모든 시퀀스의 토큰을 한 장의 행렬로 포갠 뒤 32개 레이어를 <b>한 번만</b> 지난다.
+    두 기계실을 같은 시계로 동시에 돌린다.
+  </p>
+  <div class="grid two" style="margin-top:20px" id="lanes">
+    <div class="lane before" id="lane-before"></div>
+    <div class="lane after" id="lane-after"></div>
+  </div>
+  <div class="panel" style="margin-top:16px">
+    <div class="head"><h3>지금 그 순간의 두 기계실</h3><span class="eyebrow" id="opidx">—</span></div>
+    <div class="grid two">
+      <div class="scroll"><table id="tab-before"></table></div>
+      <div class="scroll"><table id="tab-after"></table></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>포장기</h2><span class="eyebrow">generate() 첫 20줄이 하는 일</span></div>
+  <p class="note" style="max-width:68ch; margin-bottom:12px">
+    before 는 시퀀스마다 <code>[s, 4096]</code> 짜리 활성 행렬을 따로 만든다. after 는 그것들을 세로로 이어붙여
+    <code>[T, 4096]</code> 한 장으로 만든다. <span id="packtext"></span>
+  </p>
+  <div class="lab">
+    <div class="panel">
+      <div class="ctrls" style="margin-bottom:6px">
+        <button id="packtoggle" class="primary">묶기 ▸</button>
+        <span class="note" style="font-size:12px">같은 토큰, 같은 순서. 자리만 옮긴다.</span>
+      </div>
+      <div class="packer" id="packer"></div>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>레이어 1개를 지날 때</h3></div>
+      <div class="scroll"><table id="packtab"></table></div>
+      <p class="note" style="margin-top:10px" id="packnote"></p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>행은 거의 공짜다</h2><span class="eyebrow">측정 · matmul_transposed(q_proj)</span></div>
+  <p class="note" style="max-width:68ch; margin-bottom:12px">
+    포장이 왜 이득인지는 이 곡선 하나로 끝난다. <code>q_proj</code> 를 <b class="g" title="matmul 에 넣는 활성 행렬의 행 수. 곧 토큰 개수다.">M</b> 행만 넣고 한 번 부르는 데 걸리는 시간을
+    M=1 부터 40 까지 한 행씩 늘려가며 쟀다. <b>M=1 이나 M=19 나 50 ms 대에서 거의 그대로다</b> (차이 9.4%).
+    호출 한 번의 값은 행 수가 아니라 <b class="g" title="[2048, 4096] float32 = 33.55 MB. DRAM 에서 캐시로 끌어오는 데 드는 시간이 지배한다.">가중치 33.55 MB 를 DRAM 에서 읽어오는 값</b>이다.
+    행을 더 태우는 건 거의 덤이다.
+  </p>
+  <div class="lab">
+    <div class="panel">
+      <div id="curve"></div>
+      <div class="slider" style="margin-top:8px">
+        <label for="mrow">M</label><input type="range" id="mrow" min="1" max="40" value="19">
+        <span id="mval" style="min-width:11ch; text-align:right"></span>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>행 하나의 값</h3></div>
+      <div class="scroll"><table id="curvetab"></table></div>
+      <p class="note" style="margin-top:10px" id="curvenote"></p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>포개도 되는 이유</h2><span class="eyebrow">행 독립 · 그리고 어텐션만 예외</span></div>
+  <p class="note" style="max-width:68ch; margin-bottom:12px">
+    포장이 <b>정답을 바꾸지 않는다</b>는 보장은 한 줄이다 — 레이어 안의 거의 모든 연산이
+    <b class="g" title="출력의 r번째 행이 입력의 r번째 행만 보고 정해진다는 뜻. 옆 행이 누구든 상관없다.">행마다 독립</b>이다. 옆에 어떤 행이 놓이든 내 행의 계산은 글자 하나 안 바뀐다.
+    딱 하나, 어텐션만 다른 행을 본다. 그래서 <code>model.cu</code> 는 어텐션만 시퀀스 구간
+    <code>[offset, offset+len)</code> 마다 따로 돈다.
+  </p>
+  <div class="lab">
+    <div class="panel">
+      <div class="head"><h3>어텐션이 보는 자리 · T×T</h3><span class="eyebrow" id="masklbl">—</span></div>
+      <canvas id="mask" width="480" height="480"></canvas>
+      <div class="ctrls" style="margin-top:10px">
+        <button id="breakit">시퀀스 경계 지워보기</button>
+        <span class="note" style="font-size:12px" id="masknote"></span>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>레이어 안의 연산</h3></div>
+      <div id="rowwise"></div>
+      <div class="src" style="margin-top:12px">Tensor context({total, QH*HEAD_DIM});
+<span class="add">#pragma omp parallel for schedule(dynamic)</span>
+for (long long b = 0; b &lt; batch; ++b)
+    attend_sequence(q, k, v, <span class="hi">offset[b]</span>, <span class="hi">length[b]</span>, context);</div>
+      <p class="note" style="margin-top:10px">
+        경계를 넘기지 않으면 결과는 <b>비트까지 같다</b>. n=2 에서 <code>cmp baseline_n2.bin exp001_n2.bin</code> 이
+        IDENTICAL 이었다.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>같은 내적을 130번</h2><span class="eyebrow">같은 커밋에 딸려 들어간 두 번째 변경</span></div>
+  <p class="note" style="max-width:68ch; margin-bottom:12px">
+    포장을 하려면 어텐션을 <code>model.cu</code> 안에 다시 써야 했다 — <code>layer.cu</code> 는 수정 금지 파일이라
+    시퀀스 구간을 알려줄 방법이 없었기 때문이다. 그런데 다시 쓰는 김에 원본의 낭비도 같이 사라졌다.
+    원본은 <b class="g" title="max 를 찾는 패스 1회 + 분모를 더하는 패스 1회 + 출력 차원 128개마다 1회 = 130회">같은 q·k 내적을 130번</b> 다시 계산하고, 모든 원소를 <code>Tensor::at()</code> 로 만진다.
+  </p>
+  <div class="grid two">
+    <div class="panel">
+      <div class="head"><h3>before</h3><span class="eyebrow">src/layer.cu</span></div>
+      <div class="src">for ki: <span class="del">score = q·k</span>            <span class="del">// 1회</span>
+  maxv = max(maxv, score/√d)
+for ki: <span class="del">score = q·k</span>            <span class="del">// 1회</span>
+  denom += exp(score/√d - maxv)
+<span class="del">for d in 128:</span>
+  for ki: <span class="del">score = q·k</span>          <span class="del">// 128회</span>
+    value += exp(...)/denom * v[ki][d]
+  out.at(qi, qh*128+d) = value</div>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>after</h3><span class="eyebrow">src/model.cu · attend_sequence</span></div>
+      <div class="src">for ki: <span class="add">score = q·k</span>            <span class="add">// 1회, 저장</span>
+  weights[ki] = score/√d
+  maxv = max(maxv, weights[ki])
+for ki: weights[ki] = exp(weights[ki]-maxv)
+  denom += weights[ki]
+for ki:
+  w = weights[ki]/denom
+  <span class="add">for d in 128: acc[d] += w * vrow[d]</span>
+for d in 128: orow[d] = acc[d]</div>
+    </div>
+  </div>
+  <div class="lab" style="margin-top:16px">
+    <div class="panel">
+      <div class="slider" style="margin-bottom:12px">
+        <label for="slen">s</label><input type="range" id="slen" min="2" max="32" value="19">
+        <span id="sval" style="min-width:13ch; text-align:right"></span>
+      </div>
+      <div id="attbars"></div>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>측정</h3><span class="eyebrow">스레드 1개 · 레이어 1개분</span></div>
+      <div class="scroll"><table id="atttab"></table></div>
+      <p class="note" style="margin-top:10px">
+        두 코드의 출력 <b>max abs diff = 0.000e+00</b>. 더하는 순서(d 오름차순, ki 오름차순)와
+        <code>exp</code> 를 double 로 계산해 float 로 내리는 것까지 그대로 옮겼기 때문이다.
+        빠져나간 것은 계산량뿐이고 <b>결과는 비트까지 같다</b>.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>그래서 무엇이 얼마나 벌었나</h2><span class="eyebrow">n=2 · 실측 3점</span></div>
+  <p class="note" style="max-width:68ch; margin-bottom:14px">
+    한 커밋에 두 가지가 들어갔으므로, 어느 쪽이 진짜 지렛대였는지는 <b>가르는 빌드를 하나 더 만들어야</b> 알 수 있다.
+    포장은 하되 어텐션은 원본(130회 재계산)을 그대로 둔 세 번째 빌드를 만들어 n=2 로 돌렸다.
+  </p>
+  <div class="lab">
+    <div class="panel">
+      <div class="wf" id="waterfall"></div>
+      <div class="hr"></div>
+      <div class="stats" id="wfstats"></div>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>실험 노트를 고쳐야 한다</h3></div>
+      <p class="note">
+        <code>docs/lab-note.md</code> 의 EXP-001 은 이렇게 적혀 있다 —
+        <i>“130회 attention 재계산 제거분은 전체의 13%(1.15x)뿐. 2.88x의 주된 원인은 스레드 포화다.”</i>
+      </p>
+      <p class="note" style="margin-top:10px">
+        가르는 빌드가 말하는 것은 반대다. 어텐션 다시 쓰기가 <b>1.82x</b> 로 둘 중 큰 쪽이고,
+        포장은 <b>1.59x</b> 다. 그리고 포장의 이득도 “스레드 포화”가 아니다 —
+        위 곡선이 보여주듯 M=1 과 M=19 의 호출 시간은 같다. 포장이 줄인 것은 행당 시간이 아니라
+        <b>호출 횟수</b>다. 레이어마다 matmul 을 <span id="callcut">—</span>.
+      </p>
+      <p class="note" style="margin-top:10px">
+        <b>이 실험이 어긴 규칙.</b> <code>CLAUDE.md</code> 는 “반드시 1개의 가설씩”이라고 적어 두었다.
+        EXP-001 은 두 개를 같이 바꿨고, 그래서 무엇이 레버인지 알아내는 데 빌드 하나와 런 하나가 더 들었다.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>이 지렛대의 끝</h2><span class="eyebrow">n 을 키우면 어디까지 가나</span></div>
+  <div class="lab">
+    <div class="panel">
+      <div id="floor"></div>
+      <p class="note" style="margin-top:10px" id="floornote"></p>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>실측과 대조</h3></div>
+      <div class="scroll"><table id="calibtab"></table></div>
+      <p class="note" style="margin-top:10px" id="calibnote"></p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="grid two">
+    <div class="panel">
+      <div class="head"><h3>잰 것</h3></div>
+      <div class="note" id="measured"></div>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>지어낸 것 · 모형에 없는 것</h3></div>
+      <div class="note" id="assump"></div>
+    </div>
+  </div>
+</section>
+
+<footer class="wrap">
+  <div>측정: 2026-08-24, aps 파티션 계산 노드 1개(<code>--exclusive</code>, OMP 스레드 64).
+  마이크로벤치 <code>docs/microworld/exp-001-batching-bench.cpp</code>, 무수정 <code>obj/tensor.o</code> 링크.
+  종단 3점은 <code>./run.sh -n 2 -v</code> 실측(전부 Validation PASSED). 실행 기록: <code>docs/lab-note.md</code> EXP-001.</div>
+</footer>
+</main>
+
+<script>
+"use strict";
+/* =====================================================================
+   측정값. 전부 같은 계산 노드, --exclusive, OMP 64 스레드.
+   MM/ATTN : exp-001-batching-bench.cpp 출력 (2026-08-24). 단위 ms.
+   ROW/GATE/LM 보조 상수 : exp-000-baseline-bench.cpp 출력 (같은 날, 같은 노드).
+   E2E : ./run.sh -n 2 -v 실측 3점.
+   ===================================================================== */
+const MEAS = {
+  threads: 64,
+  Ms: [1,2,4,8,14,19,32,46,64,91,128,165,256],
+  call: {
+    q:  [51.317,49.963,50.734,50.268,65.306,67.150,94.387,99.391,109.790,184.111,220.932,322.299,444.365],
+    kv: [14.768,14.055,14.077,15.120,19.036,18.277,23.871,31.477, 29.586, 50.565, 55.077, 79.670,111.022],
+    o:  [52.529,50.277,51.241,54.851,51.948,55.504,79.289,104.031,140.673,189.475,220.711,349.056,442.445],
+    w13:[12.430,12.511,12.515,12.456,18.151,22.329,20.481,22.266, 24.172, 42.808, 48.165, 69.675,123.682],
+    w2: [15.804,15.967,21.187,16.346,17.366,15.541,26.270,26.963, 23.809, 55.983, 64.593, 72.828, 96.757]
+  },
+  // q_proj 를 M=1..40 한 행씩. 이 실험의 핵심 곡선.
+  qfine: [50.055,50.223,49.966,50.080,56.289,50.122,50.454,50.083,50.220,50.084,
+          51.626,50.154,50.715,53.360,51.806,52.819,53.190,53.584,54.743,64.676,
+          75.422,62.465,58.652,58.919,59.666,65.230,61.186,70.760,77.477,71.759,
+          72.537,74.108,91.948,95.444,95.339,95.803,95.993,99.787,97.071,97.702],
+  lm: [[1,762.680],[8,786.944],[32,1022.935]],
+  gate: [[1,0.522],[8,0.658],[32,0.727]],
+  attnBefore: [[6,55.4177],[14,268.7757],[19,473.7004],[32,1315.2872]],
+  attnAfter:  [[6, 0.0427],[14,  0.1945],[19,  0.3405],[32,   0.9245]],
+  attnBatch: {T:165, serial:3.5502, omp:1.7324},   // 8시퀀스, omp 로 나눴을 때
+  ln:0.043, add:0.019, ropePerRow:0.052, rowCopy:0.0326, alloc16:0.00014, siluMulPerRow:0.0035
+};
+const E2E = {                                   // n=2, 전부 Validation PASSED
+  before: 108.838,                              // 57ffaeb  포장 없음 · 어텐션 130회
+  packed:  68.640,                              // 가르는 빌드: 포장 O · 어텐션 130회
+  after:   37.749                               // 8f09c7f  포장 O · 어텐션 1회
+};
+const ANCHOR = [
+  {label:"baseline n=1",  build:"before", n:1, sec:30.024},
+  {label:"baseline n=2",  build:"before", n:2, sec:108.838},
+  {label:"가르는 빌드 n=2", build:"packedOld", n:2, sec:68.640},
+  {label:"EXP-001 n=2",   build:"after",  n:2, sec:37.749},
+  {label:"EXP-001 n=4",   build:"after",  n:4, sec:46.535},
+  {label:"EXP-001 n=8",   build:"after",  n:8, sec:62.270}
+];
+const CFG = {H:4096,L:32,QH:16,KVH:4,HD:128,NE:16,FF:448,V:32064,Q:1e-3,TIE:2e-2};
+const LENGTHS = [14,32,22,23,16,17,30,11];      // inputs.bin 실제 앞 8개
+const HIST = {6:9,7:39,8:40,9:40,10:39,11:39,12:39,13:39,14:39,15:40,16:40,17:39,18:39,19:37,
+              20:39,21:39,22:40,23:38,24:39,25:39,26:39,27:40,28:38,29:39,30:39,31:39,32:38};
+const BYTES = {q:4096*2048*4, kv:4096*512*4, o:2048*4096*4, w13:4096*448*4, w2:448*4096*4,
+               gate:4096*16*4, lm:4096*32064*4};
+const LAYER_BYTES = BYTES.q + 2*BYTES.kv + BYTES.o + CFG.NE*(2*BYTES.w13 + BYTES.w2) + BYTES.gate;
+const CAT = {
+  proj:{nm:"q/k/v/o projection", c:"var(--steel)"},
+  attn:{nm:"attention",          c:"var(--copper)"},
+  moe: {nm:"MoE gate + expert",  c:"var(--plum)"},
+  lm:  {nm:"lm_head",            c:"var(--moss)"},
+  other:{nm:"norm · rope · 복사", c:"var(--idle)"}
+};
+
+/* ---------- 보간 ---------- */
+function lerpTab(tab, x){
+  if (x <= tab[0][0]) return tab[0][1];
+  for (let i=0;i<tab.length-1;i++)
+    if (x <= tab[i+1][0]) return tab[i][1] + (tab[i+1][1]-tab[i][1])*(x-tab[i][0])/(tab[i+1][0]-tab[i][0]);
+  const a=tab[tab.length-2], b=tab[tab.length-1];
+  return b[1] + (b[1]-a[1])/(b[0]-a[0])*(x-b[0]);     // 마지막 기울기로 외삽
+}
+function callMs(fam, M){
+  const xs=MEAS.Ms, ys=MEAS.call[fam];
+  return lerpTab(xs.map((m,i)=>[m,ys[i]]), M);
+}
+const lmMs   = M => lerpTab(MEAS.lm, M);
+const gateMs = M => lerpTab(MEAS.gate, M);
+const pairs  = s => s*(s+1)/2;
+// 어텐션은 s^2 로 커진다. 측정값을 "쌍 하나당 ms" 로 바꿔 보간한 뒤 다시 곱한다.
+function attMs(tab, s){
+  const per = tab.map(([k,v])=>[k, v/(pairs(k)*CFG.HD*CFG.QH)]);
+  return lerpTab(per, s) * pairs(s)*CFG.HD*CFG.QH;
+}
+const attBefore = s => attMs(MEAS.attnBefore, s);
+const attAfter  = s => attMs(MEAS.attnAfter,  s);
+const OMP_EFF = MEAS.attnBatch.omp / MEAS.attnBatch.serial;   // 0.488, 8시퀀스 실측
+
+/* ---------- 합성 라우터 (선택 규칙은 layer.cu 원문, 점수는 지어낸 것) ---------- */
+function h32(a,b,c){
+  let x=(Math.imul(a,73856093)^Math.imul(b,19349663)^Math.imul(c,83492791))>>>0;
+  x=Math.imul(x^(x>>>16),2246822507); x=Math.imul(x^(x>>>13),3266489909);
+  return (x^(x>>>16))>>>0;
+}
+function synthLogits(layer,pos){
+  const v=[];
+  for(let e=0;e<CFG.NE;e++){
+    const a=h32(layer,pos,e)/4294967296, b=h32(layer+7919,pos,e)/4294967296, c=h32(layer,pos+104729,e)/4294967296;
+    v.push((a+b+c-1.5)*0.9);
+  }
+  return v;
+}
+function route(v){
+  const q=v.map(x=>{const r=Math.floor(Math.abs(x)/CFG.Q+0.5)*CFG.Q; return x<0?-r:r;});
+  const sel=excl=>{let best=-1,bv=-Infinity;
+    for(let e=0;e<CFG.NE;e++){ if(e===excl) continue; if(best<0||q[e]>bv+CFG.TIE){best=e;bv=q[e];} }
+    return best;};
+  const a=sel(-1); return [a, sel(a)];
+}
+const rowsCache=new Map();
+function expertRows(layer, lengths){                 // lengths 안의 모든 토큰을 한 통에
+  const key=layer+"|"+lengths.join(",");
+  if(rowsCache.has(key)) return rowsCache.get(key);
+  const cnt=new Array(CFG.NE).fill(0);
+  for(const s of lengths) for(let p=0;p<s;p++){ const [a,b]=route(synthLogits(layer,p)); cnt[a]++; cnt[b]++; }
+  rowsCache.set(key,cnt); return cnt;
+}
+function moeOps(layer, lengths, M, push){
+  push("moe","router gate", gateMs(M), {M, bytes:BYTES.gate}, "layer.cu:87  matmul_transposed(flat, gate_, router)");
+  const tok = lengths.reduce((a,b)=>a+b,0);
+  push("other","route · 토큰마다 Tensor({16})", MEAS.alloc16*tok, {alloc:tok}, "layer.cu:90");
+  const cnt=expertRows(layer,lengths);
+  let calls=0;
+  for(let e=0;e<CFG.NE;e++){
+    const r=cnt[e]; if(!r) continue;
+    calls+=3;
+    push("moe",`expert ${e} · ${r}행`,
+      MEAS.rowCopy*r*2 + 2*callMs("w13",r) + callMs("w2",r) + MEAS.siluMulPerRow*r*2,
+      {M:r, bytes:2*BYTES.w13+BYTES.w2, calls:3},
+      "layer.cu:99-107  gather → w1/w3 → silu·mul → w2 → 0.5 가중 scatter");
+  }
+  return calls;
+}
+
+/* ---------- 두 경로의 op 스트림 ---------- */
+function stream(build, lengths){
+  const ops=[]; let t=0, calls=0, bytes=0;
+  const push=(cat,name,dur,det,src,seq,L)=>{
+    det=det||{}; calls += det.calls!==undefined ? det.calls : (det.bytes?1:0); bytes += det.bytes||0;
+    ops.push({cat,name,dur,det,src:src||"",seq:seq===undefined?-1:seq,L:L===undefined?-1:L,
+              start:t,end:t+dur,calls,bytes});
+    t+=dur;
+  };
+  const T = lengths.reduce((a,b)=>a+b,0), B = lengths.length;
+
+  if (build==="before"){
+    lengths.forEach((s,sq)=>{
+      const P=(c,n,d,det,src)=>push(c,n,d,det,src,sq,-1);
+      P("other",`embed_tokens · ${s}행`, MEAS.rowCopy*s, {}, "model.cu:22");
+      for(let L=0;L<CFG.L;L++){
+        const p=(c,n,d,det,src)=>push(c,n,d,det,src,sq,L);
+        p("other","layer_norm", MEAS.ln, {}, "tensor.cu:95");
+        p("proj","q_proj", callMs("q",s), {M:s,K:4096,N:2048,bytes:BYTES.q}, "layer.cu:24  Linear::forward");
+        p("proj","k_proj", callMs("kv",s),{M:s,K:4096,N:512, bytes:BYTES.kv},"layer.cu:24");
+        p("proj","v_proj", callMs("kv",s),{M:s,K:4096,N:512, bytes:BYTES.kv},"layer.cu:24");
+        p("other","apply_rope", MEAS.ropePerRow*s, {}, "tensor.cu:111");
+        p("attn",`attention · s=${s}`, attBefore(s), {M:s,recompute:130,thr:1},
+          "layer.cu:126-152  q·k 를 130번 다시 계산, OpenMP 없음");
+        p("proj","o_proj", callMs("o",s), {M:s,K:2048,N:4096,bytes:BYTES.o}, "layer.cu:24");
+        p("other","residual add", MEAS.add, {}, "tensor.cu:70");
+        p("other","layer_norm", MEAS.ln, {}, "tensor.cu:95");
+        moeOps(L,[s],s,(c,n,d,det,src)=>p(c,n,d,det,src));
+        p("other","residual add", MEAS.add, {}, "tensor.cu:70");
+      }
+      P("other","final layer_norm", MEAS.ln, {}, "model.cu:29");
+      P("lm","lm_head · 1행", lmMs(1), {M:1,K:4096,N:CFG.V,bytes:BYTES.lm}, "model.cu:33  M=1");
+    });
+  } else {
+    const old = build==="packedOld";
+    push("other",`embed_tokens · ${T}행 한 장으로`, MEAS.rowCopy*T, {}, "model.cu:132  hidden {T, 4096}",-1,-1);
+    for(let L=0;L<CFG.L;L++){
+      const p=(c,n,d,det,src)=>push(c,n,d,det,src,-1,L);
+      p("other","layer_norm", MEAS.ln, {}, "model.cu:145");
+      p("proj","q_proj", callMs("q",T), {M:T,K:4096,N:2048,bytes:BYTES.q}, "model.cu:148  M = T");
+      p("proj","k_proj", callMs("kv",T),{M:T,K:4096,N:512, bytes:BYTES.kv},"model.cu:149");
+      p("proj","v_proj", callMs("kv",T),{M:T,K:4096,N:512, bytes:BYTES.kv},"model.cu:150");
+      p("other","apply_rope", MEAS.ropePerRow*T, {}, "model.cu:36  attend_sequence 안");
+      const ser = lengths.reduce((a,s)=>a+(old?attBefore(s):attAfter(s)),0);
+      const wall = B<=1 ? ser : (old ? Math.max(...lengths.map(attBefore)) : ser*OMP_EFF);
+      p("attn",`attention · 시퀀스 ${B}개 병렬`, wall,
+        {M:T, recompute:old?130:1, thr:Math.min(B,MEAS.threads), serial:ser},
+        old ? "layer.cu 산술 그대로 · omp parallel for 로 시퀀스마다"
+            : "model.cu:153  #pragma omp parallel for → attend_sequence(offset[b], length[b])");
+      p("proj","o_proj", callMs("o",T), {M:T,K:2048,N:4096,bytes:BYTES.o}, "model.cu:159");
+      p("other","residual add", MEAS.add, {}, "model.cu:160");
+      p("other","layer_norm", MEAS.ln, {}, "model.cu:163");
+      moeOps(L,lengths,T,(c,n,d,det,src)=>p(c,n,d,det,src));
+      p("other","residual add", MEAS.add, {}, "model.cu:165");
+    }
+    push("other","final layer_norm", MEAS.ln, {}, "model.cu:169",-1,-1);
+    push("lm",`lm_head · ${B}행 한 번`, lmMs(B), {M:B,K:4096,N:CFG.V,bytes:BYTES.lm}, "model.cu:178",-1,-1);
+  }
+  const cum={}; Object.keys(CAT).forEach(k=>cum[k]=new Float64Array(ops.length+1));
+  for(let i=0;i<ops.length;i++){
+    for(const k in cum) cum[k][i+1]=cum[k][i];
+    cum[ops[i].cat][i+1]+=ops[i].dur;
+  }
+  return {ops,cum,total:t,lengths,T,B,build};
+}
+
+/* ---------- 상태 ---------- */
+const $ = id => document.getElementById(id);
+let N = 2;
+let A = stream("before", LENGTHS.slice(0,N));
+let Bl = stream("after",  LENGTHS.slice(0,N));
+let simT=0, playing=false, speed=40, lastFrame=0;
+
+function seg(host, items, get, set){
+  host.innerHTML="";
+  items.forEach(it=>{
+    const b=document.createElement("button");
+    b.textContent=it.label; b.setAttribute("aria-pressed", get()===it.value);
+    b.onclick=()=>{ set(it.value); [...host.children].forEach((c,i)=>c.setAttribute("aria-pressed", items[i].value===get())); };
+    host.appendChild(b);
+  });
+}
+seg($("nsel"), [1,2,4,8].map(v=>({label:"n="+v,value:v})), ()=>N, v=>{
+  N=v; A=stream("before",LENGTHS.slice(0,N)); Bl=stream("after",LENGTHS.slice(0,N));
+  resetRun(); updPack(); updMask(); updFloor(); updCurve();
+});
+seg($("spd"), [{label:"×1",value:1},{label:"×40",value:40},{label:"×400",value:400},{label:"끝까지",value:1e9}],
+    ()=>speed, v=>{speed=v;});
+function resetRun(){ simT=0; playing=false; $("play").textContent="▶ 동시 실행"; draw(); }
+$("play").onclick=()=>{
+  const end=Math.max(A.total,Bl.total);
+  if(simT>=end) simT=0;
+  playing=!playing; $("play").textContent=playing?"❚❚ 멈춤":"▶ 동시 실행"; lastFrame=performance.now();
+};
+$("step").onclick=()=>{
+  playing=false; $("play").textContent="▶ 동시 실행";
+  const cand=[...A.ops,...Bl.ops].map(o=>o.end).filter(e=>e>simT+1e-9);
+  if(cand.length) simT=Math.min(...cand);
+  draw();
+};
+$("reset").onclick=resetRun;
+addEventListener("keydown",e=>{
+  if(e.target.tagName==="INPUT") return;
+  if(e.code==="Space"){e.preventDefault(); $("play").click();}
+  if(e.code==="ArrowRight"){e.preventDefault(); $("step").click();}
+});
+
+/* ---------- 서식 ---------- */
+const fmt=(v,d=2)=>v.toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
+const big=v=> v>=1e12?fmt(v/1e12)+" T": v>=1e9?fmt(v/1e9)+" G": v>=1e6?fmt(v/1e6)+" M": v>=1e3?fmt(v/1e3,1)+" k": fmt(v,0);
+const bytes=v=> v>=1e12?fmt(v/1e12)+" TB": v>=1e9?fmt(v/1e9)+" GB": v>=1e6?fmt(v/1e6,0)+" MB": fmt(v/1e3,0)+" kB";
+function at(run, t){
+  const ops=run.ops;
+  let lo=0, hi=ops.length-1, i=ops.length-1;
+  if(t>=run.total) return {i:ops.length-1, done:true, op:ops[ops.length-1]};
+  while(lo<=hi){ const m=(lo+hi)>>1; if(ops[m].end<=t) lo=m+1; else {i=m; hi=m-1;} }
+  return {i, done:false, op:ops[i]};
+}
+
+/* ---------- 레인 ---------- */
+const anchorOf=(build,n)=>{ const a=ANCHOR.find(x=>x.build===build && x.n===n); return a?a.sec:null; };
+function laneHTML(run, st, tag, sub, cls){
+  const op=st.op, tot=st.done?run.total:op.start+Math.max(0,Math.min(op.dur,simT-op.start));
+  const seqDone = run.build==="before"
+    ? run.ops.filter(o=>o.cat==="lm" && o.end<=simT).length
+    : (st.done?run.B:0);
+  // 활성 행렬
+  let slab="";
+  if(run.build==="before"){
+    slab = run.lengths.map((s,i)=>{
+      const on = i===op.seq && !st.done, past = i<op.seq || st.done;
+      return `<div class="m" style="height:${s/32*88}px;flex:1;background:${SEQC[i]};opacity:${on?1:past?.28:.5}"
+        title="시퀀스 ${i} · [${s}, 4096]">${on?`<span class="lab">M=${s}</span>`:""}</div>`;
+    }).join("");
+  } else {
+    let acc=0;
+    const stops=run.lengths.map((s,i)=>{ const a=acc/run.T*100; acc+=s;
+      return `${SEQC[i]} ${a.toFixed(2)}%, ${SEQC[i]} ${(acc/run.T*100).toFixed(2)}%`; }).join(", ");
+    slab = `<div class="m on" style="height:88px;flex:1;background:linear-gradient(to top, ${stops})"
+      title="[${run.T}, 4096] 한 장 · 시퀀스 ${run.B}개가 세로로 이어붙어 있다"><span class="lab">M=${run.T}</span></div>`;
+  }
+  // 레이어 테이프
+  const L=op.L;
+  const tape=Array.from({length:CFG.L},(_,i)=>
+    `<div class="l ${st.done||L>i?"done":L===i?"cur":""}"></div>`).join("");
+  // 32레이어 통과 횟수
+  const passes=Array.from({length:run.build==="before"?run.B:1},(_,i)=>{
+    const cur = run.build==="before" ? i===op.seq : true;
+    const done = run.build==="before" ? (i<op.seq||st.done) : st.done;
+    return `<div class="p ${done?"done":cur&&!st.done?"cur":""}"></div>`;
+  }).join("");
+  // 장부
+  const vals={}; let sum=0;
+  for(const k in CAT){
+    let v=run.cum[k][st.i]; if(op.cat===k && !st.done) v+=Math.max(0,Math.min(op.dur,simT-op.start));
+    vals[k]=v; sum+=v;
+  }
+  sum=sum||1;
+  const ledger=Object.keys(CAT).map(k=>`<div style="width:${vals[k]/sum*100}%;background:${CAT[k].c}"></div>`).join("");
+  const legend=Object.keys(CAT).map(k=>
+    `<div class="row"><span class="sw" style="background:${CAT[k].c}"></span><span class="nm">${CAT[k].nm}</span>
+     <span class="vl">${(vals[k]/sum*100).toFixed(0)}%</span></div>`).join("");
+  const path = run.build==="before"
+    ? [["generate()", `시퀀스 ${seqDone}/${run.B} 완료`],
+       [`└ forward(input_ids[${Math.max(0,op.seq)}])`, `s = ${run.lengths[Math.max(0,op.seq)]}`],
+       [`   └ PhiDecoderLayer[${L<0?"—":L}]`, L<0?"":`${L+1}/32`],
+       [`      └ ${op.name}`, fmt(op.dur)+" ms"]]
+    : [["generate()", `${run.B}개 시퀀스 · T = ${run.T}`],
+       [`└ hidden [${run.T}, 4096]`, "한 장"],
+       [`   └ Layer[${L<0?"—":L}]`, L<0?"":`${L+1}/32`],
+       [`      └ ${op.name}`, fmt(op.dur)+" ms"]];
+  return `
+    <div class="tag"><b>${tag}</b><span>${sub}</span>
+      <span class="big" style="color:${cls==="after"?"var(--moss)":"var(--ink)"}">${fmt(Math.min(simT,run.total)/1000)}<span style="font-size:13px">s</span>
+        <em>${anchorOf(run.build,run.B)===null?"실측 없음 · 모형뿐":"실측 "+fmt(anchorOf(run.build,run.B))+" s"}</em></span></div>
+    <div class="slab">${slab}</div>
+    <div class="callpath">${path.map(([l,v],i)=>
+      `<div class="cp ${i<3||!st.done?"on":""}"><span class="lbl">${l}</span><span class="val">${v}</span></div>`).join("")}</div>
+    <div>
+      <div class="eyebrow" style="margin-bottom:4px">32개 레이어를 몇 번 지나는가 · ${run.build==="before"?run.B:1}번</div>
+      <div class="passes">${passes}</div>
+    </div>
+    <div>
+      <div class="eyebrow" style="margin-bottom:4px">레이어 0 → 31</div>
+      <div class="layertape">${tape}</div>
+    </div>
+    <div class="ledger">${ledger}</div>
+    <div class="legend">${legend}</div>
+    <div class="stats">
+      <div class="stat"><div class="k">가중치 읽기</div><div class="v">${bytes(op.bytes)}</div>
+        <div class="s">레이어 1벌 ${bytes(LAYER_BYTES)} × ${(op.bytes/LAYER_BYTES).toFixed(1)}</div></div>
+      <div class="stat"><div class="k">matmul 호출</div><div class="v">${big(op.calls)}</div>
+        <div class="s">${run.build==="before"?"시퀀스마다 다시":"배치에 1번"}</div></div>
+    </div>`;
+}
+function opRow(run, st, title){
+  const o=st.op, d=o.det, rows=[];
+  if(d.K) rows.push(["shape", `[${d.M}, ${d.K}] × [${d.N}, ${d.K}]ᵀ`]);
+  else if(d.M!==undefined) rows.push(["행 M", d.M]);
+  if(d.recompute) rows.push(["같은 q·k 내적을", d.recompute+"번"]);
+  if(d.thr) rows.push(["쓰는 스레드", d.thr+" / "+MEAS.threads]);
+  if(d.serial) rows.push(["직렬이면", fmt(d.serial)+" ms"]);
+  if(d.bytes) rows.push(["이 호출이 읽는 가중치", bytes(d.bytes)]);
+  if(d.alloc) rows.push(["Tensor 할당", d.alloc]);
+  rows.push(["이 연산", fmt(o.dur)+" ms"]);
+  return `<tr><th colspan="2">${title} · <span style="color:${CAT[o.cat].c}">${o.name}</span></th></tr>`
+    + rows.map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join("")
+    + (o.src?`<tr><td colspan="2" style="text-align:left;color:var(--ink-3);font-size:11.5px">${o.src}</td></tr>`:"");
+}
+
+function draw(){
+  const sa=at(A,simT), sb=at(Bl,simT);
+  $("clock").textContent=fmt(simT/1000);
+  $("lane-before").innerHTML=laneHTML(A,sa,"before","57ffaeb · 시퀀스 하나씩","before");
+  $("lane-after").innerHTML =laneHTML(Bl,sb,"after","8f09c7f · 한 장으로 묶어서","after");
+  $("lane-before").classList.toggle("fin",sa.done);
+  $("lane-after").classList.toggle("fin",sb.done);
+  const ta=Math.min(simT,A.total), tb=Math.min(simT,Bl.total);
+  $("gap").textContent = tb>0 ? fmt(ta/tb)+"×" : "—";
+  $("opidx").textContent=`before op ${sa.i+1}/${A.ops.length} · after op ${sb.i+1}/${Bl.ops.length}`;
+  $("tab-before").innerHTML=opRow(A,sa,"before");
+  $("tab-after").innerHTML =opRow(Bl,sb,"after");
+}
+function frame(now){
+  if(playing){
+    const dt=Math.min(100,now-lastFrame); lastFrame=now;
+    simT+=dt*speed;
+    const end=Math.max(A.total,Bl.total);
+    if(simT>=end){ simT=end; playing=false; $("play").textContent="▶ 동시 실행"; }
+    draw();
+  }
+  requestAnimationFrame(frame);
+}
+
+/* ================= 포장기 ================= */
+let packed=false;
+const SEQC=["var(--steel)","var(--copper)","var(--plum)","var(--moss)","var(--hot)","var(--ink-3)","var(--steel)","var(--plum)"];
+function updPack(){
+  const L=LENGTHS.slice(0,N), T=L.reduce((a,b)=>a+b,0), px=4.4;
+  const host=$("packer");
+  if(!packed){
+    host.innerHTML = L.map((s,i)=>
+      `<div><div class="col"><div class="blk" style="height:${s*px}px;background:${SEQC[i]}"><span class="n">${s}</span></div></div>
+       <div class="colcap">[${s}, 4096]</div></div>`).join("");
+  } else {
+    host.innerHTML = `<div><div class="col">`+
+      L.map((s,i)=>`<div class="blk" style="height:${s*px}px;background:${SEQC[i]}"><span class="n">${s}</span></div>`).join("")+
+      `</div><div class="colcap">[${T}, 4096] · 한 장</div></div>`;
+  }
+  $("packtext").innerHTML = `지금 n=${N} 이므로 <code>[${L.join(", ")}]</code> 토큰이 <code>T=${T}</code> 행 한 장이 된다.`;
+  const rows=[
+    ["q_proj", "q", 4096, 2048], ["k_proj / v_proj","kv",4096,512], ["o_proj","o",2048,4096]
+  ].map(([nm,f,K,Nn])=>{
+    const b=L.reduce((a,s)=>a+callMs(f,s),0), a2=callMs(f,T);
+    return `<tr><td>${nm}</td><td>${N}회 · M=${L.join("/")}</td><td>1회 · M=${T}</td><td>${fmt(b/a2)}×</td></tr>`;
+  }).join("");
+  let bMoe=0, aMoe=0, bCalls=0, aCalls=0;
+  for(let l=0;l<CFG.L;l++){
+    L.forEach(s=>{ const c=expertRows(l,[s]);
+      c.forEach(r=>{ if(r){ bMoe += 2*callMs("w13",r)+callMs("w2",r); bCalls+=3; } }); });
+    expertRows(l,L).forEach(r=>{ if(r){ aMoe += 2*callMs("w13",r)+callMs("w2",r); aCalls+=3; } });
+  }
+  const bC = A.ops[A.ops.length-1].calls, aC = Bl.ops[Bl.ops.length-1].calls;
+  // 레이어 1개를 지날 때의 호출 수: q/k/v/o + gate + 살아난 expert 3개씩
+  const perLayer=(ls)=>{ let n=0;
+    for(let l=0;l<CFG.L;l++)
+      for(const g of (ls==="before"?L.map(x=>[x]):[L])) n += 5 + expertRows(l,g).filter(r=>r>0).length*3;
+    return Math.round(n/CFG.L); };
+  const bL=perLayer("before"), aL=perLayer("after");
+  $("packtab").innerHTML =
+    `<tr><th>연산</th><th>before</th><th>after</th><th>이득</th></tr>${rows}`+
+    `<tr><td>MoE expert matmul (32층 합)</td><td>${big(bCalls)}회</td><td>${big(aCalls)}회</td><td>${fmt(bMoe/aMoe)}×</td></tr>`+
+    `<tr><td><b>전체 matmul 호출 (전 구간)</b></td><td>${big(bC)}회</td><td>${big(aC)}회</td><td>${fmt(bC/aC)}×</td></tr>`+
+    `<tr><td><b>가중치 읽은 양</b></td><td>${bytes(A.ops[A.ops.length-1].bytes)}</td><td>${bytes(Bl.ops[Bl.ops.length-1].bytes)}</td>`+
+    `<td>${fmt(A.ops[A.ops.length-1].bytes/Bl.ops[Bl.ops.length-1].bytes)}×</td></tr>`;
+  $("packnote").innerHTML =
+    `곱해야 할 수의 개수(MAC)는 <b>양쪽이 똑같다</b>. 줄어든 것은 <b>호출 횟수</b>와, 호출마다 다시 끌어오던
+     <b>가중치 ${bytes(LAYER_BYTES)}/레이어</b>다. n=1024 라면 before 는 이 ${bytes(LAYER_BYTES)} 를
+     ${big(1024*32)}번, after 는 32번 읽는다 — ${bytes(1024*32*LAYER_BYTES)} 대 ${bytes(32*LAYER_BYTES)}.`;
+  $("callcut").innerHTML = `<b>레이어당 평균 ${bL}번 부르던 것을 ${aL}번으로</b> 줄였다`;
+}
+$("packtoggle").onclick=()=>{ packed=!packed; $("packtoggle").textContent=packed?"◂ 풀기":"묶기 ▸"; updPack(); };
+
+/* ================= 행 곡선 ================= */
+function updCurve(){
+  const M=+$("mrow").value, T=LENGTHS.slice(0,N).reduce((a,b)=>a+b,0);
+  const W=620,H=250,PL=48,PR=12,PT=16,PB=34, maxY=110;
+  const px=m=>PL+(m-1)/39*(W-PL-PR), py=v=>H-PB-Math.min(v,maxY)/maxY*(H-PT-PB);
+  let g=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="M 에 따른 q_proj 호출 시간">`;
+  g+=`<rect x="${px(1)}" y="${PT}" width="${px(19)-px(1)}" height="${H-PT-PB}" fill="var(--sunken)"></rect>`;
+  g+=`<text x="${px(1)+6}" y="${PT+14}" font-size="10.5" fill="var(--ink-3)" font-family="IBM Plex Mono">M = 1 … 19 : 호출 시간이 같다</text>`;
+  for(let v=0;v<=maxY;v+=25){
+    g+=`<line x1="${PL}" y1="${py(v)}" x2="${W-PR}" y2="${py(v)}" stroke="var(--line-2)"></line>`;
+    g+=`<text x="${PL-8}" y="${py(v)+3.5}" font-size="10" text-anchor="end" fill="var(--ink-3)" font-family="IBM Plex Mono">${v}</text>`;
+  }
+  [1,10,19,30,40].forEach(m=>g+=`<text x="${px(m)}" y="${H-PB+15}" font-size="10" text-anchor="middle" fill="var(--ink-3)" font-family="IBM Plex Mono">${m}</text>`);
+  g+=`<text x="${PL-8}" y="${PT+2}" font-size="10" text-anchor="end" fill="var(--ink-3)" font-family="IBM Plex Mono">ms</text>`;
+  const pts=MEAS.qfine.map((v,i)=>`${px(i+1)},${py(v)}`).join(" ");
+  g+=`<polyline points="${pts}" fill="none" stroke="var(--steel)" stroke-width="1.9"></polyline>`;
+  MEAS.qfine.forEach((v,i)=>g+=`<circle cx="${px(i+1)}" cy="${py(v)}" r="2" fill="var(--steel)"></circle>`);
+  // before 의 작동점 (시퀀스 길이) 과 after 의 작동점 (T)
+  LENGTHS.slice(0,N).forEach(s=>{
+    if(s<=40) g+=`<line x1="${px(s)}" y1="${PT}" x2="${px(s)}" y2="${H-PB}" stroke="var(--ink-3)" stroke-dasharray="2 3" opacity=".5"></line>`;
+  });
+  g+=`<text x="${px(19)+6}" y="${H-PB-8}" font-size="10.5" fill="var(--ink-2)" font-family="IBM Plex Mono">before 작동점 (토큰 중앙값 19)</text>`;
+  g+=`<line x1="${px(M)}" y1="${PT}" x2="${px(M)}" y2="${H-PB}" stroke="var(--copper)" stroke-width="1.5"></line>`;
+  g+=`<circle cx="${px(M)}" cy="${py(MEAS.qfine[M-1])}" r="4.5" fill="var(--panel)" stroke="var(--copper)" stroke-width="2"></circle>`;
+  g+=`</svg>`;
+  $("curve").innerHTML=g;
+  $("mval").textContent=M+" 행";
+  const c1=MEAS.qfine[0], cM=MEAS.qfine[M-1];
+  $("curvetab").innerHTML=
+    `<tr><th>M</th><th>호출 ms</th><th>행당 ms</th><th>M=1 대비</th></tr>`+
+    [1,8,19,M,40].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a-b).map(m=>
+      `<tr${m===M?' style="color:var(--copper)"':''}><td>${m}</td><td>${fmt(MEAS.qfine[m-1])}</td>`+
+      `<td>${fmt(MEAS.qfine[m-1]/m,3)}</td><td>${fmt(MEAS.qfine[m-1]/c1)}×</td></tr>`).join("")+
+    `<tr><td>${T} (after, n=${N})</td><td>${fmt(callMs("q",T))}</td><td>${fmt(callMs("q",T)/T,3)}</td><td>${fmt(callMs("q",T)/c1)}×</td></tr>`;
+  $("curvenote").innerHTML=
+    `M=1 과 M=19 의 호출 시간 차이는 <b>${((MEAS.qfine[18]/c1-1)*100).toFixed(1)}%</b> 다. 행 19개를 태우든 1개를 태우든
+     가중치 33.55 MB 는 똑같이 한 번 읽어야 하고, 그 값이 전부다. 그래서 <b>호출을 합치는 것</b>이 곧 이득이다 —
+     시퀀스 ${N}개를 한 번에 넣으면 행당 ${fmt(MEAS.qfine[18]/19,3)} ms 가 ${fmt(callMs("q",T)/T,3)} ms 로 내려간다.`;
+}
+$("mrow").addEventListener("input",updCurve);
+
+/* ================= 블록 대각 마스크 ================= */
+let broken=false;
+function updMask(){
+  const L=LENGTHS.slice(0,N), T=L.reduce((a,b)=>a+b,0);
+  const cv=$("mask"), ctx=cv.getContext("2d");
+  const S=Math.max(1,Math.floor(460/T)), size=T*S;
+  cv.width=size; cv.height=size; cv.style.width=Math.min(480,size*Math.max(1,Math.floor(480/size)))+"px";
+  const css=n=>getComputedStyle(document.body).getPropertyValue(n).trim();
+  ctx.fillStyle=css("--sunken"); ctx.fillRect(0,0,size,size);
+  const off=[]; let a=0; for(const s of L){ off.push(a); a+=s; }
+  const seqOf=r=>{ for(let i=L.length-1;i>=0;i--) if(r>=off[i]) return i; return 0; };
+  for(let qi=0;qi<T;qi++) for(let ki=0;ki<=qi;ki++){
+    const si=seqOf(qi), sj=seqOf(ki);
+    if(si===sj){ ctx.fillStyle=SEQC[si]; ctx.globalAlpha=0.35+0.65*(ki-off[sj])/Math.max(1,qi-off[si]); }
+    else if(broken){ ctx.fillStyle=css("--hot"); ctx.globalAlpha=0.85; }
+    else continue;
+    ctx.fillRect(ki*S,qi*S,S,S);
+  }
+  ctx.globalAlpha=1;
+  const inb=L.reduce((x,s)=>x+s*(s+1)/2,0), all=T*(T+1)/2;
+  $("masklbl").textContent=`T = ${T}`;
+  $("masknote").innerHTML = broken
+    ? `<b style="color:var(--hot)">${big(all-inb)}개 칸이 새로 켜졌다</b> — 한 시퀀스의 토큰이 <b>다른 시퀀스</b>의 토큰을 본다. 다른 답이 나온다.`
+    : `켜진 칸 ${big(inb)} / 인과 마스크 전체 ${big(all)}. 블록 밖은 <b>계산하지 않는다</b>.`;
+  $("rowwise").innerHTML = [
+    ["layer_norm","행마다 평균·분산을 따로", true],
+    ["q/k/v/o projection","행 × 가중치, 행끼리 안 섞임", true],
+    ["residual add","같은 자리끼리", true],
+    ["MoE router + expert","토큰마다 expert 2개를 따로 고름", true],
+    ["lm_head","마지막 토큰 행만", true],
+    ["attention","같은 시퀀스의 앞 토큰들을 본다", false]
+  ].map(([nm,why,ok])=>
+    `<div class="badge"><span class="d" style="background:${ok?"var(--moss)":"var(--copper)"}"></span>
+     <b style="min-width:170px;display:inline-block">${nm}</b>
+     <span style="color:var(--ink-3)">${ok?"행마다 독립":"행이 다른 행을 본다"} · ${why}</span></div>`).join("");
+}
+$("breakit").onclick=()=>{ broken=!broken; $("breakit").textContent=broken?"경계 되돌리기":"시퀀스 경계 지워보기";
+  $("breakit").setAttribute("aria-pressed",broken); updMask(); };
+
+/* ================= 어텐션 130회 ================= */
+function updAtt(){
+  const s=+$("slen").value;
+  $("sval").textContent=`${s} 토큰`;
+  const b=attBefore(s), a2=attAfter(s), maxb=attBefore(32);
+  $("attbars").innerHTML=[
+    ["before · layer.cu", b, "var(--copper)"],
+    ["after · attend_sequence", a2, "var(--moss)"]
+  ].map(([nm,v,c])=>
+    `<div style="margin-bottom:12px"><div style="display:flex;font-size:12.5px"><span>${nm}</span>
+     <span class="mono" style="margin-left:auto">${fmt(v,3)} ms</span></div>
+     <div class="wfbar" style="margin-top:3px"><i style="left:0;width:${Math.max(0.4,v/maxb*100)}%;background:${c}"></i></div></div>`).join("")
+    + `<p class="note" style="margin-top:4px">막대는 s=32 의 before 를 100%로 둔 것이다.
+       after 막대는 s=32 에서도 <b>${(a2/maxb*100).toFixed(2)}%</b> 라 거의 보이지 않는다.</p>`;
+  const need=CFG.QH*pairs(s), MACb=130*CFG.HD*need, MACa=2*CFG.HD*need;
+  $("atttab").innerHTML=[
+    ["(qi, ki, head) 쌍", big(need)],
+    ["before 가 계산한 내적", `${big(need*130)}  (130×)`],
+    ["after 가 계산한 내적", `${big(need)}  (1×)`],
+    ["before MAC / 레이어", big(MACb)],
+    ["after MAC / 레이어", big(MACa)],
+    ["before ms / 레이어", fmt(b,3)],
+    ["after ms / 레이어", fmt(a2,3)],
+    ["빨라진 배수", fmt(b/a2,0)+"×"],
+    ["32 레이어 · 시퀀스 1개", `${fmt(b*32/1000)} s → ${fmt(a2*32/1000,3)} s`]
+  ].map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join("");
+}
+$("slen").addEventListener("input",updAtt);
+
+/* ================= 장부 ================= */
+function buildWaterfall(){
+  const steps=[
+    {nm:"before", sub:"57ffaeb · 포장 없음 · 어텐션 130회", v:E2E.before, c:"var(--ink-3)"},
+    {nm:"+ 포장", sub:"가르는 빌드 · 어텐션은 그대로", v:E2E.packed, c:"var(--steel)"},
+    {nm:"+ 어텐션 다시 쓰기", sub:"8f09c7f · EXP-001 최종", v:E2E.after, c:"var(--moss)"}
+  ];
+  $("waterfall").innerHTML = steps.map((s,i)=>{
+    const w=s.v/E2E.before*100;
+    const cut = i? `<span style="color:${s.c}">−${fmt(steps[i-1].v-s.v)} s</span>` : "";
+    return `<div class="wfrow"><div><b>${s.nm}</b><div style="font-size:11px;color:var(--ink-3);font-family:'IBM Plex Mono',monospace">${s.sub}</div></div>
+      <div class="wfbar"><i style="left:0;width:${w}%;background:${s.c}"></i></div>
+      <div class="amt">${fmt(s.v)} s<div style="font-size:11px;color:var(--ink-3)">${cut}</div></div></div>`;
+  }).join("");
+  const pack=E2E.before/E2E.packed, attn=E2E.packed/E2E.after;
+  $("wfstats").innerHTML=[
+    ["포장", fmt(pack)+"×", `${fmt(E2E.before-E2E.packed)} s 절약`],
+    ["어텐션 다시 쓰기", fmt(attn)+"×", `${fmt(E2E.packed-E2E.after)} s 절약`],
+    ["합계", fmt(E2E.before/E2E.after)+"×", `${fmt(pack)} × ${fmt(attn)} = ${fmt(pack*attn)}`],
+    ["출력", "동일", "n=2 bitwise identical"]
+  ].map(([k,v,s])=>`<div class="stat"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`).join("");
+}
+
+/* ================= 천장 · 보정 ================= */
+function modelSec(build,n){
+  const L=LENGTHS.slice(0,n);
+  return stream(build==="packedOld"?"packedOld":build, L).total/1000;
+}
+function updFloor(){
+  const W=620,H=230,PL=52,PR=12,PT=16,PB=34;
+  const xs=MEAS.Ms, ys=MEAS.call.q.map((v,i)=>v/xs[i]);
+  const lx=m=>PL+(Math.log(m)/Math.log(256))*(W-PL-PR), ly=v=>H-PB-(Math.log(v/0.8)/Math.log(64))*(H-PT-PB);
+  let g=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="M 에 따른 행당 시간">`;
+  [0.8,3.2,12.8,51.2].forEach(v=>{
+    g+=`<line x1="${PL}" y1="${ly(v)}" x2="${W-PR}" y2="${ly(v)}" stroke="var(--line-2)"></line>`;
+    g+=`<text x="${PL-8}" y="${ly(v)+3.5}" font-size="10" text-anchor="end" fill="var(--ink-3)" font-family="IBM Plex Mono">${v}</text>`;
+  });
+  [1,4,19,46,165,256].forEach(m=>g+=`<text x="${lx(m)}" y="${H-PB+15}" font-size="10" text-anchor="middle" fill="var(--ink-3)" font-family="IBM Plex Mono">${m}</text>`);
+  g+=`<text x="${PL-8}" y="${PT+2}" font-size="10" text-anchor="end" fill="var(--ink-3)" font-family="IBM Plex Mono">ms/행</text>`;
+  const floor=ys[ys.length-1];
+  g+=`<line x1="${PL}" y1="${ly(floor)}" x2="${W-PR}" y2="${ly(floor)}" stroke="var(--hot)" stroke-dasharray="4 3"></line>`;
+  g+=`<text x="${W-PR}" y="${ly(floor)-6}" font-size="10.5" text-anchor="end" fill="var(--hot)" font-family="IBM Plex Mono">바닥 ${fmt(floor,2)} ms/행</text>`;
+  g+=`<polyline points="${xs.map((m,i)=>`${lx(m)},${ly(ys[i])}`).join(" ")}" fill="none" stroke="var(--steel)" stroke-width="1.9"></polyline>`;
+  xs.forEach((m,i)=>g+=`<circle cx="${lx(m)}" cy="${ly(ys[i])}" r="2.4" fill="var(--steel)"></circle>`);
+  const T=LENGTHS.slice(0,N).reduce((a,b)=>a+b,0);
+  g+=`<line x1="${lx(19)}" y1="${PT}" x2="${lx(19)}" y2="${H-PB}" stroke="var(--ink-3)" stroke-dasharray="2 3"></line>`;
+  g+=`<text x="${lx(19)+5}" y="${PT+12}" font-size="10.5" fill="var(--ink-3)" font-family="IBM Plex Mono">before M=19</text>`;
+  if(T<=256){
+    g+=`<line x1="${lx(T)}" y1="${PT}" x2="${lx(T)}" y2="${H-PB}" stroke="var(--moss)"></line>`;
+    g+=`<text x="${lx(T)+5}" y="${PT+26}" font-size="10.5" fill="var(--moss)" font-family="IBM Plex Mono">after M=${T}</text>`;
+  }
+  g+=`</svg>`;
+  $("floor").innerHTML=g;
+  const perRow19=MEAS.call.q[5]/19, perRowMax=floor;
+  let fullTok=0; for(const s in HIST) fullTok += (+s)*HIST[s];
+  const projPerRow = (MEAS.call.q[12]+2*MEAS.call.kv[12]+MEAS.call.o[12])/256;
+  const projFull = projPerRow*fullTok*CFG.L/1000;
+  $("floornote").innerHTML=
+    `행당 시간은 M 을 키울수록 내려가지만 <b>${fmt(perRowMax,2)} ms/행</b> 근처에서 멈춘다
+     (M=19 대비 ${fmt(perRow19/perRowMax)}× 밖에 안 된다). 포장은 여기까지가 전부다.
+     n=1024 는 토큰 ${big(fullTok)}개다 — projection 만으로 ${fmt(projFull/60,0)}분,
+     MoE 까지 더하면 리더보드 2분 제한의 수십 배다.
+     <b>다음 레버는 M 이 아니라 <code>matmul_transposed</code> 자체여야 한다</b> → EXP-002.`;
+  const rows=ANCHOR.map(a=>{
+    const m=modelSec(a.build,a.n), res=(m/a.sec-1)*100;
+    return `<tr><td>${a.label}</td><td>${fmt(a.sec)}</td><td>${fmt(m)}</td>`+
+           `<td style="color:${Math.abs(res)<8?"var(--moss)":"var(--copper)"}">${res>0?"+":""}${res.toFixed(1)}%</td></tr>`;
+  }).join("");
+  $("calibtab").innerHTML=`<tr><th>실행</th><th>실측 s</th><th>모형 s</th><th>잔차</th></tr>${rows}`;
+  $("calibnote").innerHTML=
+    `실측 6줄은 전부 <code>./run.sh -v</code> 로 돌려 Validation PASSED 를 받은 값이다.
+     모형은 이 값들에 맞춘 것이 아니라 연산을 하나씩 따로 재서 더한 것이라 잔차가 0이 아니다.
+     묶은 쪽(after)이 일관되게 <b>낙관적</b>인데, 벤치에서는 캐시에 남아 있던 활성 행렬이
+     실제 실행에서는 레이어마다 ${bytes(LAYER_BYTES)} 의 가중치 스트림에 밀려나기 때문으로 보인다(확인 안 함).`;
+}
+
+/* ================= 잰 것 / 지어낸 것 ================= */
+function buildNotes(){
+  $("measured").innerHTML=`
+   <p><b>종단 3점.</b> 같은 입력(n=2), 같은 노드에서 빌드 3개를 돌렸다.
+   <code>57ffaeb</code> 108.838 s, 포장만 한 가르는 빌드 68.640 s, <code>8f09c7f</code> 37.749 s.
+   전부 <code>Validation: PASSED</code>, max abs diff 6.86646e-05 로 셋이 동일.</p>
+   <p style="margin-top:10px"><b>가르는 빌드.</b> <code>8f09c7f</code> 의 <code>attend_sequence</code> 안쪽만
+   <code>layer.cu</code> 원문(130회 재계산 + <code>Tensor::at()</code>)으로 되돌리고 포장은 그대로 뒀다.
+   수정 금지 파일은 건드리지 않았다. 이 빌드는 제출용이 아니라 <b>두 변경을 가르기 위한 측정용</b>이다.</p>
+   <p style="margin-top:10px"><b>마이크로벤치.</b> <code>matmul_transposed</code> 를 M=1..40 한 행씩,
+   그리고 M=256 까지 5개 shape 로. 어텐션은 before/after 두 코드를 그대로 옮겨 나란히 재고 출력을 비교했다
+   (max abs diff 0.000e+00). 배치 어텐션의 omp 효율 0.488 도 실측이다.</p>`;
+  $("assump").innerHTML=`
+   <p><b>router 는 지어낸 것.</b> 가중치를 읽지 않으므로 어떤 토큰이 어느 expert 로 가는지 알 수 없다.
+   (레이어, 위치)로 시드한 합성 점수에 <b>실제 선택 규칙</b>을 적용했다. before/after 양쪽에 <b>같은</b> 라우터를
+   쓰므로 두 기계실의 비교는 이 가정에 거의 좌우되지 않지만, 절대 시간은 좌우된다.</p>
+   <p style="margin-top:10px"><b>모형에 없는 것.</b> 캐시 상태와 메모리 대역폭 경쟁. 위 보정표에서
+   after 가 일관되게 낙관적인 이유로 보인다. lm_head 는 M=1/8/32 세 점만 재고 그 사이를 이었다.</p>
+   <p style="margin-top:10px"><b>이건 프로그램이 아니다.</b> 재생되는 것은 실행이 아니라 측정한 비용의 재구성이다.
+   logit 은 계산하지 않는다. 왼쪽·오른쪽 기계실의 <b>순서</b>와 <b>모양</b>은 실제 코드 그대로지만,
+   초 단위 값은 모형이다.</p>`;
+}
+
+/* ================= 시작 ================= */
+updPack(); updCurve(); updMask(); updAtt(); buildWaterfall(); updFloor(); buildNotes(); draw();
+requestAnimationFrame(frame);
+</script>

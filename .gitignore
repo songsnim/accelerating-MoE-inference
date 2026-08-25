@@ -12,4 +12,3 @@ get-pip.py
 
 # pre-git backup of the editable files (superseded by the baseline commit)
 .baseline/
-
