@@ -350,7 +350,8 @@ __global__ void rope_rows(float* __restrict__ q, float* __restrict__ k,
 // difficulty of this kernel. A reordered sum here shifts the router logits by
 // ~1e-7 and flips tokens to other experts, so:
 //   - the q.k dot walks d ascending inside a single thread,
-//   - the softmax denominator walks ki ascending inside a single thread,
+//   - the softmax denominator walks ki ascending inside a single thread
+//     (the exp itself is elementwise, so every lane may run one),
 //   - the value accumulation walks ki ascending inside thread d,
 //   - __f*_rn keeps nvcc from contracting the multiply-adds into FMAs that the
 //     host does not emit (verified in obj/model.o: vmulss + vaddss throughout),
@@ -370,6 +371,7 @@ __global__ void attention_heads(const float* __restrict__ q,
     float* sq = shared;               // the query row being served
     float* sdenom = shared + D;       // the softmax denominator
     float* sw = shared + D + 1;       // one score per key
+    __shared__ float smax;            // the softmax max, broadcast to all lanes
 
     const int b = blockIdx.x, qh = blockIdx.y;
     const int kh = qh / (QH / KVH);
@@ -396,14 +398,20 @@ __global__ void attention_heads(const float* __restrict__ q,
         }
         __syncthreads();
 
+        // exp is elementwise, so it may leave thread 0 without disturbing any
+        // summation order; the max scan and the denominator stay where they are.
         if (tid == 0) {
             float maxv = -INFINITY;
             for (int i = 0; i < nk; ++i) maxv = fmaxf(maxv, sw[i]);
+            smax = maxv;
+        }
+        __syncthreads();
+        for (int i = tid; i < nk; i += D)
+            sw[i] = static_cast<float>(exp(static_cast<double>(sw[i] - smax)));
+        __syncthreads();
+        if (tid == 0) {
             float denom = 0.0f;
-            for (int i = 0; i < nk; ++i) {
-                sw[i] = static_cast<float>(exp(static_cast<double>(sw[i] - maxv)));
-                denom = __fadd_rn(denom, sw[i]);
-            }
+            for (int i = 0; i < nk; ++i) denom = __fadd_rn(denom, sw[i]);
             *sdenom = denom;
         }
         __syncthreads();

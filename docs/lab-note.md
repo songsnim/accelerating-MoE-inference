@@ -655,3 +655,48 @@ feature-major(0.22s)보다 크고 변경 범위는 MoE 디스패치로 국한된
 
 미착수로 남은 것: **글로벌 로드 지연 은닉.** 레지스터 압력이 막고 있으므로 해법은 레지스터를
 우회하는 `cp.async.ca.shared.global`(Ampere PTX, 글로벌->shared 직접). EXP-009 이후 후보.
+
+---
+
+# EXP-009: attention softmax의 FP64 exp를 lane에 분산
+
+## 1. Background
+EXP-008 이후 stage 분포(b6): gemm 1.341 / moe 1.398 / **attn 0.283** / norm 0.140.
+`docs/exploration-003.md`는 2등 참가자의 "Attention Q-head 4-way"(390.6 -> 112.0 ms, 3.49x)를
+최우선으로 권했다. **그러나 그 설계는 우리 코드에 이식되지 않는다.** 저쪽은 block이 GQA group
+1개를 맡아 thread 0이 q head 4개의 score/softmax를 연달아 계산했고, 그것을 thread 0~3에
+나눈 것이 3.49x였다. 우리 커널은 block = (b, qh)라 **q head 4개가 이미 별도 block에서 병렬**이다.
+저쪽이 추가한 병렬성을 우리는 이미 갖고 있으므로 배수는 전이되지 않는다.
+
+## 2. Hypothesis
+attn 시간의 지배분은 `if (tid == 0)` 직렬 구간이고, 그 안의 **double `exp`**가 사실상 전부다.
+`exp`는 elementwise이므로 lane에 분산해도 어떤 합산 순서도 건드리지 않는다 -> **bitwise 동일**.
+
+## 3. Design
+직렬 구간을 셋으로 쪼갠다: (a) tid 0이 max 스캔 -> shared 브로드캐스트, (b) **128 lane이
+`sw[i] = exp(sw[i]-max)`를 나눠 계산**, (c) tid 0이 denom을 ki 오름차순으로 직렬 누적.
+max는 order-independent, denom은 순서 그대로 -> 값이 바뀔 여지가 없다.
+
+## 4. Result
+한 srun(b6) 안에서 3변형 interleave x2rep. C는 직렬 구간을 통째로 삭제한 **진단용 하한**(결과 오답).
+
+| 변형 | attn (s) | 비고 |
+|---|---|---|
+| A 기준(EXP-008) | 0.289 / 0.293 | |
+| **B exp 분산** | **0.181 / 0.184** | **-0.109 s, 1.59x** |
+| C 직렬 구간 삭제 | 0.178 / 0.178 | 하한 |
+
+- **B가 가용 여유의 96%를 회수**했다(0.109 / 0.113). 남은 max+denom 직렬 비용은 ~0.005 s로,
+  이 방향에 더 팔 것이 없다. Q-head 4-way를 완벽히 해내도 상한이 0.113 s다.
+- `cmp outputs/exp009.bin` vs EXP-008 출력 -> **bitwise 동일**. Validation PASSED
+  (max abs 0.000179291, EXP-008과 같은 값).
+- exploration-003의 예측 -0.22 s는 **우리 코드에서 도달 불가**다. 우리 하한이 0.178 s이므로
+  저쪽의 0.090 s는 score dot / value 누적까지 재구성해야 나온다.
+
+## 5. Next action
+**EXP-010: grouped expert GEMM.** w1/w3를 N=896으로 융합하고 expert를 `blockIdx.z`로 올려
+블록 80 -> ~2240. EXP-008 §4-1 ncu가 블록 붕괴(164 슬롯 중 40~72)와 N 패딩 12.5%를 동시에
+지목했고, 융합이 둘 다 지운다. 기대 -0.37 s.
+
+남은 attn 0.178 s의 내역(score dot 대 value 누적)은 아직 분해하지 않았다. MoE/embedding보다
+작으므로 후순위.
