@@ -1,6 +1,7 @@
 # build artifacts
 obj/
 main
+main[0-9]*
 
 # run outputs and local references
 *.bin
@@ -12,3 +13,7 @@ get-pip.py
 
 # pre-git backup of the editable files (superseded by the baseline commit)
 .baseline/
+outputs/
+
+# local agent worktrees
+.claude/
