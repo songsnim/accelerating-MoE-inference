@@ -574,3 +574,84 @@ EXP-008 = **shape별 타일 선택** — 커널을 타일 상수로 템플릿화
 narrow(expert w1/w3 N=448, gate N=16)는 64x64/4x4 유지. 두 숫자 모두 이미 측정돼 있으므로
 예측이 아니라 산수다: b1에서 3.600 -> 3.298, 즉 4.56 -> **4.26s (1.07x)**.
 그 다음 후보는 여전히 device routing과 grouped expert GEMM이며, 둘 다 이 커널을 물려받는다.
+
+---
+
+# EXP-008
+## 1. Background
+EXP-007은 8x8 레지스터 타일(128x128, BK=8)이 wide GEMM에서 1.17x, expert GEMM에서
+0.81x로 전체 0.99x라 롤백했다. 그때 wide GEMM은 15.5 TF/s(peak의 43.5%)에 머물렀는데,
+8x8의 shared-BW 천장은 100%다. 즉 shared 대역폭이 아닌 다른 것이 묶고 있다.
+K 루프가 `LDG -> STS -> sync -> compute -> sync` 구조라 매 반복 글로벌 로드에서 멈춘다.
+
+## 2. Hypothesis
+shared를 2중 버퍼로 두어 tile kt+BK의 글로벌 로드를 tile kt의 compute보다 먼저 발행하면
+LDG 지연이 FFMA에 가려지고, 버퍼가 교대하므로 반복당 `__syncthreads()`도 2회에서 1회로 준다.
+-> GEMM 처리량이 오른다. 누산 순서는 그대로이므로 **출력은 bitwise 동일해야 한다**.
+
+## 3. Design and Implementation
+`gemm_nt_bias`만 수정. as/bs를 `[2][BK][...]`로 늘리고 프롤로그에서 tile 0을 적재,
+루프는 `LDG(kt+BK) -> compute(cur) -> STS(cur^1) -> sync` 순. 버퍼가 교대하므로 이전
+반복의 sync가 write-after-read를 보장한다. 타일은 EXP-007과 동일(128x128, BK=8, 8x8).
+대조군을 두 개 둔다: 006(현행 4x4)과 007(8x8, 단일 버퍼). 한 srun 안에서 교차 실행.
+
+## 4. Result
+b1, 3회 반복(편차 +-0.003s):
+
+| | elapsed | vs 006 | Validation |
+|---|---|---|---|
+| 006 (4x4/64x64/BK=16) | 4.566 s | - | PASSED |
+| 007 (8x8/128x128/BK=8) | 4.598 s | 0.993x | PASSED |
+| **008 (007 + double buffer)** | **4.388 s** | **1.041x** | PASSED |
+
+`cmp outputs/exp008_006.bin outputs/exp008_008.bin` -> **bitwise 동일**. 3자 모두
+max abs diff 0.000179291로 EXP-006과 같다. 타일 shape도 double buffering도 정확도 리스크 없음.
+
+b6, 단계별(같은 할당 내):
+
+| | gemm | moe | attn | norm |
+|---|---|---|---|---|
+| 006 | 1.719 | 1.259 | 0.304 | 0.142 |
+| 007 | 1.386 | 1.468 | 0.284 | 0.138 |
+| 008 | **1.341** | 1.398 | 0.283 | 0.140 |
+
+- **wide GEMM 1.719 -> 1.341 = 1.28x.** 26.66 TFLOP 기준 15.5 -> **19.9 TF/s (43.5% -> 55.9%)**.
+- **가설은 맞았지만 메커니즘은 틀렸다.** SASS를 보면 ptxas가 LDG를 compute 블록 *뒤로*
+  sink시켰다 -- 레지스터 127개로 2 blocks/SM 경계(128x256x2=65536)에 붙어 있어서, float4
+  두 개를 512 FFMA 구간 내내 살리면 occupancy가 1 block/SM으로 떨어지기 때문. 지연 은닉은
+  실패했고, 실제로 작동한 것은 **반복당 BAR.SYNC 2회 -> 1회**뿐이다(k=4096/BK=8 -> 블록당 512회).
+- moe는 1.259 -> 1.398로 여전히 0.90x 퇴행. double buffering이 007 퇴행의 절반만 회수했다.
+  expert GEMM만 보면 15.0 -> 13.0 TF/s. 원인은 EXP-007과 동일 -- N=448, expert당 M~2475라
+  128x128 타일에서 블록이 80개로 붕괴(82 SM).
+
+**부수 결론: feature-major 전환은 보류.** 서브에이전트가 feature-major+DB+큰타일로 측정한
+21.8 TF/s에 **feature-major 없이 19.9까지 도달**했다. 남은 간격 1.9 TF/s ~ 0.12s에
+layer_norm coalescing ~0.10s를 더해도 0.22s인데, 대가는 전 커널 재인덱싱이다.
+
+### 4-1. ncu 실측 (n=1024, `-s 400` -> 전부 expert GEMM에 착지)
+
+| grid | 커널 | 블록 | sm__throughput | long_scoreboard | sectors/req |
+|---|---|---|---|---|---|
+| (4,10)/(4,18) | expert w1/w3 (N=448) | 40/72 | 24.4/43.1% | 25.9/26.6% | 15.78 |
+| (32,6)/(32,10) | expert w2 (N=4096) | 192/320 | 39.1/49.2% | 14.8/16.9% | 14.47 |
+
+- **feature-major 불필요 확정.** sectors/request 14.5~15.8 (이상값 16의 90~99%),
+  dram_throughput 3.7~10.8%. 메모리 경로에 고칠 것이 없다. 현재 로드는 스레드 2개가
+  한 행의 32B(정확히 1섹터)를 채우므로 레이아웃을 바꿔도 섹터 수는 그대로다.
+- **블록 붕괴 실측.** 2 blocks/SM x 82 SM = 164 슬롯인데 w1/w3는 40~72개(24~44%)만 채운다.
+- **새 발견: N 패딩 낭비.** N=448에 BN=128이면 타일 4개=512열 -> **12.5% 버림**.
+  BN=64일 때는 448=7x64로 낭비 0이었다. 8x8 타일은 expert GEMM에 블록 붕괴와 N 낭비를
+  동시에 입혔고, EXP-007에서 나는 전자만 보고 있었다.
+- **cp.async 순위 하향.** long_scoreboard가 블록 적은 w1/w3 26%, 잘 찬 w2 15%다. 지연
+  stall의 상당 부분이 워프 부족의 증상이므로, grouping으로 점유율을 올린 뒤 다시 재야 한다.
+
+grouped 융합은 둘 다 동시에 해결한다: w1||w3 -> N=896 = 7x128로 낭비 0, expert를
+blockIdx.z로 -> 블록 7x20x16 = 2240.
+
+## 5. Next action
+**EXP-009: grouped expert GEMM.** w1/w3를 N=896으로 융합하고 expert를 `blockIdx.z`로 올려
+블록 80 -> ~2240. wide GEMM과 같은 ~19.9 TF/s로 가면 expert GEMM 1.07 -> 0.70s (**-0.37s**).
+feature-major(0.22s)보다 크고 변경 범위는 MoE 디스패치로 국한된다.
+
+미착수로 남은 것: **글로벌 로드 지연 은닉.** 레지스터 압력이 막고 있으므로 해법은 레지스터를
+우회하는 `cp.async.ca.shared.global`(Ampere PTX, 글로벌->shared 직접). EXP-009 이후 후보.

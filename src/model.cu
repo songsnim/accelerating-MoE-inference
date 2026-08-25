@@ -70,26 +70,32 @@ void to_host(Tensor& host, const float* device) {
 // The K loop still walks k in ascending order and each output still accumulates
 // into one register with the same `acc += a * b` expression, so every output
 // sees the same sequence of FMAs as the tile kernel it replaces.
-constexpr int BM = 64, BN = 64, BK = 16, TM = 4, TN = 4;
+constexpr int BM = 128, BN = 128, BK = 8, TM = 8, TN = 8;
 constexpr int GEMM_THREADS = (BM / TM) * (BN / TN);  // 256
-// The +4 keeps the shared rows 16B-aligned (68 * 4B) while breaking the
-// bank-conflict pattern of a bare [BK][64] layout.
+// The +4 keeps the shared rows 16B-aligned while breaking the bank-conflict
+// pattern of a bare [BK][BM] layout.
 constexpr int SPAD = 4;
 
+// Double-buffered variant: the global load for tile kt+BK is issued before the
+// compute over tile kt, so the ~500-cycle LDG latency overlaps the FFMAs
+// instead of stalling in front of the shared store. Only one __syncthreads()
+// per iteration is needed because the two buffers alternate.
+//
+// The k loop still walks ascending and each output still accumulates into one
+// register with the same `acc += a * b`, so the FMA sequence is unchanged.
 __global__ void gemm_nt_bias(const float* __restrict__ a,
                              const float* __restrict__ b,
                              const float* __restrict__ bias,
                              float* __restrict__ c,
                              int m, int k, int n) {
-    __shared__ __align__(16) float as[BK][BM + SPAD];
-    __shared__ __align__(16) float bs[BK][BN + SPAD];
+    __shared__ __align__(16) float as[2][BK][BM + SPAD];
+    __shared__ __align__(16) float bs[2][BK][BN + SPAD];
 
     const int tid = threadIdx.x;
     const int m0 = blockIdx.y * BM;
     const int n0 = blockIdx.x * BN;
-    // Each thread loads one float4 of the A tile and one of the B tile.
-    const int lr = tid / (BK / 4);          // 0..63, row inside the tile
-    const int lc = (tid % (BK / 4)) * 4;    // 0, 4, 8, 12 inside the k window
+    const int lr = tid / (BK / 4);          // 0..127, row inside the tile
+    const int lc = (tid % (BK / 4)) * 4;    // 0, 4 inside the k window
     const int ty = tid / (BN / TN);         // 0..15
     const int tx = tid % (BN / TN);         // 0..15
 
@@ -97,35 +103,62 @@ __global__ void gemm_nt_bias(const float* __restrict__ a,
     const int b_row = n0 + lr;
     const bool a_ok = a_row < m;
     const bool b_ok = b_row < n;
+    const float* const ab = a + static_cast<long long>(a_row) * k + lc;
+    const float* const bb = b + static_cast<long long>(b_row) * k + lc;
 
     float acc[TM][TN] = {};
-    for (int kt = 0; kt < k; kt += BK) {
-        const int kk = kt + lc;
-        float4 av = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-        float4 bv = av;
-        if (a_ok) av = *reinterpret_cast<const float4*>(
-                           a + static_cast<long long>(a_row) * k + kk);
-        if (b_ok) bv = *reinterpret_cast<const float4*>(
-                           b + static_cast<long long>(b_row) * k + kk);
-        // Transposed store: the compute loop wants a whole k-slice contiguous.
-        as[lc + 0][lr] = av.x; as[lc + 1][lr] = av.y;
-        as[lc + 2][lr] = av.z; as[lc + 3][lr] = av.w;
-        bs[lc + 0][lr] = bv.x; bs[lc + 1][lr] = bv.y;
-        bs[lc + 2][lr] = bv.z; bs[lc + 3][lr] = bv.w;
-        __syncthreads();
 
+    // Stage the first tile. Rows past the edge stay zero for the whole loop.
+    float4 av = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    float4 bv = av;
+    if (a_ok) av = *reinterpret_cast<const float4*>(ab);
+    if (b_ok) bv = *reinterpret_cast<const float4*>(bb);
+    as[0][lc + 0][lr] = av.x; as[0][lc + 1][lr] = av.y;
+    as[0][lc + 2][lr] = av.z; as[0][lc + 3][lr] = av.w;
+    bs[0][lc + 0][lr] = bv.x; bs[0][lc + 1][lr] = bv.y;
+    bs[0][lc + 2][lr] = bv.z; bs[0][lc + 3][lr] = bv.w;
+    __syncthreads();
+
+    int cur = 0;
+    for (int kt = 0; kt < k; kt += BK) {
+        const bool more = kt + BK < k;
+        if (more) {
+            if (a_ok) av = *reinterpret_cast<const float4*>(ab + kt + BK);
+            if (b_ok) bv = *reinterpret_cast<const float4*>(bb + kt + BK);
+        }
+
+        const float (*ac)[BM + SPAD] = as[cur];
+        const float (*bc)[BN + SPAD] = bs[cur];
 #pragma unroll
         for (int p = 0; p < BK; ++p) {
-            const float4 ar = *reinterpret_cast<const float4*>(&as[p][ty * TM]);
-            const float4 br = *reinterpret_cast<const float4*>(&bs[p][tx * TN]);
-            const float av4[TM] = {ar.x, ar.y, ar.z, ar.w};
-            const float bv4[TN] = {br.x, br.y, br.z, br.w};
+            float av4[TM], bv4[TN];
+#pragma unroll
+            for (int i = 0; i < TM; i += 4) {
+                const float4 t = *reinterpret_cast<const float4*>(&ac[p][ty * TM + i]);
+                av4[i] = t.x; av4[i + 1] = t.y; av4[i + 2] = t.z; av4[i + 3] = t.w;
+            }
+#pragma unroll
+            for (int j = 0; j < TN; j += 4) {
+                const float4 t = *reinterpret_cast<const float4*>(&bc[p][tx * TN + j]);
+                bv4[j] = t.x; bv4[j + 1] = t.y; bv4[j + 2] = t.z; bv4[j + 3] = t.w;
+            }
 #pragma unroll
             for (int i = 0; i < TM; ++i)
 #pragma unroll
                 for (int j = 0; j < TN; ++j) acc[i][j] += av4[i] * bv4[j];
         }
-        __syncthreads();
+
+        if (more) {
+            // Writing the other buffer: every thread finished reading it before
+            // the __syncthreads() that closed the previous iteration.
+            const int nxt = cur ^ 1;
+            as[nxt][lc + 0][lr] = av.x; as[nxt][lc + 1][lr] = av.y;
+            as[nxt][lc + 2][lr] = av.z; as[nxt][lc + 3][lr] = av.w;
+            bs[nxt][lc + 0][lr] = bv.x; bs[nxt][lc + 1][lr] = bv.y;
+            bs[nxt][lc + 2][lr] = bv.z; bs[nxt][lc + 3][lr] = bv.w;
+            __syncthreads();
+            cur = nxt;
+        }
     }
 
 #pragma unroll
