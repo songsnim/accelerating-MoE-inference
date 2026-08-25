@@ -1,0 +1,1075 @@
+<title>버스를 건너지 않는 어텐션</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gothic+A1:wght@500;700;900&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#E7EBEF; --panel:#F9FAFB; --panel-2:#EFF3F6; --sunken:#E1E7EC;
+  --ink:#121920; --ink-2:#4A5765; --ink-3:#7A8794;
+  --line:#C7D0D8; --line-2:#DDE3E9;
+  --copper:#AE501D; --steel:#1E6383; --plum:#6A4A7B; --moss:#2C6B52; --idle:#9BA7B3; --hot:#93202C;
+  --copper-w:#F2E2D6; --steel-w:#D8E7EE; --moss-w:#D7E9E0; --hot-w:#F3DADD; --plum-w:#E7DEEE;
+  --shadow:0 1px 0 rgba(18,25,32,.04), 0 8px 24px -18px rgba(18,25,32,.5);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0C1116; --panel:#141B21; --panel-2:#1A232A; --sunken:#0F161B;
+    --ink:#E2E8EE; --ink-2:#9BA8B4; --ink-3:#6F7C88;
+    --line:#26313A; --line-2:#1D262E;
+    --copper:#E08A4B; --steel:#5CA6C4; --plum:#AC8BC4; --moss:#5AA981; --idle:#66727E; --hot:#DD6672;
+    --copper-w:#38251A; --steel-w:#152C38; --moss-w:#163024; --hot-w:#341A1E; --plum-w:#271E31;
+    --shadow:0 1px 0 rgba(0,0,0,.3), 0 10px 30px -20px #000;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0C1116; --panel:#141B21; --panel-2:#1A232A; --sunken:#0F161B;
+  --ink:#E2E8EE; --ink-2:#9BA8B4; --ink-3:#6F7C88;
+  --line:#26313A; --line-2:#1D262E;
+  --copper:#E08A4B; --steel:#5CA6C4; --plum:#AC8BC4; --moss:#5AA981; --idle:#66727E; --hot:#DD6672;
+  --copper-w:#38251A; --steel-w:#152C38; --moss-w:#163024; --hot-w:#341A1E; --plum-w:#271E31;
+  --shadow:0 1px 0 rgba(0,0,0,.3), 0 10px 30px -20px #000;
+}
+*{box-sizing:border-box}
+body{margin:0; background:var(--ground); color:var(--ink);
+  font-family:"IBM Plex Sans KR",system-ui,sans-serif; font-size:15px; line-height:1.6; -webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:"Gothic A1","IBM Plex Sans KR",sans-serif; text-wrap:balance; margin:0}
+h1{font-weight:900; font-size:clamp(26px,3.4vw,40px); letter-spacing:-.02em; line-height:1.15}
+h2{font-weight:900; font-size:22px; letter-spacing:-.01em}
+h3{font-weight:700; font-size:15px}
+p{margin:0}
+code,.mono,.num{font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums}
+code{font-size:.86em; background:var(--panel-2); padding:.1em .35em; border-radius:3px; color:var(--ink-2)}
+.wrap{max-width:1180px; margin:0 auto; padding:0 20px}
+.eyebrow{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3)}
+.lede{color:var(--ink-2); max-width:68ch}
+abbr[title]{text-decoration:underline dotted var(--ink-3); text-underline-offset:3px; cursor:help}
+
+.console{position:sticky; top:0; z-index:50; background:var(--panel); border-bottom:1px solid var(--line); box-shadow:var(--shadow)}
+.console .wrap{display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding-top:10px; padding-bottom:10px}
+.brand{display:flex; flex-direction:column; line-height:1.15; margin-right:auto}
+.brand b{font-family:"Gothic A1",sans-serif; font-weight:900; font-size:17px; letter-spacing:-.01em}
+.brand span{font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--ink-3); letter-spacing:.08em}
+.ctrls{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+button{font-family:inherit; font-size:13px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line);
+  border-radius:4px; padding:6px 12px; cursor:pointer; transition:background .12s, border-color .12s}
+button:hover{background:var(--sunken); border-color:var(--ink-3)}
+button:focus-visible{outline:2px solid var(--copper); outline-offset:2px}
+button[aria-pressed="true"]{background:var(--ink); color:var(--panel); border-color:var(--ink)}
+button.primary{background:var(--copper); border-color:var(--copper); color:#fff; font-weight:600; min-width:104px}
+button.primary:hover{filter:brightness(1.08); background:var(--copper)}
+.seg{display:flex; border:1px solid var(--line); border-radius:4px; overflow:hidden}
+.seg button{border:0; border-radius:0; border-left:1px solid var(--line); padding:6px 10px}
+.seg button:first-child{border-left:0}
+.readout{display:flex; gap:18px; align-items:baseline}
+.readout .r{display:flex; flex-direction:column; align-items:flex-end}
+.readout .v{font-family:"IBM Plex Mono",monospace; font-size:19px; font-weight:500; line-height:1.1; font-variant-numeric:tabular-nums}
+.readout .k{font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); font-family:"IBM Plex Mono",monospace}
+
+section{padding:44px 0 8px}
+.panel{background:var(--panel); border:1px solid var(--line-2); border-radius:6px; padding:18px; box-shadow:var(--shadow)}
+.grid{display:grid; gap:16px}
+.two{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.side{grid-template-columns:minmax(0,1fr) minmax(0,330px)}
+.side-l{grid-template-columns:minmax(0,300px) minmax(0,1fr)}
+@media(max-width:980px){.two,.side,.side-l{grid-template-columns:1fr}}
+.head{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:8px}
+.head .eyebrow{margin-left:auto}
+.note{font-size:13px; color:var(--ink-2)}
+.hr{height:1px; background:var(--line-2); margin:14px 0}
+.stack{display:flex; flex-direction:column; gap:16px}
+.scroll{overflow-x:auto}
+.big{font-family:"IBM Plex Mono",monospace; font-size:clamp(20px,2.6vw,30px); font-weight:500; font-variant-numeric:tabular-nums; letter-spacing:-.02em}
+
+/* hero */
+.hero{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; align-items:end}
+@media(max-width:900px){.hero{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* machines */
+.lane{border:1px solid var(--line-2); border-radius:6px; background:var(--panel); padding:16px; box-shadow:var(--shadow);
+  display:flex; flex-direction:column; gap:12px}
+.lane.before{border-top:3px solid var(--hot)}
+.lane.after{border-top:3px solid var(--moss)}
+.lane .tag{display:flex; align-items:baseline; gap:10px}
+.lane .tag b{font-family:"Gothic A1",sans-serif; font-weight:900; font-size:18px}
+.lane .who{font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--ink-3); letter-spacing:.05em}
+.lane .sub{font-size:12.5px; color:var(--ink-2)}
+
+.rig{background:var(--sunken); border-radius:5px; padding:12px; display:flex; flex-direction:column; gap:0}
+.box{border:1px solid var(--line); border-radius:4px; background:var(--panel); padding:9px 11px; display:flex; align-items:center; gap:10px;
+  transition:border-color .12s, background .12s}
+.box .bl{font-family:"IBM Plex Mono",monospace; font-size:10.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3); width:42px; flex:none}
+.box .bt{font-size:12.5px; color:var(--ink-2); flex:1; min-width:0}
+.box.gpu.on{border-color:var(--moss); background:var(--moss-w)}
+.box.gpu.on .bt{color:var(--moss); font-weight:600}
+.box.cpu.on{border-color:var(--hot); background:var(--hot-w)}
+.box.cpu.on .bt{color:var(--hot); font-weight:600}
+.threads{display:grid; grid-template-columns:repeat(16,1fr); gap:2px; width:132px; flex:none}
+.threads i{height:9px; border-radius:1px; background:var(--line); display:block}
+.threads i.on{background:var(--hot)}
+.threads i.off{background:var(--line-2)}
+
+.bus{position:relative; height:78px; margin:0 46px; border-left:1px dashed var(--line); border-right:1px dashed var(--line)}
+.bus .rail{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  font-family:"IBM Plex Mono",monospace; font-size:10px; letter-spacing:.1em; color:var(--ink-3); text-transform:uppercase}
+.bus .rail.idlemark{color:var(--idle)}
+.pk{position:absolute; width:15px; height:9px; border-radius:2px; left:50%; margin-left:-7px;
+  background:var(--copper); opacity:.9}
+.pk.up{background:var(--steel)}
+.bus.dead{opacity:.5}
+
+.benchcap{display:flex; justify-content:space-between; align-items:center; gap:10px; font-family:"IBM Plex Mono",monospace;
+  font-size:11px; color:var(--ink-3); letter-spacing:.05em}
+.badge{padding:1px 7px; border-radius:99px; border:1px solid var(--line); color:var(--ink-3); font-family:"IBM Plex Mono",monospace; font-size:11px}
+.badge.hot{border-color:var(--hot); color:var(--hot); background:var(--hot-w)}
+.badge.moss{border-color:var(--moss); color:var(--moss); background:var(--moss-w)}
+.badge.copper{border-color:var(--copper); color:var(--copper); background:var(--copper-w)}
+.badge.plum{border-color:var(--plum); color:var(--plum); background:var(--plum-w)}
+.prog{height:7px; background:var(--sunken); border-radius:99px; overflow:hidden}
+.prog i{display:block; height:100%; background:var(--copper); width:0}
+.lane.after .prog i{background:var(--moss)}
+
+.meters{display:grid; grid-template-columns:repeat(3,1fr); gap:8px}
+.meter{background:var(--panel-2); border-radius:4px; padding:8px 10px}
+.meter .k{font-size:9.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3); font-family:"IBM Plex Mono",monospace}
+.meter .v{font-family:"IBM Plex Mono",monospace; font-size:17px; font-variant-numeric:tabular-nums; line-height:1.25}
+.meter .v small{font-size:11px; color:var(--ink-3)}
+
+/* knobs */
+.ctl{display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:10px; margin-bottom:9px}
+.ctl label{font-size:12.5px; color:var(--ink-2)}
+.ctl .rv{font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--ink); min-width:66px; text-align:right; font-variant-numeric:tabular-nums}
+input[type=range]{width:100%; accent-color:var(--copper); height:20px}
+input[type=range]:focus-visible{outline:2px solid var(--copper); outline-offset:3px}
+
+/* code */
+pre{margin:0; background:var(--sunken); border-radius:5px; padding:12px 13px; overflow-x:auto;
+  font-family:"IBM Plex Mono",monospace; font-size:11.6px; line-height:1.55; color:var(--ink-2)}
+pre b{color:var(--ink); font-weight:600}
+pre .del{color:var(--hot)}
+pre .add{color:var(--moss)}
+pre .cm{color:var(--ink-3)}
+
+/* thread grid */
+.tgrid{display:grid; grid-template-columns:repeat(32,1fr); gap:2px}
+.tgrid i{aspect-ratio:1; border-radius:1px; background:var(--line-2); display:block; transition:background .1s}
+.tgrid i.work{background:var(--moss)}
+.tgrid i.lead{background:var(--copper)}
+.tgrid i.wait{background:var(--line)}
+.phases{display:flex; flex-direction:column; gap:6px}
+.ph{display:grid; grid-template-columns:22px 1fr auto; gap:10px; align-items:center; padding:7px 9px; border-radius:4px;
+  border:1px solid transparent; background:var(--panel-2); cursor:pointer; text-align:left; width:100%; font:inherit; color:inherit}
+.ph:hover{background:var(--sunken)}
+.ph[aria-pressed="true"]{border-color:var(--copper); background:var(--copper-w)}
+.ph .n{font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--ink-3)}
+.ph .t{font-size:12.8px; min-width:0}
+.ph .o{font-family:"IBM Plex Mono",monospace; font-size:12px; font-variant-numeric:tabular-nums; color:var(--ink-2)}
+.barrier{display:flex; align-items:center; gap:8px; font-family:"IBM Plex Mono",monospace; font-size:10.5px;
+  color:var(--ink-3); letter-spacing:.07em; padding-left:4px}
+.barrier::before{content:""; flex:none; width:16px; height:1px; background:var(--line)}
+.barrier::after{content:""; flex:1; height:1px; background:var(--line)}
+
+/* router lab */
+.logits{display:flex; flex-direction:column; gap:3px}
+.lg{display:grid; grid-template-columns:38px 1fr 128px 56px; gap:8px; align-items:center;
+  font-family:"IBM Plex Mono",monospace; font-size:11.5px; font-variant-numeric:tabular-nums}
+.lg .e{color:var(--ink-3)}
+.lg .bar{height:15px; background:var(--sunken); border-radius:2px; position:relative; overflow:hidden}
+.lg .bar i{display:block; height:100%; background:var(--steel-w); border-right:2px solid var(--steel)}
+.lg.pick1 .bar i{background:var(--moss-w); border-right-color:var(--moss)}
+.lg.pick2 .bar i{background:var(--copper-w); border-right-color:var(--copper)}
+.lg.edge .e{color:var(--plum); font-weight:600}
+.lg .q{color:var(--ink-2); text-align:right}
+.lg .r{text-align:right; font-size:10.5px}
+.lg.pick1 .r{color:var(--moss)}
+.lg.pick2 .r{color:var(--copper)}
+.lg.flip{animation:nudge .5s ease}
+@keyframes nudge{0%,100%{transform:none}30%{transform:translateX(5px)}}
+.sw{display:grid; grid-template-columns:auto 1fr; gap:10px; align-items:start; padding:9px 10px; border-radius:4px;
+  background:var(--panel-2); border:1px solid transparent; cursor:pointer; text-align:left; width:100%; font:inherit; color:inherit; margin-bottom:7px}
+.sw:hover{background:var(--sunken)}
+.sw[aria-pressed="true"]{border-color:var(--plum); background:var(--plum-w)}
+.sw .knob{width:30px; height:17px; border-radius:99px; background:var(--line); position:relative; flex:none; margin-top:3px; transition:background .14s}
+.sw .knob::after{content:""; position:absolute; top:2px; left:2px; width:13px; height:13px; border-radius:99px; background:var(--panel); transition:transform .14s}
+.sw[aria-pressed="true"] .knob{background:var(--plum)}
+.sw[aria-pressed="true"] .knob::after{transform:translateX(13px)}
+.sw .lb{font-size:12.8px; line-height:1.4}
+.sw .lb em{display:block; font-style:normal; font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--ink-3); letter-spacing:.05em; margin-top:2px}
+.verdict{border-radius:5px; padding:12px 13px; border:1px solid var(--line); background:var(--panel-2)}
+.verdict.ok{border-color:var(--moss); background:var(--moss-w)}
+.verdict.bad{border-color:var(--hot); background:var(--hot-w)}
+.verdict b{font-family:"Gothic A1",sans-serif; font-size:15px}
+.verdict.ok b{color:var(--moss)}
+.verdict.bad b{color:var(--hot)}
+
+/* ledger */
+table{border-collapse:collapse; width:100%; font-size:13px}
+th,td{text-align:right; padding:6px 9px; border-bottom:1px solid var(--line-2); white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{font-family:"IBM Plex Mono",monospace; font-size:10.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3); font-weight:400}
+td.num{font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums}
+td.win{color:var(--moss); font-weight:600}
+.ledger{display:flex; flex-direction:column; gap:5px}
+.lrow{display:grid; grid-template-columns:58px 1fr 74px; gap:9px; align-items:center; font-size:12px}
+.lrow .lk{font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--ink-2)}
+.lrow .lb{height:16px; background:var(--sunken); border-radius:2px; overflow:hidden}
+.lrow .lb i{display:block; height:100%}
+.lrow .lv{font-family:"IBM Plex Mono",monospace; font-size:11.5px; text-align:right; font-variant-numeric:tabular-nums; color:var(--ink-2)}
+
+.foot{padding:34px 0 60px; color:var(--ink-3); font-size:12.5px}
+@media (prefers-reduced-motion: reduce){
+  *{animation-duration:.001ms !important; transition-duration:.001ms !important}
+}
+</style>
+
+<div class="console">
+  <div class="wrap">
+    <div class="brand"><b>버스를 건너지 않는 어텐션</b><span>EXP-006 · MICROWORLD · src/model.cu</span></div>
+    <div class="ctrls">
+      <button id="play" class="primary">▶ 두 대 동시에</button>
+      <button id="step">한 레이어</button>
+      <button id="reset">되감기</button>
+      <div class="seg" id="spd"></div>
+    </div>
+    <div class="readout">
+      <div class="r"><span class="v" id="rlayer">0 / 32</span><span class="k">레이어</span></div>
+      <div class="r"><span class="v" id="rgap" style="color:var(--moss)">—</span><span class="k">벌어진 차</span></div>
+    </div>
+  </div>
+</div>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">EXP-005 → EXP-006 · 커널 두 개</p>
+    <h1 style="margin-top:8px">어텐션은 32번 버스를 건너<br>CPU에 다녀오고 있었다.</h1>
+    <p class="lede" style="margin-top:14px">
+      q·k·v는 GPU가 만들었다. 그런데 어텐션은 CPU가 계산했다. 그래서 레이어마다
+      <b>243 MB를 내리고 162 MB를 올렸다</b>. 32개 레이어를 돌면 <b>13 GB</b>가 PCIe를 왕복한다.
+      EXP-006은 커널 두 개(<code>rope_rows</code>, <code>attention_heads</code>)를 추가하고
+      그 자리의 host 코드를 지운 것이 전부다. 연산량은 한 톨도 줄지 않았다 —
+      어텐션 전체가 전체 연산의 <b>0.15%</b>다. 이건 FLOP 실험이 아니라 <b>이사 실험</b>이다.
+    </p>
+
+    <div class="hero" style="margin-top:26px">
+      <div class="panel">
+        <div class="eyebrow">n=1024 전체 추론</div>
+        <div class="big">6.344 <span style="color:var(--ink-3)">→</span> 3.93 s</div>
+      </div>
+      <div class="panel">
+        <div class="eyebrow">배속</div>
+        <div class="big" style="color:var(--moss)">1.61×</div>
+      </div>
+      <div class="panel">
+        <div class="eyebrow">D2H (내려받기)</div>
+        <div class="big">0.865 <span style="color:var(--ink-3)">→</span> 0.006 s</div>
+      </div>
+      <div class="panel">
+        <div class="eyebrow">출력 비교</div>
+        <div class="big" style="color:var(--moss); font-size:20px">BITWISE IDENTICAL</div>
+      </div>
+    </div>
+    <p class="note" style="margin-top:10px">
+      마지막 칸이 이 실험의 진짜 난이도다. 어텐션 출력이 <b>1e-7</b>만 흔들려도 라우터가 다른 expert를
+      고르고 답이 <span class="mono">0.21</span>만큼 틀어진다. 아래 세 번째 실험대에서 직접 뒤집어 볼 수 있다.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="head"><h2>레이어 한 개에서 벌어지는 일</h2>
+      <span class="eyebrow">위 콘솔의 ▶ 를 누르면 두 대가 동시에 출발한다</span></div>
+    <p class="note" style="margin-bottom:14px; max-width:70ch">
+      같은 레이어, 같은 입력, 같은 답. 다른 것은 <b>어텐션을 누가 하느냐</b> 하나뿐이다.
+      기본 속도 0.5×에서 실제 측정 시간이 그대로 흐른다 — 왼쪽이 한 레이어를 끝낼 때 오른쪽은 이미 여덟 번째다.
+    </p>
+
+    <div class="grid two">
+      <div class="lane before" id="laneB">
+        <div class="tag"><b>BEFORE</b><span class="who">EXP-005 · attend_sequence()</span></div>
+        <div class="sub">q·k·v를 host로 내려 OpenMP로 어텐션을 돌리고 context를 다시 올린다.</div>
+        <div class="rig">
+          <div class="box gpu" id="gB"><span class="bl">GPU</span><span class="bt" id="gtB">q/k/v proj 완료</span></div>
+          <div class="bus" id="busB"><div class="rail" id="railB">PCIe 3.0 ×16</div></div>
+          <div class="box cpu" id="cB"><span class="bl">CPU</span><span class="bt" id="ctB">대기</span>
+            <div class="threads" id="thB"></div></div>
+        </div>
+        <div class="benchcap"><span id="capB">레이어 0 / 32</span><span class="badge hot" id="stB">정지</span></div>
+        <div class="prog"><i id="prB"></i></div>
+        <div class="meters">
+          <div class="meter"><div class="k">레이어당</div><div class="v" id="mtB">—</div></div>
+          <div class="meter"><div class="k">버스 통과</div><div class="v" id="mbB">0 <small>MB</small></div></div>
+          <div class="meter"><div class="k">32 레이어 누적</div><div class="v" id="msB">0.000 <small>s</small></div></div>
+        </div>
+      </div>
+
+      <div class="lane after" id="laneA">
+        <div class="tag"><b>AFTER</b><span class="who">EXP-006 · rope_rows + attention_heads</span></div>
+        <div class="sub">q·k·v는 만들어진 자리에 그대로 있다. 커널 두 개가 그 위에서 끝낸다.</div>
+        <div class="rig">
+          <div class="box gpu" id="gA"><span class="bl">GPU</span><span class="bt" id="gtA">q/k/v proj 완료</span></div>
+          <div class="bus dead" id="busA"><div class="rail idlemark" id="railA">유휴 — 0 MB</div></div>
+          <div class="box cpu" id="cA"><span class="bl">CPU</span><span class="bt" id="ctA">할 일 없음</span>
+            <div class="threads" id="thA"></div></div>
+        </div>
+        <div class="benchcap"><span id="capA">레이어 0 / 32</span><span class="badge moss" id="stA">정지</span></div>
+        <div class="prog"><i id="prA"></i></div>
+        <div class="meters">
+          <div class="meter"><div class="k">레이어당</div><div class="v" id="mtA">—</div></div>
+          <div class="meter"><div class="k">버스 통과</div><div class="v" id="mbA">0 <small>MB</small></div></div>
+          <div class="meter"><div class="k">32 레이어 누적</div><div class="v" id="msA">0.000 <small>s</small></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid side" style="margin-top:16px">
+      <div class="panel">
+        <div class="head"><h3>BEFORE를 구해낼 수 있을까</h3><span class="eyebrow">손잡이를 돌려보기</span></div>
+        <p class="note" style="margin-bottom:12px">
+          BEFORE가 느린 이유는 둘이다 — 버스가 좁고, host가 느리다. 하나씩 고쳐보면
+          <b>하나를 고쳐도 다른 하나가 남는다</b>는 것이 보인다.
+        </p>
+        <div class="ctl"><label>PCIe 대역폭</label><input type="range" id="sBW" min="2" max="32" step="0.5" value="8.8"><span class="rv" id="vBW">8.8 GB/s</span></div>
+        <div class="ctl"><label>host 스레드</label><input type="range" id="sTH" min="1" max="32" step="1" value="32"><span class="rv" id="vTH">32</span></div>
+        <div class="hr"></div>
+        <div class="scroll"><table id="knobtab"></table></div>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>판정</h3></div>
+        <div id="knobVerdict" class="verdict"></div>
+        <p class="note" style="margin-top:12px">
+          기본값 <span class="mono">8.8 GB/s</span>는 측정된 D2H 0.865 s에서 역산한 값이다
+          (243.4 MB × 32 ÷ 0.865 s). host 32스레드는 실제 노드의 Xeon E5-2650 코어 수다.
+          스레드 확장은 시퀀스 단위 병렬이라 선형으로 모델링했다 — BEFORE에 유리한 쪽으로 후하게 잡은 것이다.
+        </p>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <div class="head"><h3>지운 코드와 넣은 코드</h3><span class="eyebrow">src/model.cu · generate() 레이어 루프</span></div>
+      <div class="grid two">
+        <pre><span class="del">-        to_host(q, d_q.get());</span>
+<span class="del">-        to_host(k, d_k.get());</span>
+<span class="del">-        to_host(v, d_v.get());</span>
+<span class="del">-        tick(t_d2h);</span>
+<span class="del">-</span>
+<span class="del">-#pragma omp parallel for schedule(dynamic)</span>
+<span class="del">-        for (long long b = 0; b &lt; batch; ++b) {</span>
+<span class="del">-            attend_sequence(q, k, v,</span>
+<span class="del">-                offset[b], length[b], context);</span>
+<span class="del">-        }</span>
+<span class="del">-        tick(t_attn);</span>
+<span class="del">-</span>
+<span class="del">-        to_device(d_ctx.get(), context);</span>
+<span class="del">-        tick(t_h2d);</span></pre>
+        <pre><span class="add">+        rope_rows&lt;&lt;&lt;total, 256&gt;&gt;&gt;(</span>
+<span class="add">+            d_q.get(), d_k.get(),</span>
+<span class="add">+            d_pos.get(), d_rope.get());</span>
+<span class="add">+        attention_heads&lt;&lt;&lt;</span>
+<span class="add">+            dim3(batch, NUM_ATTENTION_HEADS),</span>
+<span class="add">+            HEAD_DIM, attn_shared&gt;&gt;&gt;(</span>
+<span class="add">+            d_q.get(), d_k.get(), d_v.get(),</span>
+<span class="add">+            d_begin.get(), d_len.get(),</span>
+<span class="add">+            d_ctx.get(), attn_scale);</span>
+<span class="add">+        cuda_check(cudaGetLastError(),</span>
+<span class="add">+                   "attention kernels");</span>
+<span class="add">+        tick(t_attn);</span></pre>
+      </div>
+      <p class="note" style="margin-top:10px">
+        <code>Tensor q, k, v, context</code> 네 개의 host 버퍼도 함께 사라졌다.
+        <code>d_pos</code>(행이 시퀀스 안에서 몇 번째인가), <code>d_begin/d_len</code>(시퀀스 경계),
+        <code>d_rope</code>(cos/sin 표)는 <code>generate()</code> 시작에 <b>딱 한 번</b> 올린다 — 합쳐서 수십 KB다.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="head"><h2>커널 안을 열어보면</h2>
+      <span class="eyebrow">block 1개 = (시퀀스 1개, query head 1개) · thread 128개</span></div>
+    <p class="note" style="margin-bottom:14px; max-width:70ch">
+      <code>attention_heads</code>는 블록 하나에 스레드를 <b>HEAD_DIM(128)개</b> 띄운다.
+      스레드 <span class="mono">d</span>는 출력 원소 <span class="mono">d</span> 하나를 끝까지 책임진다.
+      한 query 토큰을 처리하는 데 단계가 넷이고, 그 사이사이에
+      <abbr title="블록 안의 모든 스레드가 여기 다 도착할 때까지 서로 기다린다. 먼저 온 스레드는 논다.">__syncthreads()</abbr> 장벽이 있다.
+    </p>
+
+    <div class="grid side-l">
+      <div class="panel">
+        <div class="head"><h3>단계</h3></div>
+        <div class="phases" id="phaseList"></div>
+        <div class="hr"></div>
+        <div class="ctl"><label>시퀀스 길이</label><input type="range" id="sLEN" min="6" max="32" step="1" value="19"><span class="rv" id="vLEN">19</span></div>
+        <div class="ctl"><label>query 위치 qi</label><input type="range" id="sQI" min="0" max="18" step="1" value="12"><span class="rv" id="vQI">12</span></div>
+        <p class="note" style="margin-top:4px">실측 분포: 길이 min 6 / 중앙값 19 / max 32.</p>
+      </div>
+      <div class="panel">
+        <div class="head"><h3 id="tgTitle">스레드 128개</h3><span class="eyebrow" id="tgNote">—</span></div>
+        <div class="tgrid" id="tgrid"></div>
+        <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:10px; font-size:11.5px; color:var(--ink-3)" class="mono">
+          <span><i style="display:inline-block;width:10px;height:10px;background:var(--moss);border-radius:1px"></i> 일하는 중</span>
+          <span><i style="display:inline-block;width:10px;height:10px;background:var(--copper);border-radius:1px"></i> thread 0 (혼자)</span>
+          <span><i style="display:inline-block;width:10px;height:10px;background:var(--line);border-radius:1px"></i> 장벽에서 대기</span>
+        </div>
+        <div class="hr"></div>
+        <div class="meters">
+          <div class="meter"><div class="k">이 단계 점유율</div><div class="v" id="mOcc">—</div></div>
+          <div class="meter"><div class="k">네 단계 평균</div><div class="v" id="mAvg">—</div></div>
+          <div class="meter"><div class="k">키 개수 nk</div><div class="v" id="mNk">—</div></div>
+        </div>
+        <div class="hr"></div>
+        <pre id="phaseCode"></pre>
+        <p class="note" style="margin-top:10px" id="phaseWhy"></p>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <div class="head"><h3>느린 커널인데 왜 이겼나</h3><span class="eyebrow">198 GFLOP/s = 피크의 0.6%</span></div>
+      <p class="note" style="max-width:78ch">
+        점유율 그래프가 말해주듯 이 커널은 잘 짜인 커널이 아니다. dot product는 스레드 하나가 128번 <b>직렬로</b> 더하고,
+        softmax는 thread 0 혼자 한다. 그런데도 이겼다 — 지운 것이 <b>2.50 s</b>(host 1.126 + 버스 1.377)이고
+        새로 넣은 것이 <b>0.303 s</b>이기 때문이다. 순 −2.20 s.
+        어텐션은 이제 전체의 8%이고, <a href="#next" style="color:var(--copper)">다음 병목</a>은 다른 데 있다.
+        <b>느린 커널이 빠른 host보다 낫다</b>는 것이 이 실험의 교훈이지, 커널을 잘 짜는 법이 교훈이 아니다.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="head"><h2>1e-7이 답을 뒤집는 자리</h2>
+      <span class="eyebrow">스위치를 켜면 커널이 host와 달라진다</span></div>
+    <p class="note" style="margin-bottom:14px; max-width:72ch">
+      커널을 옮길 때 보통은 "오차 1e-7쯤이야" 한다. 이 모델에서는 그게 안 된다.
+      어텐션 출력 → MoE 라우터 logit → <code>PhiMoE::route</code>가 그 값을
+      <span class="mono">1e-3</span> 단위로 <b>양자화</b>한 뒤 <span class="mono">tie-eps 0.02</span>로 top-2를 고른다.
+      양자화 경계에 앉은 토큰은 <b>1 ulp</b>만 밀려도 다른 expert로 간다.
+      아래에서 스위치를 켜고 세 토큰을 각각 눌러보라.
+    </p>
+
+    <div class="grid side-l">
+      <div class="panel">
+        <div class="head"><h3>커널의 안전장치</h3><span class="eyebrow">끄면 host와 달라진다</span></div>
+        <div id="levers"></div>
+        <div class="hr"></div>
+        <div class="meters" style="grid-template-columns:1fr 1fr">
+          <div class="meter"><div class="k">누적 오차 ε</div><div class="v" id="mEps">0</div></div>
+          <div class="meter"><div class="k">1.9 의 1 ulp</div><div class="v" id="mUlp">1.19e-7</div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="head">
+          <h3>라우터가 보는 값 — 토큰</h3>
+          <div class="seg" id="tokSel" style="margin-left:auto"></div>
+        </div>
+        <p class="note" id="tokNote" style="margin-bottom:10px"></p>
+        <div class="lg" style="color:var(--ink-3); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; border-bottom:1px solid var(--line-2); padding-bottom:4px; margin-bottom:6px">
+          <span>expert</span><span>raw logit</span><span style="text-align:right">양자화(1e-3)</span><span style="text-align:right">선택</span>
+        </div>
+        <div class="logits" id="logits"></div>
+        <div class="hr"></div>
+        <div id="routeVerdict" class="verdict"></div>
+      </div>
+    </div>
+
+    <div class="grid two" style="margin-top:16px">
+      <div class="panel">
+        <div class="head"><h3>실제로 한 번 터졌다</h3><span class="eyebrow">EXP-004 · layer_norm 트리 리덕션</span></div>
+        <pre>max abs diff <b>0.211975</b>   mean abs diff 6.83e-05
+first mismatch [<b>344</b>, 6744]</pre>
+        <p class="note" style="margin-top:10px">
+          n=8은 통과하는데 n=1024가 실패했다. 1024개 시퀀스 중 <b>단 4개</b>(344·400·401·1009)만 임계를 넘었다.
+          mean은 그대로인데 max만 튀는 것 — 정밀도가 조금씩 나빠진 게 아니라
+          <b>이산적 결정이 뒤집힌 것</b>이다. 634k번의 라우팅 중 몇 개면 충분하다.
+        </p>
+        <p class="note" style="margin-top:8px">
+          위 네 스위치 중 <b>트리 리덕션</b> 하나만이 이렇게 실측으로 실패한 이력이 있다.
+          나머지 셋은 터지는 걸 본 적이 없다 — 같은 크기(1 ulp)의 위험이라 <b>예방적으로</b> 막았을 뿐이다.
+        </p>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>그래서 커널이 이렇게 생겼다</h3><span class="eyebrow">느리게 만든 것이 의도다</span></div>
+        <pre><span class="cm">// q·k dot — 스레드 하나가 d 오름차순 직렬</span>
+for (int d = 0; d &lt; D; ++d)
+  score = <b>__fadd_rn</b>(score, <b>__fmul_rn</b>(sq[d], kr[d]));
+
+<span class="cm">// softmax denominator — thread 0 혼자 ki 오름차순</span>
+if (tid == 0) {
+  for (int i = 0; i &lt; nk; ++i) {
+    sw[i] = (float)<b>exp</b>((<b>double</b>)(sw[i] - maxv));
+    denom = <b>__fadd_rn</b>(denom, sw[i]);
+  }
+}</pre>
+        <p class="note" style="margin-top:10px">
+          host를 먼저 <code>objdump obj/model.o</code>로 확인했다 — <code>attend_sequence</code>에
+          <code>vfmadd</code>가 <b>0개</b>다. GCC는 곱만 벡터화하고 덧셈은 순서대로 낸다.
+          그래서 device도 <code>__f*_rn</code>으로 FMA 계약을 막아야 <b>같아진다</b>.
+          RoPE의 cos/sin도 device <code>powf/cosf/sinf</code>가 glibc와 1 ulp 다를 수 있어
+          host가 <code>generate()</code> 안에서 표를 만들어 8 KB만 올린다.
+        </p>
+      </div>
+    </div>
+    <p class="note" style="margin-top:12px; color:var(--ink-3)">
+      실험대 주의 — 위 16개 logit은 <b>설명을 위해 배치한 값</b>이다(경계 위 expert를 일부러 앉혔다).
+      <code>route_row</code>의 양자화·tie-eps 로직과 <span class="mono">0.211975 / 6.83e-05 / 4개 시퀀스</span>는
+      실제 코드와 실제 관측값이다. 각 스위치의 오차 크기는 1 ulp라는 <b>크기만</b> 맞춘 모형이며, 개별 실측값이 아니다.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="head"><h2>시계는 이렇게 움직였다</h2>
+      <span class="eyebrow">n=1024 · APS_PROFILE=1 · 같은 세션 연속 측정</span></div>
+    <div class="grid two">
+      <div class="panel">
+        <div class="head"><h3>BEFORE (EXP-005)</h3><span class="eyebrow">6.344 s</span></div>
+        <div class="ledger" id="ledB"></div>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>AFTER (EXP-006)</h3><span class="eyebrow">3.930 s</span></div>
+        <div class="ledger" id="ledA"></div>
+      </div>
+    </div>
+    <div class="grid side" style="margin-top:16px">
+      <div class="panel">
+        <div class="head"><h3>단계별 원장</h3><span class="eyebrow">docs/lab-note.md</span></div>
+        <div class="scroll"><table id="ledtab"></table></div>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>기록</h3></div>
+        <div class="scroll"><table id="runtab"></table></div>
+        <p class="note" style="margin-top:10px">
+          제출 <b>262.949606 seq/s</b>. 개인 최고 160.3 → 262.9 (+64.0%), baseline 대비 <b>7895×</b>.
+          단 순위는 <b>2위/10</b> — EXP-005 때는 1위였다. 리더보드가 움직였다.
+        </p>
+        <p class="note" style="margin-top:8px">
+          런 간 변동: 10회 중 8회가 [3.889, 3.939], 2회가 4.567 s. 이상치에서는 gemm·moe·attn이
+          <b>모두 균일하게 1.2×</b> 느려졌다 → 코드가 아니라 GPU 클럭이다.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="next">
+  <div class="wrap">
+    <div class="head"><h2>다음에 열어볼 상자</h2><span class="eyebrow">EXP-007 — 추측하지 말고 먼저 쪼개 잰다</span></div>
+    <div class="grid side">
+      <div class="panel">
+        <p class="note" style="margin-bottom:12px; max-width:70ch">
+          device GEMM이 다시 <b>76%</b>다(gemm 1.717 + moe 1.257). 그런데 <code>moe</code> 1.257 s의
+          <b>내부 구성이 아직 미측정</b>이다 — 세 가지가 타이머 하나에 섞여 있다.
+          다음 실험은 코드를 고치지 않는다. 타이머만 쪼갠다.
+        </p>
+        <div class="scroll"><table id="nexttab"></table></div>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>왜 이 순서인가</h3></div>
+        <p class="note">
+          EXP-006을 고른 이유도 같았다: 이득이 가장 크고(당시 40%),
+          <b>이후 실험에 제약을 주지 않는다</b>. 끝나고 나니 활성값이 device를 떠나는 곳이
+          router logits 한 군데(6 ms)만 남아 다음 실험의 표면이 좁아졌다.
+        </p>
+        <p class="note" style="margin-top:10px">
+          반대로 grouped expert GEMM은 이득이 ~1.09×인데 나중에 라우팅을 device로 옮기면
+          <b>다시 짜야 한다</b>. 순서가 중요한 이유다.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="wrap foot">
+  EXP-006 microworld · 수치는 <code>docs/lab-note.md</code>의 실측값 · 커밋 <code>d284d8a</code>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const fmt = (x, n) => x.toFixed(n);
+
+/* ---------- 측정된 상수 (docs/lab-note.md, n=1024) ---------- */
+const LAYERS = 32;
+const MB_DOWN = 243.4;              // q(162.2) + k(40.6) + v(40.6), T=19,803 토큰
+const MB_UP   = 162.2;              // context
+const HOST_MS_32 = 1126 / LAYERS;   // host attn 1.126 s / 32 레이어
+const KERNEL_MS  = 303 / LAYERS;    // rope + attention 커널 0.303 s / 32 레이어
+const BW_BASE = 8.8;                // GB/s — D2H 0.865 s 에서 역산
+
+/* ================================================================
+   1. 레이어 기계
+   ================================================================ */
+let BW = 8.8, TH = 32;
+const timing = () => {
+  const d2h = (MB_DOWN / 1024) / BW * 1000;
+  const h2d = (MB_UP   / 1024) / BW * 1000;
+  const host = HOST_MS_32 * (32 / TH);
+  return { d2h, host, h2d, before: d2h + host + h2d, after: KERNEL_MS };
+};
+
+/* BEFORE 단계표. AFTER 는 단계 하나. */
+const stepsBefore = (t) => ([
+  { k: 'd2h',  ms: t.d2h,  gpu: 'q/k/v 를 host 로 내려보내는 중', cpu: '수신 대기',        bus: 'down', tag: 'D2H 243.4 MB' },
+  { k: 'host', ms: t.host, gpu: '유휴 — 다음 레이어를 못 시작함',  cpu: 'RoPE + 어텐션 (OpenMP)', bus: 'idle', tag: 'host 연산' },
+  { k: 'h2d',  ms: t.h2d,  gpu: '수신 대기',                      cpu: 'context 를 올려보내는 중', bus: 'up',   tag: 'H2D 162.2 MB' },
+]);
+const stepsAfter = () => ([
+  { k: 'kern', ms: KERNEL_MS, gpu: 'rope_rows → attention_heads', cpu: '할 일 없음', bus: 'idle', tag: '커널 2개' },
+]);
+
+const machine = {
+  playing: false, speed: 0.5, tB: 0, tA: 0, raf: 0, last: 0,
+};
+
+function threadPips(el, n, on) {
+  el.innerHTML = '';
+  for (let i = 0; i < 32; i++) {
+    const s = document.createElement('i');
+    if (i < n) s.className = on ? 'on' : '';
+    else s.className = 'off';
+    el.appendChild(s);
+  }
+}
+
+const busPk = { B: [], A: [] };
+function ensurePackets(lane, host) {
+  if (busPk[lane].length) return;
+  for (let i = 0; i < 5; i++) {
+    const p = document.createElement('span');
+    p.className = 'pk';
+    p.style.opacity = '0';
+    host.appendChild(p);
+    busPk[lane].push(p);
+  }
+}
+
+function renderLane(lane, steps, t, ids) {
+  const total = steps.reduce((a, s) => a + s.ms, 0);
+  const layer = Math.min(LAYERS, Math.floor(t / total));
+  const within = t - layer * total;
+  let acc = 0, cur = steps[steps.length - 1], frac = 1;
+  const done = layer >= LAYERS;
+  if (!done) {
+    for (const s of steps) {
+      if (within < acc + s.ms) { cur = s; frac = (within - acc) / s.ms; break; }
+      acc += s.ms;
+    }
+  }
+
+  $(ids.gt).textContent = done ? '32 레이어 완료' : cur.gpu;
+  $(ids.ct).textContent = done ? '—' : cur.cpu;
+  $(ids.g).classList.toggle('on', !done && (cur.k === 'kern' || cur.bus !== 'idle'));
+  $(ids.c).classList.toggle('on', !done && cur.k === 'host');
+  threadPips($(ids.th), lane === 'B' ? TH : 0, !done && cur.k === 'host');
+
+  const busEl = $(ids.bus), rail = $(ids.rail);
+  ensurePackets(lane, busEl);
+  const moving = !done && (cur.bus === 'down' || cur.bus === 'up');
+  busEl.classList.toggle('dead', !moving);
+  busPk[lane].forEach((p, i) => {
+    if (!moving) { p.style.opacity = '0'; return; }
+    const span = 78 - 9;
+    let u = (frac * 1.6 + i / 5) % 1;
+    p.style.opacity = '.92';
+    p.classList.toggle('up', cur.bus === 'up');
+    p.style.top = (cur.bus === 'down' ? u * span : (1 - u) * span) + 'px';
+  });
+  rail.className = 'rail' + (moving ? '' : ' idlemark');
+  rail.textContent = done ? '완료'
+    : moving ? (cur.bus === 'down' ? '↓ q · k · v  243.4 MB' : '↑ context  162.2 MB')
+    : (lane === 'A' ? '유휴 — 0 MB' : '유휴 — GPU 는 CPU 를 기다린다');
+
+  const busMB = lane === 'A' ? 0 : layer * (MB_DOWN + MB_UP) +
+      (done ? 0 : (cur.k === 'd2h' ? MB_DOWN * frac : cur.k === 'host' ? MB_DOWN : MB_DOWN + MB_UP * frac));
+  $(ids.cap).textContent = '레이어 ' + Math.min(layer + (done ? 0 : 1), LAYERS) + ' / 32';
+  $(ids.pr).style.width = Math.min(100, (t / (total * LAYERS)) * 100) + '%';
+  $(ids.mt).textContent = fmt(total, 1) + ' ms';
+  $(ids.mb).innerHTML = (busMB >= 1024 ? fmt(busMB / 1024, 2) + ' <small>GB</small>'
+                                       : Math.round(busMB) + ' <small>MB</small>');
+  $(ids.ms).innerHTML = fmt(Math.min(t, total * LAYERS) / 1000, 3) + ' <small>s</small>';
+  $(ids.st).textContent = done ? '완료' : (machine.playing ? cur.tag : '정지');
+  return { done, layer, total };
+}
+
+function renderMachine() {
+  const t = timing();
+  const sB = stepsBefore(t), sA = stepsAfter();
+  const rB = renderLane('B', sB, machine.tB, { g:'gB', c:'cB', gt:'gtB', ct:'ctB', th:'thB',
+      bus:'busB', rail:'railB', cap:'capB', pr:'prB', mt:'mtB', mb:'mbB', ms:'msB', st:'stB' });
+  const rA = renderLane('A', sA, machine.tA, { g:'gA', c:'cA', gt:'gtA', ct:'ctA', th:'thA',
+      bus:'busA', rail:'railA', cap:'capA', pr:'prA', mt:'mtA', mb:'mbA', ms:'msA', st:'stA' });
+  $('rlayer').textContent = Math.min(rB.layer + (rB.done ? 0 : 1), LAYERS) + ' / 32';
+  const spent = Math.min(machine.tB, rB.total * LAYERS) - Math.min(machine.tA, rA.total * LAYERS);
+  $('rgap').textContent = spent > 1 ? '+' + fmt(spent / 1000, 2) + ' s' : '—';
+  if (rB.done && rA.done && machine.playing) stop();
+}
+
+function tick(now) {
+  if (!machine.playing) return;
+  const dt = Math.min(80, now - machine.last);
+  machine.last = now;
+  const t = timing();
+  machine.tB = Math.min(machine.tB + dt * machine.speed, t.before * LAYERS);
+  machine.tA = Math.min(machine.tA + dt * machine.speed, t.after * LAYERS);
+  renderMachine();
+  machine.raf = requestAnimationFrame(tick);
+}
+function start() {
+  if (machine.playing) return;
+  const t = timing();
+  if (machine.tB >= t.before * LAYERS && machine.tA >= t.after * LAYERS) resetM();
+  machine.playing = true; machine.last = performance.now();
+  $('play').textContent = '⏸ 일시정지';
+  machine.raf = requestAnimationFrame(tick);
+}
+function stop() {
+  machine.playing = false;
+  cancelAnimationFrame(machine.raf);
+  $('play').textContent = '▶ 두 대 동시에';
+  renderMachine();
+}
+function resetM() { machine.tB = 0; machine.tA = 0; renderMachine(); }
+
+$('play').onclick = () => machine.playing ? stop() : start();
+$('reset').onclick = () => { stop(); resetM(); };
+$('step').onclick = () => {
+  stop();
+  const t = timing();
+  machine.tB = Math.min(t.before * LAYERS, (Math.floor(machine.tB / t.before) + 1) * t.before);
+  machine.tA = Math.min(t.after * LAYERS, (Math.floor(machine.tA / t.after) + 1) * t.after);
+  renderMachine();
+};
+[[0.1,'0.1×'],[0.5,'0.5×'],[1,'1× 실시간']].forEach(([v, label]) => {
+  const b = document.createElement('button');
+  b.textContent = label;
+  b.setAttribute('aria-pressed', v === machine.speed);
+  b.onclick = () => {
+    machine.speed = v;
+    [...$('spd').children].forEach(c => c.setAttribute('aria-pressed', c === b));
+  };
+  $('spd').appendChild(b);
+});
+
+/* 손잡이 */
+function renderKnobs() {
+  const t = timing();
+  const rows = [
+    ['D2H  q·k·v 243.4 MB', t.d2h, 0],
+    ['host RoPE + 어텐션',  t.host, 0],
+    ['H2D  context 162.2 MB', t.h2d, 0],
+    ['커널 rope + attention', 0, KERNEL_MS],
+  ];
+  let html = '<tr><th>레이어당</th><th>BEFORE</th><th>AFTER</th></tr>';
+  for (const [k, b, a] of rows) {
+    html += '<tr><td>' + k + '</td><td class="num">' + (b ? fmt(b, 1) + ' ms' : '—') +
+            '</td><td class="num' + (a ? ' win' : '') + '">' + (a ? fmt(a, 1) + ' ms' : '—') + '</td></tr>';
+  }
+  html += '<tr><td><b>합계</b></td><td class="num"><b>' + fmt(t.before, 1) + ' ms</b></td>' +
+          '<td class="num win"><b>' + fmt(t.after, 1) + ' ms</b></td></tr>';
+  html += '<tr><td>32 레이어</td><td class="num">' + fmt(t.before * 32 / 1000, 3) + ' s</td>' +
+          '<td class="num win">' + fmt(t.after * 32 / 1000, 3) + ' s</td></tr>';
+  $('knobtab').innerHTML = html;
+
+  const v = $('knobVerdict');
+  const ratio = t.before / t.after;
+  const busPart = t.d2h + t.h2d, hostPart = t.host;
+  v.className = 'verdict bad';
+  v.innerHTML = '<b>BEFORE 가 여전히 ' + fmt(ratio, 1) + '× 느리다</b>' +
+    '<p class="note" style="margin-top:8px">버스를 <span class="mono">' + fmt(BW, 1) + ' GB/s</span> 로, ' +
+    'host 를 <span class="mono">' + TH + '스레드</span> 로 놓아도 레이어당 <span class="mono">' + fmt(t.before, 1) +
+    ' ms</span> 가 든다. 그중 버스가 <b>' + fmt(busPart, 1) + ' ms</b>, host 연산이 <b>' + fmt(hostPart, 1) + ' ms</b>다.</p>' +
+    '<p class="note" style="margin-top:8px">두 손잡이를 <b>끝까지</b> 돌려보면 최소 ' +
+    fmt((MB_DOWN + MB_UP) / 1024 / 32 * 1000 + HOST_MS_32, 1) + ' ms — 커널 ' + fmt(KERNEL_MS, 1) +
+    ' ms 를 이기는 조합은 이 범위 안에 없다. 하나를 고치면 다른 하나가 남기 때문이다. ' +
+    '둘 다 없애는 방법은 <b>옮기는 것</b> 하나뿐이었다.</p>';
+}
+$('sBW').oninput = (e) => { BW = +e.target.value; $('vBW').textContent = fmt(BW, 1) + ' GB/s'; renderKnobs(); renderMachine(); };
+$('sTH').oninput = (e) => { TH = +e.target.value; $('vTH').textContent = TH; renderKnobs(); renderMachine(); };
+
+/* ================================================================
+   2. 커널 해부
+   ================================================================ */
+const D = 128, WINDOW = 2047;
+let LEN = 19, QI = 12, PH = 1;
+
+const PHASES = [
+  { n: '①', t: 'q 행을 shared 로', busy: () => D, lead: false,
+    code: 'sq[tid] = qb[qi * QH * D + tid];\n<b>__syncthreads()</b>;',
+    why: '스레드 128명이 각자 한 원소씩. 이 블록이 이번 토큰 내내 볼 query 행이다.' },
+  { n: '②', t: 'q·k 점수 nk 개', busy: (nk) => Math.min(nk, D), lead: false,
+    code: 'for (int i = tid; i &lt; nk; i += D) {\n  float score = 0.0f;\n  for (int d = 0; d &lt; D; ++d)\n    score = <b>__fadd_rn</b>(score, <b>__fmul_rn</b>(sq[d], kr[d]));\n  sw[i] = score / scale;\n}\n<b>__syncthreads()</b>;',
+    why: '스레드 하나가 키 하나를 맡아 128번을 <b>직렬로</b> 더한다. 키가 nk개뿐이라 나머지 스레드는 논다 — 하지만 nk를 넘어 병렬화하면 합의 순서가 바뀐다.' },
+  { n: '③', t: 'softmax — thread 0 혼자', busy: () => 1, lead: true,
+    code: 'if (<b>tid == 0</b>) {\n  float maxv = -INFINITY;\n  for (int i = 0; i &lt; nk; ++i) maxv = fmaxf(maxv, sw[i]);\n  float denom = 0.0f;\n  for (int i = 0; i &lt; nk; ++i) {\n    sw[i] = (float)<b>exp</b>((<b>double</b>)(sw[i] - maxv));\n    denom = <b>__fadd_rn</b>(denom, sw[i]);\n  }\n  *sdenom = denom;\n}\n<b>__syncthreads()</b>;',
+    why: '127명이 장벽에서 논다. 트리 리덕션으로 병렬화하면 합의 순서가 바뀌고 — 그게 바로 아래 실험대에서 답을 뒤집는 스위치다. <b>일부러</b> 직렬로 뒀다.' },
+  { n: '④', t: '값 누적 — 스레드 d 가 out[d]', busy: () => D, lead: false,
+    code: 'float acc = 0.0f;\nfor (int i = 0; i &lt; nk; ++i) {\n  const float w = sw[i] / denom;\n  acc = <b>__fadd_rn</b>(acc, <b>__fmul_rn</b>(w, vb[(lo+i) * KVH * D + tid]));\n}\nob[qi * QH * D + tid] = acc;',
+    why: '128명 전원이 일한다. 각자 자기 차원 하나를 ki 오름차순으로 누적 — host의 <code>acc[d] += w * vrow[d]</code>와 같은 순서다.' },
+];
+
+function renderKernel() {
+  const lo = Math.max(0, QI + 1 - WINDOW);
+  const nk = QI - lo + 1;
+  const ph = PHASES[PH];
+  const busy = ph.busy(nk);
+
+  $('phaseList').innerHTML = '';
+  PHASES.forEach((p, i) => {
+    const b = document.createElement('button');
+    b.className = 'ph';
+    b.setAttribute('aria-pressed', i === PH);
+    b.innerHTML = '<span class="n">' + p.n + '</span><span class="t">' + p.t +
+                  '</span><span class="o">' + Math.round(p.busy(nk) / D * 100) + '%</span>';
+    b.onclick = () => { PH = i; renderKernel(); };
+    $('phaseList').appendChild(b);
+    if (i < PHASES.length - 1) {
+      const s = document.createElement('div');
+      s.className = 'barrier';
+      s.textContent = '__syncthreads()';
+      $('phaseList').appendChild(s);
+    }
+  });
+
+  const g = $('tgrid');
+  g.innerHTML = '';
+  for (let i = 0; i < D; i++) {
+    const c = document.createElement('i');
+    c.className = ph.lead ? (i === 0 ? 'lead' : 'wait') : (i < busy ? 'work' : 'wait');
+    g.appendChild(c);
+  }
+  $('tgTitle').textContent = ph.n + ' ' + ph.t;
+  $('tgNote').textContent = busy + ' / 128 스레드';
+  $('mOcc').textContent = Math.round(busy / D * 100) + '%';
+  const avg = PHASES.reduce((a, p) => a + p.busy(nk), 0) / (PHASES.length * D);
+  $('mAvg').textContent = Math.round(avg * 100) + '%';
+  $('mNk').textContent = nk;
+  $('phaseCode').innerHTML = ph.code;
+  $('phaseWhy').innerHTML = ph.why;
+}
+$('sLEN').oninput = (e) => {
+  LEN = +e.target.value; $('vLEN').textContent = LEN;
+  $('sQI').max = LEN - 1;
+  if (QI > LEN - 1) { QI = LEN - 1; $('sQI').value = QI; $('vQI').textContent = QI; }
+  renderKernel();
+};
+$('sQI').oninput = (e) => { QI = +e.target.value; $('vQI').textContent = QI; renderKernel(); };
+
+/* ================================================================
+   3. 라우터 실험대 — route_row 를 그대로 옮긴 것
+   ================================================================ */
+const QUANTUM = 1.0e-3, TIE_EPS = 2.0e-2, NE = 16;
+const ULP = 1.19e-7;
+
+function quantise(s) {
+  const r = Math.floor(Math.abs(s) / QUANTUM + 0.5) * QUANTUM;
+  return s < 0 ? -r : r;
+}
+/* layer.cu / model.cu 의 select() 를 그대로: 낮은 index 부터 훑고,
+   tie-eps 보다 확실히 커야만 교체한다. */
+function selectExpert(scores, excluded) {
+  let best = -1, bestValue = -Infinity;
+  for (let e = 0; e < NE; e++) {
+    if (e === excluded) continue;
+    if (best < 0 || scores[e] > bestValue + TIE_EPS) { best = e; bestValue = scores[e]; }
+  }
+  return best;
+}
+function route(logits) {
+  const s = logits.map(quantise);
+  const first = selectExpert(s, -1);
+  const second = selectExpert(s, first);
+  return { s, first, second };
+}
+
+const BASE = [0.41, 0.52, 0.37, 0.44, 0.61, 0.33, 0.48, 0.29, 0.55, 0.39, 0.46, 0.31, 0.58, 0.36, 0.43, 0.50];
+function mk(over) { const a = BASE.slice(); for (const [i, v] of over) a[i] = v; return a; }
+
+/* e3 는 양자화 경계(1e-3)에서 6e-8 아래에 앉아 있다. 1 ulp 밀면 넘어간다.
+   그러면 e11 과의 tie-eps 비교가 뒤집힌다. */
+const EDGE_LO = 2.09949994;   // → 2.099 ... 밀면 2.100
+const EDGE_HI = 2.120;
+const TOKENS = [
+  { id: 'A', name: '토큰 A', edge: 3,
+    logits: mk([[5, 3.500], [3, 2.040], [11, 2.120]]),
+    note: 'e3 은 경계에서 <span class="mono">5e-4</span> 떨어져 있다. ε 를 먹여도 양자화하면 같은 값이 나온다 — 634k 개 라우팅의 <b>거의 전부</b>가 이렇다.' },
+  { id: 'B', name: '토큰 B', edge: 3,
+    logits: mk([[3, EDGE_LO], [11, EDGE_HI]]),
+    note: 'e3 이 경계 위에 앉아 있다. 밀면 top-1 과 top-2 의 <b>순서</b>가 바뀐다 — 그런데 집합은 그대로다.' },
+  { id: 'C', name: '토큰 C', edge: 3,
+    logits: mk([[5, 3.500], [3, EDGE_LO], [11, EDGE_HI]]),
+    note: 'e5 가 1위로 고정되어 있고, e3 과 e11 이 <b>2위 자리를 다툰다</b>. 밀면 집합 자체가 바뀐다.' },
+];
+let TOK = 2;
+
+const LEVERS = [
+  { on: true, label: '<code>__fmul_rn</code> / <code>__fadd_rn</code> 로 FMA 계약 차단',
+    sub: '끄면 nvcc 가 곱셈+덧셈을 FMA 로 합친다 · host 는 안 낸다 (objdump 확인)', measured: false },
+  { on: true, label: 'q·k 합과 softmax 합을 <b>직렬</b>로',
+    sub: '끄면 트리 리덕션 — EXP-004 에서 실제로 터진 그 스위치', measured: true },
+  { on: true, label: 'cos/sin 표를 <b>host</b> 에서 만들기',
+    sub: '끄면 device powf/cosf/sinf · glibc 와 1 ulp 차이', measured: false },
+  { on: true, label: '<code>exp</code> 를 <b>double</b> 로',
+    sub: '끄면 float 지수 · layer.cu 의 accurate_exp 와 달라진다', measured: false },
+];
+
+function epsilon() { return LEVERS.filter(l => !l.on).length * ULP; }
+
+function renderLevers() {
+  const host = $('levers');
+  host.innerHTML = '';
+  LEVERS.forEach((l, i) => {
+    const b = document.createElement('button');
+    b.className = 'sw';
+    b.setAttribute('aria-pressed', !l.on);
+    b.innerHTML = '<span class="knob"></span><span class="lb">' + l.label +
+      '<em>' + (l.on ? '켜짐 — host 와 동일' : '해제됨 — +1 ulp') + '</em>' +
+      '<em style="color:' + (l.measured ? 'var(--hot)' : 'var(--ink-3)') + '">' +
+      (l.measured ? '● 실측 실패 이력 있음' : '○ 미측정 · 예방 차단') + ' — ' + l.sub + '</em></span>';
+    b.onclick = () => { l.on = !l.on; renderLevers(); renderRouter(true); };
+    host.appendChild(b);
+  });
+  $('mEps').textContent = epsilon() === 0 ? '0' : epsilon().toExponential(2);
+}
+
+let prevPick = '';
+function renderRouter(animate) {
+  const tok = TOKENS[TOK];
+  const eps = epsilon();
+  const perturbed = tok.logits.map((v, i) => i === tok.edge ? v + eps : v);
+  const clean = route(tok.logits);
+  const now = route(perturbed);
+
+  $('tokNote').innerHTML = tok.note;
+  const max = Math.max(...perturbed) * 1.05;
+  const host = $('logits');
+  host.innerHTML = '';
+  perturbed.forEach((v, e) => {
+    const row = document.createElement('div');
+    let cls = 'lg';
+    if (e === now.first) cls += ' pick1';
+    else if (e === now.second) cls += ' pick2';
+    if (e === tok.edge) cls += ' edge';
+    if (animate && e === tok.edge) cls += ' flip';
+    row.className = cls;
+    const rank = e === now.first ? 'top-1' : e === now.second ? 'top-2' : '';
+    row.innerHTML =
+      '<span class="e">e' + String(e).padStart(2, '0') + (e === tok.edge ? ' ◆' : '') + '</span>' +
+      '<span class="bar"><i style="width:' + (v / max * 100) + '%"></i></span>' +
+      '<span class="q">' + (e === tok.edge ? v.toFixed(8) : v.toFixed(3)) + ' → <b>' + now.s[e].toFixed(3) + '</b></span>' +
+      '<span class="r">' + rank + '</span>';
+    host.appendChild(row);
+  });
+
+  const setBefore = [clean.first, clean.second].slice().sort((a, b) => a - b).join(',');
+  const setAfter = [now.first, now.second].slice().sort((a, b) => a - b).join(',');
+  const orderChanged = clean.first !== now.first || clean.second !== now.second;
+  const setChanged = setBefore !== setAfter;
+
+  const v = $('routeVerdict');
+  const pair = (r) => 'e' + String(r.first).padStart(2, '0') + ' + e' + String(r.second).padStart(2, '0');
+  if (setChanged) {
+    v.className = 'verdict bad';
+    v.innerHTML = '<b>expert 집합이 바뀌었다 — 답이 틀어진다</b>' +
+      '<p class="note" style="margin-top:8px">host: <span class="mono">' + pair(clean) +
+      '</span> → device: <span class="mono">' + pair(now) + '</span>. 이 토큰은 <b>다른 전문가</b>에게 갔다. ' +
+      '출력이 O(0.1) 바뀐다.</p>' +
+      '<p class="note" style="margin-top:6px">EXP-004 에서 이렇게 터졌을 때 <span class="mono">max abs diff 0.211975</span>, ' +
+      '1024 개 시퀀스 중 <b>4 개</b>가 임계 초과 → <b>VALIDATION FAILED</b>.</p>';
+  } else if (orderChanged) {
+    v.className = 'verdict';
+    v.innerHTML = '<b>순서만 바뀌었다 — 무해하다</b>' +
+      '<p class="note" style="margin-top:8px">host: <span class="mono">' + pair(clean) +
+      '</span> → device: <span class="mono">' + pair(now) + '</span>. 집합 <span class="mono">{e' +
+      setAfter.split(',').map(x => String(x).padStart(2, '0')).join(', e') + '}</span> 는 그대로다. ' +
+      'top-1 과 top-2 의 가중치가 <b>둘 다 0.5</b> 라서 결과가 같다. 뒤집힌다고 다 터지는 게 아니다 — ' +
+      '<b>집합</b>이 바뀔 때만 터진다.</p>';
+  } else if (eps > 0) {
+    v.className = 'verdict ok';
+    v.innerHTML = '<b>흔들렸지만 살아남았다</b>' +
+      '<p class="note" style="margin-top:8px">ε = <span class="mono">' + eps.toExponential(2) +
+      '</span> 를 먹였는데도 <span class="mono">' + pair(now) + '</span> 그대로다. ' +
+      '경계에서 멀면 1e-7 은 아무것도 아니다. 문제는 <b>634k 번의 라우팅 중 몇 개가 경계에 앉아 있다</b>는 것이고, ' +
+      '어느 것인지는 미리 알 수 없다.</p>';
+  } else {
+    v.className = 'verdict ok';
+    v.innerHTML = '<b>host 와 bit-identical</b>' +
+      '<p class="note" style="margin-top:8px">안전장치 4개가 모두 켜져 있다. 선택은 <span class="mono">' +
+      pair(now) + '</span>. 실제로 <span class="mono">cmp exp005_n1024.bin exp006_n1024.bin</span> 이 ' +
+      '<b>완전히 동일</b>하다고 답했다 — 정확도 실험이 1회로 끝났다.</p>';
+  }
+}
+TOKENS.forEach((t, i) => {
+  const b = document.createElement('button');
+  b.textContent = t.name;
+  b.setAttribute('aria-pressed', i === TOK);
+  b.onclick = () => {
+    TOK = i;
+    [...$('tokSel').children].forEach((c, j) => c.setAttribute('aria-pressed', j === i));
+    renderRouter(true);
+  };
+  $('tokSel').appendChild(b);
+});
+
+/* ================================================================
+   4. 원장
+   ================================================================ */
+const STAGES = [
+  ['gemm', 1.704, 1.717, 'var(--steel)'],
+  ['moe',  1.276, 1.257, 'var(--plum)'],
+  ['attn', 1.126, 0.303, 'var(--hot)'],
+  ['norm', 0.352, 0.142, 'var(--moss)'],
+  ['lm_head', 0.085, 0.085, 'var(--idle)'],
+  ['resid', 0.074, 0.074, 'var(--idle)'],
+  ['h2d',  0.548, 0.030, 'var(--copper)'],
+  ['d2h',  0.865, 0.006, 'var(--copper)'],
+];
+function renderLedger() {
+  const maxv = Math.max(...STAGES.map(s => Math.max(s[1], s[2])));
+  const draw = (idx, el) => {
+    el.innerHTML = '';
+    for (const [k, b, a, c] of STAGES) {
+      const v = idx === 1 ? b : a;
+      const row = document.createElement('div');
+      row.className = 'lrow';
+      row.innerHTML = '<span class="lk">' + k + '</span>' +
+        '<span class="lb"><i style="width:' + (v / maxv * 100) + '%; background:' + c + '"></i></span>' +
+        '<span class="lv">' + v.toFixed(3) + ' s</span>';
+      el.appendChild(row);
+    }
+  };
+  draw(1, $('ledB'));
+  draw(2, $('ledA'));
+
+  let html = '<tr><th>단계</th><th>EXP-005</th><th>EXP-006</th><th>배율</th><th>비중</th></tr>';
+  for (const [k, b, a] of STAGES) {
+    const r = b / a;
+    html += '<tr><td>' + k + '</td><td class="num">' + b.toFixed(3) + '</td>' +
+            '<td class="num' + (r > 1.5 ? ' win' : '') + '">' + a.toFixed(3) + '</td>' +
+            '<td class="num">' + (r > 1.05 ? r.toFixed(0) + '×' : '—') + '</td>' +
+            '<td class="num">' + Math.round(a / 3.93 * 100) + '%</td></tr>';
+  }
+  $('ledtab').innerHTML = html;
+
+  $('runtab').innerHTML =
+    '<tr><th>n</th><th>EXP-005</th><th>EXP-006</th><th>배속</th><th>검증</th></tr>' +
+    '<tr><td>8</td><td class="num">0.456 s</td><td class="num win">0.345 s</td><td class="num">1.32×</td><td>PASSED</td></tr>' +
+    '<tr><td>1024</td><td class="num">6.344 s</td><td class="num win">3.930 s</td><td class="num"><b>1.61×</b></td><td>PASSED</td></tr>';
+
+  $('nexttab').innerHTML =
+    '<tr><th>moe 1.257 s 안에 섞인 것</th><th>측정</th><th>크면 다음 수는</th></tr>' +
+    '<tr><td>expert GEMM 16회</td><td>미측정</td><td>grouped GEMM 1회로</td></tr>' +
+    '<tr><td>커널 launch 오버헤드 16회</td><td>미측정</td><td>grouped GEMM 1회로</td></tr>' +
+    '<tr><td>host <code>route_row</code> 634k회</td><td>미측정</td><td>device routing (D2H 6 ms 도 같이 사라진다)</td></tr>' +
+    '<tr><td colspan="3" style="color:var(--ink-3); font-size:12px">셋 다 작으면 → <code>gemm_nt_bias</code> 자체 튜닝 (현재 피크의 44%)</td></tr>';
+}
+
+/* ---------- 초기화 ---------- */
+renderKnobs();
+renderMachine();
+renderKernel();
+renderLevers();
+renderRouter(false);
+renderLedger();
+</script>

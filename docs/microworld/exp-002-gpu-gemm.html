@@ -381,13 +381,27 @@ DeviceLinear::DeviceLinear(loader, w, b) {
   acc += as[ty][i] * <b>bs[tx][i]</b>;   <b>// 워프 안에서 tx가 0..31로 다르다</b></div>
     </div>
     <div class="panel">
-      <div class="head"><h3>패딩만 뺀 대조군</h3><span class="pill" style="color:var(--dev)">실측</span></div>
-      <div class="scroll"><table id="padtab"></table></div>
+      <div class="head"><h3>두 배열을 따로 재면</h3><span class="pill" style="color:var(--dev)">실측</span></div>
+      <div class="scroll"><table id="whotab"></table></div>
       <p class="note" style="margin-top:11px">
-        커널의 다른 모든 줄은 같습니다. <code>[TILE][TILE]</code> → <code>[TILE][TILE+1]</code>,
-        선언에서 <b>+1</b> 하나. TILE=32에서 <b>1.92배</b>, TILE=16에서 1.10배.
-        TILE=16이 덜 손해 보는 이유는 한 워프에 <code>tx</code>가 0..15밖에 없어 충돌하는 스레드가
-        절반뿐이기 때문입니다.
+        일하는 건 <code>bs</code> 쪽 패딩 하나입니다 — 없음 → bs만 <b>2.77배</b>.
+        <code>as[ty][i]</code>는 워프 32개 스레드가 <b>같은 주소</b>를 읽어 broadcast로 끝나므로
+        패딩이 필요 없고, 붙이면 오히려 <b style="color:var(--hot)">1.45배 손해</b>입니다
+        (4 shape × 2 M에서 0.685~0.688로 일정). EXP-002 원문은 둘 다 붙였으니
+        <code>as</code> 쪽 1.45배를 그냥 내고 있습니다. GEMM이 0.5%였던 EXP-002에서는
+        무의미했지만, GEMM이 87%가 된 지금은 아닙니다.
+      </p>
+      <p class="note" style="margin-top:9px; color:var(--ink-3)">
+        <code>as</code> 패딩이 왜 느린지는 <b>확인하지 않았습니다</b>. stride 33이 128 B 정렬을 깨
+        넓은 로드를 막는 쪽이 유력하지만 SASS를 보지 않았으므로 추측입니다.
+      </p>
+      <div class="hr"></div>
+      <div class="head"><h3>TILE만 바꾼 대조군</h3></div>
+      <div class="scroll"><table id="padtab"></table></div>
+      <p class="note" style="margin-top:9px">
+        둘 다 패딩 vs 둘 다 없음: TILE=32에서 <b>1.92배</b>, TILE=16에서 1.10배.
+        TILE=16은 워프 안에 <code>tx</code>가 0..15뿐이라 충돌이 32-way가 아니라 16-way입니다.
+        다만 충돌 횟수만으로 설명되는 격차보다 실측 격차가 작습니다 — 원인은 분리하지 않았습니다.
       </p>
     </div>
   </div>
@@ -500,6 +514,15 @@ const BUS = {
   2048:{T:[165,660,1320], h2d:[0.1133,0.3308,0.6634], d2h:[0.1410,0.5002,0.9794]},
   512 :{T:[165,660,1320], h2d:[0.0345,0.1139,0.1854], d2h:[0.0401,0.1406,0.2598]}
 };
+// as / bs 중 어느 쪽 패딩이 일하는지 분리 측정 (TILE=32, 노드 b5).
+// both = EXP-002 원문 [TILE][TILE+1] 둘 다, bsOnly = bs 만, asOnly = as 만, none = 둘 다 없음.
+const WHO = [
+  {tag:"q_proj", M:165,  both:1.7002, bsOnly:1.1686, asOnly:3.4332, none:3.2413},
+  {tag:"q_proj", M:1320, both:11.1341,bsOnly:7.6312, asOnly:22.6140,none:21.3812},
+  {tag:"o_proj", M:165,  both:1.6955, bsOnly:1.1665, asOnly:3.4307, none:3.2419},
+  {tag:"o_proj", M:1320, both:11.1487,bsOnly:7.6472, asOnly:22.6315,none:21.3901},
+  {tag:"lm_head",M:165,  both:24.9537,bsOnly:17.1128,asOnly:50.6943,none:47.9303}
+];
 // shared memory 패딩만 뺀 대조군, M=165 / M=1320
 const PAD = [
   {tag:"q_proj",  M:165, p32:1.6980,n32:3.2433,p16:1.4700,n16:1.6344},
@@ -978,6 +1001,13 @@ function drawBanks(){
       ? "33 mod 32 = 1이라 서로 다른 뱅크로 흩어집니다. 한 번에 다 읽습니다."
       : "전원이 같은 뱅크입니다. 32번 줄을 서야 합니다."}
      실측 차이 <b>${padOn?"기준":"1.92배 느림"}</b>.`;
+  $("whotab").innerHTML =
+    `<tr><th>shape</th><th>M</th><th>as+bs (원문)</th><th>bs만</th><th>as만</th><th>없음</th>
+     <th>원문→bs만</th></tr>` +
+    WHO.map(w=>`<tr><td>${w.tag}</td><td>${w.M}</td><td>${w.both.toFixed(3)}</td>
+      <td style="color:var(--dev)">${w.bsOnly.toFixed(3)}</td><td>${w.asOnly.toFixed(3)}</td>
+      <td>${w.none.toFixed(3)}</td>
+      <td style="color:var(--hot)">${(w.both/w.bsOnly).toFixed(2)}x</td></tr>`).join("");
   $("padtab").innerHTML =
     `<tr><th>shape</th><th>M</th><th>TILE=32 패딩</th><th>패딩 없음</th><th>배율</th>
      <th>TILE=16 패딩</th><th>없음</th><th>배율</th></tr>` +

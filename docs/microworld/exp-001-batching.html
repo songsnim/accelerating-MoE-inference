@@ -213,25 +213,52 @@ footer{padding:40px 0 60px; color:var(--ink-3); font-size:12.5px}
 </section>
 
 <section>
-  <div class="head"><h2>행은 거의 공짜다</h2><span class="eyebrow">측정 · matmul_transposed(q_proj)</span></div>
+  <div class="head"><h2>행이 공짜인 진짜 이유</h2><span class="eyebrow">측정 · q_proj · 스레드 수를 바꿔가며</span></div>
   <p class="note" style="max-width:68ch; margin-bottom:12px">
-    포장이 왜 이득인지는 이 곡선 하나로 끝난다. <code>q_proj</code> 를 <b class="g" title="matmul 에 넣는 활성 행렬의 행 수. 곧 토큰 개수다.">M</b> 행만 넣고 한 번 부르는 데 걸리는 시간을
-    M=1 부터 40 까지 한 행씩 늘려가며 쟀다. <b>M=1 이나 M=19 나 50 ms 대에서 거의 그대로다</b> (차이 9.4%).
-    호출 한 번의 값은 행 수가 아니라 <b class="g" title="[2048, 4096] float32 = 33.55 MB. DRAM 에서 캐시로 끌어오는 데 드는 시간이 지배한다.">가중치 33.55 MB 를 DRAM 에서 읽어오는 값</b>이다.
-    행을 더 태우는 건 거의 덤이다.
+    포장이 왜 이득인지는 <code>matmul_transposed</code> 안쪽 한 줄에 다 있다 —
+    <code>#pragma omp parallel for</code> 가 <b class="g" title="출력 행렬의 한 행. 곧 토큰 하나. 열이나 곱셈이 아니라 행에 대해서만 나눈다.">출력 행</b>에 대해서만 일을 나눈다.
+    <b>행 하나를 코어 하나가 통째로 맡는다.</b> 이 노드는 코어가 64개다.
+    그래서 행을 <b class="g" title="주문이 요리사 수보다 적으면 남는 요리사는 그냥 논다. 시간은 한 그릇 만드는 시간 그대로다.">놀고 있는 코어에 얹는 동안은</b> 시간이 안 늘고,
+    코어를 다 채우면 그때부터 한 바퀴씩 더 돈다. 아래에서 스레드 수를 바꿔 보면 계단의 폭이 그대로 따라 움직인다.
   </p>
   <div class="lab">
     <div class="panel">
+      <div class="ctrls" style="margin-bottom:10px">
+        <span class="eyebrow">쓰는 코어</span><div class="seg" id="thrsel"></div>
+        <span class="note" style="font-size:12px">점선 하나가 “한 바퀴”다</span>
+      </div>
       <div id="curve"></div>
       <div class="slider" style="margin-top:8px">
-        <label for="mrow">M</label><input type="range" id="mrow" min="1" max="40" value="19">
-        <span id="mval" style="min-width:11ch; text-align:right"></span>
+        <label for="mrow">M</label><input type="range" id="mrow" min="1" max="96" value="19">
+        <span id="mval" style="min-width:15ch; text-align:right"></span>
       </div>
     </div>
     <div class="panel">
-      <div class="head"><h3>행 하나의 값</h3></div>
+      <div class="head"><h3>계단 하나 = 한 바퀴</h3></div>
       <div class="scroll"><table id="curvetab"></table></div>
       <p class="note" style="margin-top:10px" id="curvenote"></p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="head"><h2>그런데 한 바퀴가 48.5 ms 다</h2><span class="eyebrow">코어 1개 · 행 1개 · q_proj</span></div>
+  <div class="grid two">
+    <div class="panel">
+      <div class="src">for (j = 0; j &lt; 2048; ++j)          <span class="hi">// 출력 칸</span>
+  for (p = 0; p &lt; 4096; ++p)        <span class="hi">// 곱해서 더하기</span>
+    sum += <span class="del">a.at(i,p)</span> * <span class="del">b.at(j,p)</span>;</div>
+      <p class="note" style="margin-top:12px">
+        행 하나에 곱셈 <b>838만 번</b>. 실측 48.5 ms 이므로 곱셈 하나에 <b>5.8 ns</b>, 3 GHz 기준 <b>17 사이클</b>이다.
+        요즘 CPU 는 한 사이클에 곱셈 8~16개를 한꺼번에 할 수 있는데 그걸 하나도 못 쓰고 있다.
+        <code>Tensor::at()</code> 이 원소마다 인덱스를 새로 계산하고 범위 검사를 하기 때문에
+        컴파일러가 <b class="g" title="여러 데이터를 한 명령으로 동시에 처리하는 CPU 기능(SIMD). 반복문 안에 함수 호출과 분기가 있으면 쓸 수 없다.">벡터 명령</b>으로 묶지 못한다.
+      </p>
+    </div>
+    <div class="panel">
+      <div class="head"><h3>그럼 메모리가 문제인가</h3></div>
+      <div class="scroll"><table id="bwtab"></table></div>
+      <p class="note" style="margin-top:10px" id="bwnote"></p>
     </div>
   </div>
 </section>
@@ -339,10 +366,13 @@ for d in 128: orow[d] = acc[d]</div>
         <i>“130회 attention 재계산 제거분은 전체의 13%(1.15x)뿐. 2.88x의 주된 원인은 스레드 포화다.”</i>
       </p>
       <p class="note" style="margin-top:10px">
-        가르는 빌드가 말하는 것은 반대다. 어텐션 다시 쓰기가 <b>1.82x</b> 로 둘 중 큰 쪽이고,
-        포장은 <b>1.59x</b> 다. 그리고 포장의 이득도 “스레드 포화”가 아니다 —
-        위 곡선이 보여주듯 M=1 과 M=19 의 호출 시간은 같다. 포장이 줄인 것은 행당 시간이 아니라
-        <b>호출 횟수</b>다. 레이어마다 matmul 을 <span id="callcut">—</span>.
+        <b>메커니즘은 노트가 맞다.</b> 스레드 수를 바꿔가며 잰 계단(위 섹션)이 그걸 확인해 준다 —
+        코어 1개면 평탄 구간이 통째로 사라지므로, 행이 공짜였던 건 <b>노는 코어</b> 때문이 맞다.
+        포장이 한 일은 레이어마다 matmul 을 <span id="callcut">—</span>, 그때마다 놀던 코어를 채운 것이다.
+      </p>
+      <p class="note" style="margin-top:10px">
+        <b>틀린 것은 크기 배분이다.</b> 가르는 빌드가 말하는 것은 어텐션 다시 쓰기가 <b>1.82x</b> 로
+        둘 중 <b>큰 쪽</b>이고 포장이 <b>1.59x</b> 라는 것이다. 노트의 “1.15x 뿐”은 실측과 맞지 않는다.
       </p>
       <p class="note" style="margin-top:10px">
         <b>이 실험이 어긴 규칙.</b> <code>CLAUDE.md</code> 는 “반드시 1개의 가설씩”이라고 적어 두었다.
@@ -415,6 +445,17 @@ const MEAS = {
   attnBefore: [[6,55.4177],[14,268.7757],[19,473.7004],[32,1315.2872]],
   attnAfter:  [[6, 0.0427],[14,  0.1945],[19,  0.3405],[32,   0.9245]],
   attnBatch: {T:165, serial:3.5502, omp:1.7324},   // 8시퀀스, omp 로 나눴을 때
+  // 스레드 수를 바꿔가며 같은 q_proj 를. "행이 왜 공짜인가" 를 가르는 실험.
+  thr: {
+    1:  {Ms:[1,2,4,8,16,24,32],
+         ms:[48.550,97.074,194.141,388.456,777.675,1165.948,1554.331]},
+    8:  {Ms:[1,2,4,8,16,24,32,40,48,64,80,96],
+         ms:[48.715,48.704,48.754,48.807,97.475,146.532,194.784,243.997,294.269,392.374,490.524,588.726]},
+    32: {Ms:[1,2,4,8,16,24,32,40,48,64,80,96],
+         ms:[50.237,49.896,49.917,50.133,64.658,85.856,91.480,140.528,145.180,187.225,238.694,258.210]},
+    64: {Ms:[1,2,4,8,16,24,32,40,48,64,80,96],
+         ms:[55.288,54.649,52.417,67.149,72.173,97.032,95.265,96.365,106.595,110.951,199.649,209.488]}
+  },
   ln:0.043, add:0.019, ropePerRow:0.052, rowCopy:0.0326, alloc16:0.00014, siluMulPerRow:0.0035
 };
 const E2E = {                                   // n=2, 전부 Validation PASSED
@@ -587,6 +628,7 @@ let N = 2;
 let A = stream("before", LENGTHS.slice(0,N));
 let Bl = stream("after",  LENGTHS.slice(0,N));
 let simT=0, playing=false, speed=40, lastFrame=0;
+let THR=64;
 
 function seg(host, items, get, set){
   host.innerHTML="";
@@ -601,6 +643,7 @@ seg($("nsel"), [1,2,4,8].map(v=>({label:"n="+v,value:v})), ()=>N, v=>{
   N=v; A=stream("before",LENGTHS.slice(0,N)); Bl=stream("after",LENGTHS.slice(0,N));
   resetRun(); updPack(); updMask(); updFloor(); updCurve();
 });
+seg($("thrsel"), [1,8,32,64].map(v=>({label:v+"개",value:v})), ()=>THR, v=>{THR=v; updCurve();});
 seg($("spd"), [{label:"×1",value:1},{label:"×40",value:40},{label:"×400",value:400},{label:"끝까지",value:1e9}],
     ()=>speed, v=>{speed=v;});
 function resetRun(){ simT=0; playing=false; $("play").textContent="▶ 동시 실행"; draw(); }
@@ -791,51 +834,100 @@ function updPack(){
     `<tr><td><b>가중치 읽은 양</b></td><td>${bytes(A.ops[A.ops.length-1].bytes)}</td><td>${bytes(Bl.ops[Bl.ops.length-1].bytes)}</td>`+
     `<td>${fmt(A.ops[A.ops.length-1].bytes/Bl.ops[Bl.ops.length-1].bytes)}×</td></tr>`;
   $("packnote").innerHTML =
-    `곱해야 할 수의 개수(MAC)는 <b>양쪽이 똑같다</b>. 줄어든 것은 <b>호출 횟수</b>와, 호출마다 다시 끌어오던
-     <b>가중치 ${bytes(LAYER_BYTES)}/레이어</b>다. n=1024 라면 before 는 이 ${bytes(LAYER_BYTES)} 를
-     ${big(1024*32)}번, after 는 32번 읽는다 — ${bytes(1024*32*LAYER_BYTES)} 대 ${bytes(32*LAYER_BYTES)}.`;
+    `곱해야 할 수의 개수(MAC)는 <b>양쪽이 똑같다</b>. 줄어든 것은 <b>호출 횟수</b>다 —
+     그리고 호출 하나하나가 코어 64개 중 ${L.map(x=>Math.max(0,64-x)).join("·")}개를 놀리고 있었다.
+     묶으면 노는 코어가 ${Math.max(0,64-T)}개로 준다. 덤으로 가중치도 덜 읽는다:
+     n=1024 라면 before 는 레이어 1벌 ${bytes(LAYER_BYTES)} 를 ${big(1024*32)}번,
+     after 는 32번 읽는다 — ${bytes(1024*32*LAYER_BYTES)} 대 ${bytes(32*LAYER_BYTES)}.
+     다만 이건 부수 효과이고, 값을 정하는 건 <b>바퀴 수</b>다.`;
   $("callcut").innerHTML = `<b>레이어당 평균 ${bL}번 부르던 것을 ${aL}번으로</b> 줄였다`;
 }
 $("packtoggle").onclick=()=>{ packed=!packed; $("packtoggle").textContent=packed?"◂ 풀기":"묶기 ▸"; updPack(); };
 
-/* ================= 행 곡선 ================= */
+/* ================= 스레드 계단 ================= */
+const thrSeries = t => MEAS.thr[t];
+function thrMs(t, M){
+  const S=thrSeries(t);
+  return lerpTab(S.Ms.map((m,i)=>[m,S.ms[i]]), M);
+}
 function updCurve(){
   const M=+$("mrow").value, T=LENGTHS.slice(0,N).reduce((a,b)=>a+b,0);
-  const W=620,H=250,PL=48,PR=12,PT=16,PB=34, maxY=110;
-  const px=m=>PL+(m-1)/39*(W-PL-PR), py=v=>H-PB-Math.min(v,maxY)/maxY*(H-PT-PB);
-  let g=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="M 에 따른 q_proj 호출 시간">`;
-  g+=`<rect x="${px(1)}" y="${PT}" width="${px(19)-px(1)}" height="${H-PT-PB}" fill="var(--sunken)"></rect>`;
-  g+=`<text x="${px(1)+6}" y="${PT+14}" font-size="10.5" fill="var(--ink-3)" font-family="IBM Plex Mono">M = 1 … 19 : 호출 시간이 같다</text>`;
-  for(let v=0;v<=maxY;v+=25){
-    g+=`<line x1="${PL}" y1="${py(v)}" x2="${W-PR}" y2="${py(v)}" stroke="var(--line-2)"></line>`;
-    g+=`<text x="${PL-8}" y="${py(v)+3.5}" font-size="10" text-anchor="end" fill="var(--ink-3)" font-family="IBM Plex Mono">${v}</text>`;
+  const S=thrSeries(THR), mMax=S.Ms[S.Ms.length-1];
+  const one=S.ms[0];                                   // 한 바퀴 = M=1 일 때의 시간
+  const yMax=Math.max(...S.ms)*1.06;
+  const W=620,H=252,PL=54,PR=14,PT=16,PB=34;
+  const px=m=>PL+(m-1)/(mMax-1)*(W-PL-PR), py=v=>H-PB-Math.min(v,yMax)/yMax*(H-PT-PB);
+  let g=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="코어 ${THR}개일 때 M 에 따른 q_proj 호출 시간">`;
+  // 코어를 다 채우기 전 구간 = 공짜 구간
+  if(THR>1 && THR<=mMax)
+    g+=`<rect x="${px(1)}" y="${PT}" width="${px(THR)-px(1)}" height="${H-PT-PB}" fill="var(--sunken)"></rect>`;
+  // "한 바퀴" 눈금
+  for(let k=1;k*one<=yMax;k++){
+    g+=`<line x1="${PL}" y1="${py(k*one)}" x2="${W-PR}" y2="${py(k*one)}" stroke="var(--line)" stroke-dasharray="3 4"></line>`;
+    g+=`<text x="${PL-8}" y="${py(k*one)+3.5}" font-size="10" text-anchor="end" fill="var(--ink-3)" font-family="IBM Plex Mono">${k}바퀴</text>`;
   }
-  [1,10,19,30,40].forEach(m=>g+=`<text x="${px(m)}" y="${H-PB+15}" font-size="10" text-anchor="middle" fill="var(--ink-3)" font-family="IBM Plex Mono">${m}</text>`);
-  g+=`<text x="${PL-8}" y="${PT+2}" font-size="10" text-anchor="end" fill="var(--ink-3)" font-family="IBM Plex Mono">ms</text>`;
-  const pts=MEAS.qfine.map((v,i)=>`${px(i+1)},${py(v)}`).join(" ");
-  g+=`<polyline points="${pts}" fill="none" stroke="var(--steel)" stroke-width="1.9"></polyline>`;
-  MEAS.qfine.forEach((v,i)=>g+=`<circle cx="${px(i+1)}" cy="${py(v)}" r="2" fill="var(--steel)"></circle>`);
-  // before 의 작동점 (시퀀스 길이) 과 after 의 작동점 (T)
-  LENGTHS.slice(0,N).forEach(s=>{
-    if(s<=40) g+=`<line x1="${px(s)}" y1="${PT}" x2="${px(s)}" y2="${H-PB}" stroke="var(--ink-3)" stroke-dasharray="2 3" opacity=".5"></line>`;
-  });
-  g+=`<text x="${px(19)+6}" y="${H-PB-8}" font-size="10.5" fill="var(--ink-2)" font-family="IBM Plex Mono">before 작동점 (토큰 중앙값 19)</text>`;
-  g+=`<line x1="${px(M)}" y1="${PT}" x2="${px(M)}" y2="${H-PB}" stroke="var(--copper)" stroke-width="1.5"></line>`;
-  g+=`<circle cx="${px(M)}" cy="${py(MEAS.qfine[M-1])}" r="4.5" fill="var(--panel)" stroke="var(--copper)" stroke-width="2"></circle>`;
+  S.Ms.forEach(m=>g+=`<text x="${px(m)}" y="${H-PB+15}" font-size="10" text-anchor="middle" fill="var(--ink-3)" font-family="IBM Plex Mono">${m}</text>`);
+  g+=`<text x="${W-PR}" y="${H-PB+15}" font-size="10" text-anchor="end" fill="var(--ink-3)" font-family="IBM Plex Mono">M(행)</text>`;
+  const pts=S.Ms.map((m,i)=>`${px(m)},${py(S.ms[i])}`).join(" ");
+  g+=`<polyline points="${pts}" fill="none" stroke="var(--steel)" stroke-width="2"></polyline>`;
+  S.Ms.forEach((m,i)=>g+=`<circle cx="${px(m)}" cy="${py(S.ms[i])}" r="2.6" fill="var(--steel)"></circle>`);
+  if(THR>1 && THR<=mMax){
+    g+=`<line x1="${px(THR)}" y1="${PT}" x2="${px(THR)}" y2="${H-PB}" stroke="var(--ink-3)"></line>`;
+    g+=`<text x="${px(THR)+5}" y="${PT+12}" font-size="10.5" fill="var(--ink-2)" font-family="IBM Plex Mono">코어 ${THR}개를 다 채운 지점</text>`;
+  }
+  if(19<=mMax){
+    g+=`<line x1="${px(19)}" y1="${PT}" x2="${px(19)}" y2="${H-PB}" stroke="var(--copper)" stroke-dasharray="2 3"></line>`;
+    g+=`<text x="${px(19)+5}" y="${H-PB-8}" font-size="10.5" fill="var(--copper)" font-family="IBM Plex Mono">before M≈19</text>`;
+  }
+  if(T<=mMax){
+    g+=`<line x1="${px(T)}" y1="${PT}" x2="${px(T)}" y2="${H-PB}" stroke="var(--moss)" stroke-dasharray="2 3"></line>`;
+    g+=`<text x="${px(T)+5}" y="${H-PB-24}" font-size="10.5" fill="var(--moss)" font-family="IBM Plex Mono">after M=${T}</text>`;
+  }
+  g+=`<circle cx="${px(Math.min(M,mMax))}" cy="${py(thrMs(THR,Math.min(M,mMax)))}" r="4.5" fill="var(--panel)" stroke="var(--ink)" stroke-width="2"></circle>`;
   g+=`</svg>`;
   $("curve").innerHTML=g;
-  $("mval").textContent=M+" 행";
-  const c1=MEAS.qfine[0], cM=MEAS.qfine[M-1];
+  const mm=Math.min(M,mMax), cur=thrMs(THR,mm), lap=Math.ceil(mm/THR);
+  $("mval").textContent=`${mm}행 · ${lap}바퀴`;
   $("curvetab").innerHTML=
-    `<tr><th>M</th><th>호출 ms</th><th>행당 ms</th><th>M=1 대비</th></tr>`+
-    [1,8,19,M,40].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a-b).map(m=>
-      `<tr${m===M?' style="color:var(--copper)"':''}><td>${m}</td><td>${fmt(MEAS.qfine[m-1])}</td>`+
-      `<td>${fmt(MEAS.qfine[m-1]/m,3)}</td><td>${fmt(MEAS.qfine[m-1]/c1)}×</td></tr>`).join("")+
-    `<tr><td>${T} (after, n=${N})</td><td>${fmt(callMs("q",T))}</td><td>${fmt(callMs("q",T)/T,3)}</td><td>${fmt(callMs("q",T)/c1)}×</td></tr>`;
-  $("curvenote").innerHTML=
-    `M=1 과 M=19 의 호출 시간 차이는 <b>${((MEAS.qfine[18]/c1-1)*100).toFixed(1)}%</b> 다. 행 19개를 태우든 1개를 태우든
-     가중치 33.55 MB 는 똑같이 한 번 읽어야 하고, 그 값이 전부다. 그래서 <b>호출을 합치는 것</b>이 곧 이득이다 —
-     시퀀스 ${N}개를 한 번에 넣으면 행당 ${fmt(MEAS.qfine[18]/19,3)} ms 가 ${fmt(callMs("q",T)/T,3)} ms 로 내려간다.`;
+    `<tr><th>M</th><th>호출 ms</th><th>행당 ms</th><th>바퀴</th><th>노는 코어</th></tr>`+
+    S.Ms.map((m,i)=>
+      `<tr${m===mm?' style="color:var(--copper)"':''}><td>${m}</td><td>${fmt(S.ms[i])}</td>`+
+      `<td>${fmt(S.ms[i]/m,3)}</td><td>${Math.ceil(m/THR)}</td>`+
+      `<td>${m>=THR?0:THR-m}</td></tr>`).join("");
+  const free = THR>1 ? thrSeries(THR).ms[0] : null;
+  $("curvenote").innerHTML = THR===1
+    ? `코어 1개면 <b>완전한 직선</b>이다. 행당 ${fmt(S.ms[0])} ms, 공짜인 행은 하나도 없다.
+       나머지 코어 수에서 보이던 평탄한 구간이 여기서는 <b>통째로 사라진다</b> — 그 평탄함이
+       “가중치를 한 번만 읽어서”가 아니라 <b>놀던 코어가 받아줘서</b>였다는 증거다.`
+    : (()=>{ const i=S.Ms.indexOf(THR), rise=i>0?(S.ms[i]/S.ms[0]-1)*100:0;
+       return `코어 ${THR}개면 M=1 부터 M=${THR} 까지가 <b>한 바퀴</b>다 —
+       행을 <b>${THR}배</b>로 늘리는 동안 시간은 <b>${fmt(S.ms[i]/S.ms[0])}배</b>가 된다
+       (${fmt(S.ms[0])} → ${fmt(S.ms[i])} ms). ${THR>=32?"코어가 많을수록 서로 메모리에서 부딪혀 조금씩 새지만, 계단의 폭은 코어 수 그대로다. ":""}M=${THR} 을 넘는 순간 두 바퀴째가 시작된다.
+       ${THR>19
+         ? `before 는 시퀀스 하나씩 넣어 M≈19 였으므로 코어 <b>${THR-19}개가 놀고 있었다</b>. 묶기는 그 노는 코어를 채우는 일이다.`
+         : `이 노드의 실제 코어는 64개다. 코어가 ${THR}개뿐이라면 M≈19 는 이미 세 바퀴째라 놀던 코어가 없고, <b>묶어도 얻을 게 없다</b> — 묶기의 이득은 노는 코어가 있을 때만 생긴다.`} ${THR===64?`다만 코어를 8배(8→64) 늘려도 행당 시간은
+       ${fmt(thrSeries(8).ms[9]/64,2)} ms → ${fmt(thrSeries(64).ms[9]/64,2)} ms 로 3.5배밖에 안 좋아진다 —
+       64명이 각자 가중치 33.55 MB 를 따로 끌어오느라 메모리에서 부딪히기 때문이다.`:``}`; })();
+  updBw();
+}
+function updBw(){
+  const one=MEAS.thr[1].ms[0], wB=4096*2048*4, mac=4096*2048;
+  const rows=[
+    ["행 1개의 곱셈 횟수", big(mac)+" MAC"],
+    ["코어 1개로 걸린 시간", fmt(one)+" ms"],
+    ["곱셈 하나당", fmt(one*1e6/mac,2)+" ns"],
+    ["3 GHz 기준", fmt(one*1e6/mac*3,0)+" 사이클"],
+    ["그동안 읽은 가중치", fmt(wB/1e6)+" MB"],
+    ["→ 코어 1개의 메모리 속도", fmt(wB/1e9/(one/1000),2)+" GB/s"],
+    ["코어 64개 · M=64 일 때", fmt(64*wB/1e9/(MEAS.thr[64].ms[9]/1000),1)+" GB/s"]
+  ];
+  $("bwtab").innerHTML=rows.map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join("");
+  $("bwnote").innerHTML=
+    `코어 하나가 끌어오는 속도는 <b>${fmt(wB/1e9/(one/1000),2)} GB/s</b> 다. 요즘 서버는 코어 하나에도
+     초당 5~10 GB 는 내준다 — 즉 <b>메모리가 못 따라간 게 아니라 계산 루프가 느린 것</b>이다.
+     메모리가 실제로 발목을 잡는 건 코어를 많이 쓸 때다: 64개가 각자 33.55 MB 를 따로 읽으면
+     한 번 호출에 <b>${bytes(64*wB)}</b> 가 오가고, 그래서 코어를 8배 늘려도 3.5배밖에 안 빨라진다.
+     <b>“행 하나에 ${fmt(one)} ms” 라는 값은 몇 개를 묶든 없어지지 않는다.</b> 이게 EXP-002 가 GPU 로 간 이유다.`;
 }
 $("mrow").addEventListener("input",updCurve);
 
@@ -966,7 +1058,9 @@ function updFloor(){
   const projFull = projPerRow*fullTok*CFG.L/1000;
   $("floornote").innerHTML=
     `행당 시간은 M 을 키울수록 내려가지만 <b>${fmt(perRowMax,2)} ms/행</b> 근처에서 멈춘다
-     (M=19 대비 ${fmt(perRow19/perRowMax)}× 밖에 안 된다). 포장은 여기까지가 전부다.
+     (M=19 대비 ${fmt(perRow19/perRowMax)}× 밖에 안 된다). 코어를 다 채우고 나면 그 다음부터는
+     바퀴를 더 도는 것뿐이라, 행당 시간이 “한 바퀴 ÷ 코어 수”에서 더 안 내려가기 때문이다.
+     포장은 여기까지가 전부다.
      n=1024 는 토큰 ${big(fullTok)}개다 — projection 만으로 ${fmt(projFull/60,0)}분,
      MoE 까지 더하면 리더보드 2분 제한의 수십 배다.
      <b>다음 레버는 M 이 아니라 <code>matmul_transposed</code> 자체여야 한다</b> → EXP-002.`;
@@ -992,6 +1086,9 @@ function buildNotes(){
    <p style="margin-top:10px"><b>가르는 빌드.</b> <code>8f09c7f</code> 의 <code>attend_sequence</code> 안쪽만
    <code>layer.cu</code> 원문(130회 재계산 + <code>Tensor::at()</code>)으로 되돌리고 포장은 그대로 뒀다.
    수정 금지 파일은 건드리지 않았다. 이 빌드는 제출용이 아니라 <b>두 변경을 가르기 위한 측정용</b>이다.</p>
+   <p style="margin-top:10px"><b>스레드 계단.</b> 같은 <code>q_proj</code> 를 코어 1·8·32·64개로
+   각각 M 을 스윕했다. 코어 1개는 완전한 직선(행당 48.550 ms), 코어 8개는 8행마다 계단
+   (48.807 → 97.475 → 146.532 → 194.784 ms, 정확히 1·2·3·4배). 평탄 구간의 끝이 코어 수를 따라 움직인다.</p>
    <p style="margin-top:10px"><b>마이크로벤치.</b> <code>matmul_transposed</code> 를 M=1..40 한 행씩,
    그리고 M=256 까지 5개 shape 로. 어텐션은 before/after 두 코드를 그대로 옮겨 나란히 재고 출력을 비교했다
    (max abs diff 0.000e+00). 배치 어텐션의 omp 효율 0.488 도 실측이다.</p>`;
