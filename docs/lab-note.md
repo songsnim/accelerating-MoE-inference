@@ -700,3 +700,49 @@ max는 order-independent, denom은 순서 그대로 -> 값이 바뀔 여지가 �
 
 남은 attn 0.178 s의 내역(score dot 대 value 누적)은 아직 분해하지 않았다. MoE/embedding보다
 작으므로 후순위.
+
+---
+
+# EXP-010: expert W1/W3를 하나의 GEMM으로 융합
+
+## 1. Background
+EXP-009 이후 b6: gemm 1.353 / **moe 1.415** / attn 0.183 / norm 0.141. moe가 최대 항목이다.
+EXP-008 §4-1 ncu가 expert GEMM의 두 손실을 지목했다 — 블록 붕괴(164 슬롯 중 40~80)와
+**N=448에 BN=128이라 4타일=512열을 계산하는 12.5% 패딩 낭비**.
+
+계획서의 "W1/W3 fusion + grouped GEMM"은 가설 2개다. 융합이 N=896=7x128을 만들어
+grouping의 전제가 되므로 **융합만 먼저** 잰다(grouping은 EXP-011).
+
+## 2. Hypothesis
+w1[e](448x4096)와 w3[e](448x4096)를 행방향으로 쌓아 **896x4096 한 장**으로 만들면
+N=896=7x128로 패딩이 0이 되고, launch가 2회에서 1회로 준다.
+출력 원소별 내적의 K 순서가 그대로이므로 **bitwise 동일**이어야 한다.
+
+## 3. Design
+- `DeviceLinear`에 두 weight를 행방향 concat하는 생성자 추가. `DeviceMoE::{w1,w3}` -> `w13`.
+- `silu_mul`이 `[rows, 2F]` 한 버퍼를 읽어 `[rows, F]`로 쓰도록 인덱싱만 변경
+  (`(x/(1+expf(-x)))*up` 식은 그대로).
+- 버퍼 `d_up(total*F)` -> `d_gate_up(total*2F)`.
+
+## 4. Result
+한 srun(b6) 안에서 교차 x2rep, 둘 다 `-v`.
+
+| | moe (s) | elapsed (s) |
+|---|---|---|
+| EXP-009 | 1.417 / 1.412 | 3.562 / 3.558 |
+| **EXP-010** | **1.158 / 1.152** | **3.313 / 3.301** |
+
+**moe -0.259 s (1.23x), elapsed -0.253 s.** `cmp` -> **bitwise 동일**, 양쪽 PASSED.
+
+**예측(-0.09 s)의 3배가 나왔다.** 패딩 12.5%만 계산했는데, 융합이 **블록 붕괴도 절반
+해결**했기 때문이다. 이전에는 (4,20)=80 블록짜리 launch 2개가 **직렬**로 각각 164 슬롯의
+49%만 채웠는데, 융합 후 (7,20)=140 블록 1개가 85%를 채운다. 두 효과가 겹쳤다.
+
+⇒ **EXP-011 grouping의 남은 여유는 계획서의 -0.28 s보다 작다.** w1/w3는 이미 85%를
+채우므로 남은 대상은 w2(N=4096, (32,20)=640 블록 — 이미 충분)와 launch 수 자체다.
+grouping 전에 남은 moe 1.155의 내역을 먼저 재야 한다.
+
+## 5. Next action
+**EXP-011 착수 전 측정.** moe 1.155가 expert GEMM / gather+scatter / per-expert
+`cudaMemcpy` 중 어디에 있는지 분해한다. w1/w3 점유율이 이미 85%라면 grouping의 값은
+낭비 제거가 아니라 **launch·H2D 왕복 제거(레이어당 112회)** 쪽으로 옮겨간다.

@@ -29,6 +29,10 @@ private:
         DeviceLinear() = default;
         DeviceLinear(const ModelLoader& loader, const std::string& weight,
                      const std::string& bias);
+        // Two weights stacked row-wise into one matrix (`top` above `bottom`),
+        // so one GEMM produces both halves.
+        DeviceLinear(const ModelLoader& loader, const std::string& top,
+                     const std::string& bottom, bool concat_rows);
         DeviceLinear(const DeviceLinear&) = delete;
         DeviceLinear& operator=(const DeviceLinear&) = delete;
         DeviceLinear(DeviceLinear&& other) noexcept;
@@ -67,7 +71,8 @@ private:
         void free();
 
         DeviceLinear gate;
-        std::vector<DeviceLinear> w1, w2, w3;
+        // w13[e] is w1 stacked on w3, so the two share one GEMM.
+        std::vector<DeviceLinear> w13, w2;
     };
 
     // A decoder layer taken apart into its primitives. PhiDecoderLayer keeps

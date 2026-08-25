@@ -202,12 +202,16 @@ __global__ void scatter_add_rows(const float* __restrict__ src,
 // PhiMLP applies silu to the w1 branch and multiplies the w3 branch into it.
 // tensor.cu evaluates exp in double; expf differs by ~1e-7 relative, which is
 // four orders under the 3e-3 validation threshold.
-__global__ void silu_mul(float* __restrict__ gate,
-                         const float* __restrict__ up, long long n) {
+// gate_up holds one stacked GEMM's output, [rows, 2*f]: the w1 half then the
+// w3 half of the same row. n = rows * f.
+__global__ void silu_mul(const float* __restrict__ gate_up,
+                         float* __restrict__ out, int f, long long n) {
     const long long i = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < n) {
-        const float x = gate[i];
-        gate[i] = (x / (1.0f + expf(-x))) * up[i];
+        const long long row = i / f, c = i % f;
+        const float* gu = gate_up + row * 2 * f;
+        const float x = gu[c];
+        out[i] = (x / (1.0f + expf(-x))) * gu[f + c];
     }
 }
 
@@ -443,6 +447,21 @@ PhiTinyMoEModel::DeviceLinear::DeviceLinear(const ModelLoader& loader,
     }
 }
 
+PhiTinyMoEModel::DeviceLinear::DeviceLinear(const ModelLoader& loader,
+                                            const std::string& top,
+                                            const std::string& bottom, bool) {
+    const Tensor a = loader.load(top);
+    const Tensor b = loader.load(bottom);
+    out = a.size(0) + b.size(0);
+    in = a.size(1);
+    cuda_check(cudaMalloc(&weight, out * in * sizeof(float)),
+               "cudaMalloc stacked weight");
+    cuda_check(cudaMemcpy(weight, a.data(), a.size() * sizeof(float),
+                          cudaMemcpyHostToDevice), "cudaMemcpy stacked weight top");
+    cuda_check(cudaMemcpy(weight + a.size(), b.data(), b.size() * sizeof(float),
+                          cudaMemcpyHostToDevice), "cudaMemcpy stacked weight bottom");
+}
+
 PhiTinyMoEModel::DeviceLinear::DeviceLinear(DeviceLinear&& other) noexcept
     : weight(other.weight), bias(other.bias), out(other.out), in(other.in) {
     other.weight = nullptr;
@@ -503,23 +522,20 @@ void PhiTinyMoEModel::DeviceNorm::forward(const float* x, float* y,
 PhiTinyMoEModel::DeviceMoE::DeviceMoE(const ModelLoader& loader, std::size_t layer_idx)
     : gate(loader, "model.layers." + std::to_string(layer_idx) + ".block_sparse_moe.gate.weight", "") {
     const std::string base = "model.layers." + std::to_string(layer_idx) + ".block_sparse_moe";
-    w1.reserve(apss26::NUM_EXPERTS);
+    w13.reserve(apss26::NUM_EXPERTS);
     w2.reserve(apss26::NUM_EXPERTS);
-    w3.reserve(apss26::NUM_EXPERTS);
     for (std::size_t e = 0; e < apss26::NUM_EXPERTS; ++e) {
         const std::string prefix = base + ".experts." + std::to_string(e);
-        w1.emplace_back(loader, prefix + ".w1.weight", "");
+        w13.emplace_back(loader, prefix + ".w1.weight", prefix + ".w3.weight", true);
         w2.emplace_back(loader, prefix + ".w2.weight", "");
-        w3.emplace_back(loader, prefix + ".w3.weight", "");
     }
 }
 
 void PhiTinyMoEModel::DeviceMoE::free() {
     gate.free();
-    for (std::size_t e = 0; e < w1.size(); ++e) {
-        w1[e].free();
+    for (std::size_t e = 0; e < w13.size(); ++e) {
+        w13[e].free();
         w2[e].free();
-        w3[e].free();
     }
 }
 
@@ -632,7 +648,7 @@ void PhiTinyMoEModel::generate(
     DeviceBuffer<float> d_router(total * apss26::NUM_EXPERTS);
     // MoE scratch. An expert can in principle draw every row, so size for it.
     DeviceBuffer<float> d_expert_in(elements), d_expert_out(elements);
-    DeviceBuffer<float> d_gate(total * FFDIM), d_up(total * FFDIM);
+    DeviceBuffer<float> d_gate(total * FFDIM), d_gate_up(total * 2 * FFDIM);
     DeviceBuffer<int> d_index(total);
 
     // Attention runs on the device now, so it needs the batch layout there:
@@ -725,11 +741,10 @@ void PhiTinyMoEModel::generate(
                                   cudaMemcpyHostToDevice), "cudaMemcpy expert index");
             gather_rows<<<static_cast<unsigned>(rows), 256>>>(
                 d_norm.get(), d_index.get(), d_expert_in.get(), apss26::HIDDEN_SIZE);
-            layer.moe.w1[e].forward(d_expert_in.get(), d_gate.get(), rows);
-            layer.moe.w3[e].forward(d_expert_in.get(), d_up.get(), rows);
+            layer.moe.w13[e].forward(d_expert_in.get(), d_gate_up.get(), rows);
             const long long activated = static_cast<long long>(rows) * FFDIM;
             silu_mul<<<static_cast<unsigned>((activated + 255) / 256), 256>>>(
-                d_gate.get(), d_up.get(), activated);
+                d_gate_up.get(), d_gate.get(), static_cast<int>(FFDIM), activated);
             layer.moe.w2[e].forward(d_gate.get(), d_expert_out.get(), rows);
             scatter_add_rows<<<static_cast<unsigned>(rows), 256>>>(
                 d_expert_out.get(), d_index.get(), d_next, apss26::HIDDEN_SIZE, 0.5f);
