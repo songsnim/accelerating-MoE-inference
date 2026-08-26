@@ -2835,3 +2835,63 @@ b7 throughput 592.4 → **595.6 seq/s** (+0.54%). 모델 로드 시간 변화 �
 ## Next action
 우선순위: **`attention_heads`**(107 ms, 양쪽 루프라인 여유) > `layer_norm_rows`
 3패스(−38 ms 상한, 비트 동일성 제약) > 나머지 없음.
+
+---
+
+# EXP-034: attention, kv head를 공유하는 q head 4개를 한 블록으로
+
+## 1. Background
+측정-I가 지목한 `attention_heads`(107 ms). 측정-I는 DRAM 17.4% / FMA 18.9%만 보고
+"레이턴시/점유율 바운드"로 적었는데, `--set full`로 다시 재니 **틀린 진단이었다**:
+
+| | 값 |
+|---|---|
+| achieved occupancy | **98.1%** |
+| Mem Pipes Busy / SM throughput | **77.5%** |
+| Issue Slots Busy | 55.5% |
+| 실행 명령 | **819 M** |
+| stall(long scoreboard/barrier/wait) | 0.43 / 0.26 / 0.10 |
+
+점유율은 이미 만점이고 stall도 평범하다. 포화된 것은 **L1/LSU 파이프**(77.5%)이고,
+곧 **명령 수 자체**가 벽이다. 줄여야 할 것은 메모리 명령이다.
+
+## 2. Hypothesis
+`QH/KVH = 4`. q head 4개가 **바이트 단위로 동일한 k·v 행**을 읽는데, 지금은
+`blockIdx.y = qh`(16)라서 4개 블록이 같은 스테이징과 같은 v 로드를 4번 반복한다.
+이 4개를 한 블록으로 묶으면 k 스테이징·v 로드·chain 로드가 1/4이 된다.
+
+부수 효과: 이 입력은 `max_len = 32`라 `nk ≤ 32`인데 블록은 128스레드다. 점수 루프
+`for (i = tid; i < nk; i += 128)`는 **4워프 중 1워프만** 일한다. 묶으면 독립 내적이
+`nk` → `4*nk`가 되어 워프가 채워진다.
+
+## 3. Design and Implementation
+`src/model.cu` `attention_heads`. grid `(total, 16)` → **`(total, 4)`**, 블록은 128 유지.
+- shared: `sq[4][129]`(+1 패드는 g만 다른 레인의 뱅크 충돌 제거), `sdenom[4]`,
+  `sw[nk][4]`, `sk[nk][33]`. base 2080 B + 148 B/key → nk=32에 **6.8 KB**(이전 4.9 KB
+  × 4블록 = 19.5 KB).
+- 점수 인덱스는 `i = ki*4 + g`. `g = i % 4`, `ki = i / 4`가 시프트/마스크로 떨어진다
+  (`g*nk + ki`로 잡으면 런타임 `nk` 나눗셈이 붙는다).
+- max/denom 직렬 스캔은 `tid < 4`가 head별로 하나씩 → 같은 워프라 4개가 1개 값.
+- 값 누산: 스레드가 v 원소를 **1번 읽어 레지스터에서 4 head가 재사용**.
+
+**비트 동일성**: 내적은 여전히 한 스레드 안에서 d 오름차순, denom도 한 레인 안에서
+ki 오름차순, 값 누산도 스레드 안에서 ki 오름차순. exp는 원소별. 순서를 바꾼 곳이 없다.
+
+## 4. Result
+b5, n=1024, 각 3회(편차 < 0.5 ms).
+
+| | Elapsed | attention_heads 1회 | 명령 | global ld |
+|---|---|---|---|---|
+| baseline (b6c9fab) | 1.9597 s | 3.34 ms | 819 M | 63.2 M |
+| EXP-034 | **1.8979 s** | **1.37 ms** | 377 M | 16.6 M |
+| | **−61.9 ms (−3.16%)** | **−59%** | −54% | **−74% (≈1/4)** |
+
+global load가 예측대로 정확히 1/4이 됐다. 커널 총합 107 → 44 ms이고 end-to-end 감소
+−62 ms와 일치한다. 검증 `-v` **PASSED, max abs diff 0.000179291 — baseline과 동일 수치**
+(라우팅이 한 토큰도 안 바뀜). `-n 1 -d -v`도 PASSED.
+점유율 98.1% 유지, SM throughput 77.5% → **86.9%**.
+
+## 5. Next action
+SM 86.9%면 이제 파이프 바닥에 가깝다. 남은 것: 값 누산 루프가 스레드마다
+`sw[i]/denom`을 **매 key 나눗셈**한다(스레드 전원이 같은 값을 중복 계산).
+루프 앞에서 shared에 한 번만 나눠두면 값은 그대로고 나눗셈이 `nk`배 준다 → EXP-035.

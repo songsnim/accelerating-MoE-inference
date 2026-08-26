@@ -851,9 +851,16 @@ __global__ void rope_rows(float* __restrict__ q, float* __restrict__ k,
 // pattern: with stride 33 lane i lands on bank (i + d) % 32.
 constexpr int ATTN_CHUNK = 32;
 
-// Causal attention over the prefix trie. One block per (node, query head),
-// with HEAD_DIM threads: thread d owns output element d. A node's key set is
-// its own root path, which `anc` lists ascending by depth.
+// Causal attention over the prefix trie. One block per (node, kv head), with
+// HEAD_DIM threads. A node's key set is its own root path, which `anc` lists
+// ascending by depth.
+//
+// The block serves all GROUP = QH/KVH query heads that share the kv head, not
+// one: they read byte-for-byte the same k and v rows, so splitting them across
+// blocks staged the same keys and re-fetched the same values GROUP times over.
+// Holding them together also gives the score phase GROUP * nk independent dots
+// to spread over the block instead of nk -- with nk <= 32 on this input, one
+// warp of the four had all the work.
 //
 // Every accumulation order matches the sequential reference, which is the whole
 // difficulty of this kernel. A reordered sum here shifts the router logits by
@@ -874,22 +881,26 @@ __global__ void attention_heads(const float* __restrict__ q,
     constexpr int D = static_cast<int>(apss26::HEAD_DIM);
     constexpr int QH = static_cast<int>(apss26::NUM_ATTENTION_HEADS);
     constexpr int KVH = static_cast<int>(apss26::NUM_KV_HEADS);
+    constexpr int GROUP = QH / KVH;
     constexpr int WINDOW = static_cast<int>(apss26::SLIDING_WINDOW);
+    // sq is padded to D + 1 so that lanes differing only in g -- which is how
+    // the score loop numbers its threads -- land on different banks.
+    constexpr int QSTRIDE = D + 1;
 
     extern __shared__ float shared[];
-    float* sq = shared;               // the query row being served
-    float* sdenom = shared + D;       // the softmax denominator
-    float* sw = shared + D + 1;       // one score per key
-    __shared__ float smax;            // the softmax max, broadcast to all lanes
+    float* sq = shared;                        // [GROUP][QSTRIDE] query rows
+    float* sdenom = shared + GROUP * QSTRIDE;  // [GROUP] softmax denominators
+    float* sw = sdenom + GROUP;                // [nk][GROUP] scores
+    __shared__ float smax[GROUP];              // the per-head softmax max
 
-    const int node = blockIdx.x, qh = blockIdx.y;
-    const int kh = qh / (QH / KVH);
+    const int node = blockIdx.x, kh = blockIdx.y;
     const int tid = threadIdx.x;
 
     const int abase = anc_off[node];
     const int keys = anc_off[node + 1] - abase;   // = position + 1
     const int lo = keys > WINDOW ? keys - WINDOW : 0;
     const int nk = keys - lo;
+    const int nw = GROUP * nk;
     const int* const chain = anc + abase + lo;
 
     // The q.k dot reads k straight from global with one key row per lane, so a
@@ -901,12 +912,18 @@ __global__ void attention_heads(const float* __restrict__ q,
     // same fp32 it would have held in a register, so the __fadd_rn sequence per
     // score is unchanged. A narrow chunk is the point: whole-row staging costs
     // max_len * D floats and loses more to occupancy than coalescing returns.
-    float* const sk = sw + nk;    // <= the max_len * (ATTN_CHUNK + 1) reserved
+    float* const sk = sw + nw;    // <= the max_len * (ATTN_CHUNK + 1) reserved
 
-    sq[tid] = q[static_cast<long long>(node) * QH * D + qh * D + tid];
-    for (int i = tid; i < nk; i += D) sw[i] = 0.0f;
+    // The group's GROUP query rows are contiguous in q, so this is GROUP
+    // coalesced 512 B loads.
+    const long long qbase =
+        static_cast<long long>(node) * QH * D + static_cast<long long>(kh) * GROUP * D;
+    for (int g = 0; g < GROUP; ++g) sq[g * QSTRIDE + tid] = q[qbase + g * D + tid];
+    for (int i = tid; i < nw; i += D) sw[i] = 0.0f;
     __syncthreads();
 
+    // Score index i packs (ki, g) as ki * GROUP + g, so the split is a shift
+    // and a mask rather than a division by the runtime nk.
     for (int d0 = 0; d0 < D; d0 += ATTN_CHUNK) {
         for (int base = 0; base < nk; base += D / ATTN_CHUNK) {
             const int ki = base + tid / ATTN_CHUNK, col = tid % ATTN_CHUNK;
@@ -915,44 +932,52 @@ __global__ void attention_heads(const float* __restrict__ q,
                     k[static_cast<long long>(chain[ki]) * KVH * D + kh * D + d0 + col];
         }
         __syncthreads();
-        for (int i = tid; i < nk; i += D) {
-            const float* kr = sk + i * (ATTN_CHUNK + 1);
+        for (int i = tid; i < nw; i += D) {
+            const float* kr = sk + (i / GROUP) * (ATTN_CHUNK + 1);
+            const float* qr = sq + (i % GROUP) * QSTRIDE + d0;
             float score = sw[i];
             for (int d = 0; d < ATTN_CHUNK; ++d)
-                score = __fadd_rn(score, __fmul_rn(sq[d0 + d], kr[d]));
+                score = __fadd_rn(score, __fmul_rn(qr[d], kr[d]));
             sw[i] = score;
         }
         __syncthreads();
     }
-    for (int i = tid; i < nk; i += D) sw[i] = sw[i] / scale;
+    for (int i = tid; i < nw; i += D) sw[i] = sw[i] / scale;
     __syncthreads();
 
     // exp is elementwise, so it may leave thread 0 without disturbing any
-    // summation order; the max scan and the denominator stay where they are.
-    if (tid == 0) {
+    // summation order; the max scan and the denominator stay where they are --
+    // one lane per head, so the group's four scans cost what one used to.
+    if (tid < GROUP) {
         float maxv = -INFINITY;
-        for (int i = 0; i < nk; ++i) maxv = fmaxf(maxv, sw[i]);
-        smax = maxv;
+        for (int i = 0; i < nk; ++i) maxv = fmaxf(maxv, sw[i * GROUP + tid]);
+        smax[tid] = maxv;
     }
     __syncthreads();
-    for (int i = tid; i < nk; i += D)
-        sw[i] = static_cast<float>(exp(static_cast<double>(sw[i] - smax)));
+    for (int i = tid; i < nw; i += D)
+        sw[i] = static_cast<float>(exp(static_cast<double>(sw[i] - smax[i % GROUP])));
     __syncthreads();
-    if (tid == 0) {
+    if (tid < GROUP) {
         float denom = 0.0f;
-        for (int i = 0; i < nk; ++i) denom = __fadd_rn(denom, sw[i]);
-        *sdenom = denom;
+        for (int i = 0; i < nk; ++i) denom = __fadd_rn(denom, sw[i * GROUP + tid]);
+        sdenom[tid] = denom;
     }
     __syncthreads();
 
-    const float denom = *sdenom;
-    float acc = 0.0f;
+    // One v element per thread per key, reused by all GROUP heads out of a
+    // register instead of re-read GROUP times.
+    float acc[GROUP];
+    float denom[GROUP];
+    for (int g = 0; g < GROUP; ++g) { acc[g] = 0.0f; denom[g] = sdenom[g]; }
     for (int i = 0; i < nk; ++i) {
-        const float w = sw[i] / denom;
-        acc = __fadd_rn(acc, __fmul_rn(w,
-            v[static_cast<long long>(chain[i]) * KVH * D + kh * D + tid]));
+        const float vv = v[static_cast<long long>(chain[i]) * KVH * D + kh * D + tid];
+        for (int g = 0; g < GROUP; ++g) {
+            const float w = sw[i * GROUP + g] / denom[g];
+            acc[g] = __fadd_rn(acc[g], __fmul_rn(w, vv));
+        }
     }
-    out[static_cast<long long>(node) * QH * D + qh * D + tid] = acc;
+    for (int g = 0; g < GROUP; ++g)
+        out[static_cast<long long>(node) * QH * D + (kh * GROUP + g) * D + tid] = acc[g];
 }
 
 }  // namespace
@@ -1353,18 +1378,23 @@ void PhiTinyMoEModel::generate(
                           cudaMemcpyHostToDevice), "cudaMemcpy ancestor offsets");
     cuda_check(cudaMemcpy(d_rope, rope.data(), rope.size() * sizeof(float),
                           cudaMemcpyHostToDevice), "cudaMemcpy rope table");
-    // The kernel stages one score per key plus an ATTN_CHUNK-wide k slice, so
-    // its shared footprint is linear in the key count -- which the sliding
-    // window caps, so a sequence past the window costs no more than the window.
+    // The kernel stages ATTN_GROUP scores per key plus an ATTN_CHUNK-wide k
+    // slice, so its shared footprint is linear in the key count -- which the
+    // sliding window caps, so a sequence past the window costs no more than the
+    // window.
     const std::size_t nk_max = std::min(max_len, apss26::SLIDING_WINDOW);
-    constexpr std::size_t ATTN_SHARED_BASE = (apss26::HEAD_DIM + 1) * sizeof(float);
-    constexpr std::size_t ATTN_SHARED_PER_KEY = (1 + ATTN_CHUNK + 1) * sizeof(float);
+    constexpr std::size_t ATTN_GROUP =
+        apss26::NUM_ATTENTION_HEADS / apss26::NUM_KV_HEADS;
+    constexpr std::size_t ATTN_SHARED_BASE =
+        ATTN_GROUP * (apss26::HEAD_DIM + 1 + 1) * sizeof(float);
+    constexpr std::size_t ATTN_SHARED_PER_KEY =
+        (ATTN_GROUP + ATTN_CHUNK + 1) * sizeof(float);
     const unsigned attn_shared = static_cast<unsigned>(
         ATTN_SHARED_BASE + nk_max * ATTN_SHARED_PER_KEY);
     // 48 KB is all a block gets without opting in, and the opt-in has to be
     // requested per kernel. Past the device's opt-in cap the kernel cannot run
     // at all: say which length overflowed rather than let the launch fail with
-    // a bare invalid-argument. The contest input needs 4.9 KB, so neither the
+    // a bare invalid-argument. The contest input needs 6.7 KB, so neither the
     // attribute query nor the set runs on it.
     if (attn_shared > 48 * 1024) {
         int device = 0;
@@ -1411,7 +1441,7 @@ void PhiTinyMoEModel::generate(
         rope_rows<<<static_cast<unsigned>(total), 256>>>(
             d_q, d_k, d_pos, d_rope);
         attention_heads<<<dim3(static_cast<unsigned>(total),
-                               apss26::NUM_ATTENTION_HEADS),
+                               apss26::NUM_KV_HEADS),
                           apss26::HEAD_DIM, attn_shared>>>(
             d_q, d_k, d_v, d_anc, d_anc_off,
             d_ctx, attn_scale);
