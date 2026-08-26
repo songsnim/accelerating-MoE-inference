@@ -74,6 +74,18 @@ constexpr int GEMM_THREADS = (BM / TM) * (BN / TN);  // 256
 // pattern of a bare [BK][BM] layout.
 constexpr int SPAD = 4;
 
+// Column that lane tx owns at slot j. The natural `tx * TN + j` gives a warp's
+// quarter (8 lanes) word-stride 8, so those 8 lanes touch banks
+// {0-3, 8-11, 16-19, 24-27} twice over -- a 2-way conflict on every `bs` read,
+// measured at 5.0 shared-load wavefronts per instruction against an ideal 4
+// (2.0 conflict wavefronts, `as` clean). Splitting each lane's 8 columns into
+// two float4 halves half a tile apart makes the same 8 lanes cover all 32 banks
+// exactly once. Only which thread owns which output column changes; every
+// output still accumulates the same k-ascending FMA sequence.
+__device__ __forceinline__ int gemm_col_slot(int tx, int j) {
+    return tx * 4 + (j >> 2) * (BN / 2) + (j & 3);
+}
+
 // Double-buffered variant: the global load for tile kt+BK is issued before the
 // compute over tile kt, so the ~500-cycle LDG latency overlaps the FFMAs
 // instead of stalling in front of the shared store. Only one __syncthreads()
@@ -141,7 +153,8 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
             }
 #pragma unroll
             for (int j = 0; j < TN; j += 4) {
-                const float4 t = *reinterpret_cast<const float4*>(&bc[p][tx * TN + j]);
+                const float4 t =
+                    *reinterpret_cast<const float4*>(&bc[p][gemm_col_slot(tx, j)]);
                 bv4[j] = t.x; bv4[j + 1] = t.y; bv4[j + 2] = t.z; bv4[j + 3] = t.w;
             }
 #pragma unroll
@@ -169,7 +182,7 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
         if (row >= m) continue;
 #pragma unroll
         for (int j = 0; j < TN; ++j) {
-            const int col = n0 + tx * TN + j;
+            const int col = n0 + gemm_col_slot(tx, j);
             if (col >= n) continue;
             float v = acc[i][j];
             if (bias != nullptr) v += bias[col];
