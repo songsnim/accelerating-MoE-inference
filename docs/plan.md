@@ -13,9 +13,11 @@
 | ~~011~~ | **Prefix trie** (완료 `47aff75`) | **−0.628 s 실측** | 19,803 → 15,583 행. elapsed 3.281 → 2.653 (b5), bitwise 동일. attn은 `qi` 직렬 루프 소멸로 −24.7% |
 | **012** | **expert w13 grouping** — (expert, rowtile) work queue | −0.19 s 이상 | 측정-A: w13 시간가중 wave 충전율 66%, 53%가 1 wave 미만 launch. trie로 expert당 행이 21% 줄어 충전율은 더 나빠졌다 |
 | ~~013~~ | **embedding lookup 디바이스 이전** (완료) | **−0.23 s 실측** | embed 0.181 + h2d 0.023 → 0.002 + 0.004. bitwise 동일. trie 구성 자체는 2 ms로 확정 |
-| **014** | GEMM 타일 재설계 (projection) | ? | q/o_proj 16.2 TF/s / 35.6 peak. gemm 1.09가 남은 최대 항목 |
-| 015 | GQA grouping + coalesced K staging | −0.05 s | 남은 attn 0.143 s. thread i가 key row `chain[i]`를 직접 읽어 **uncoalesced**(연속 thread 간격 `KVH·D`) |
-| 이후 | LayerNorm coalesced staging + fused residual −0.10 · device-side routing −0.07 · embedding OpenMP −0.10 · K/V projection fusion 소액 | | |
+| ~~014~~ | **출력 Tensor 할당 겹치기** (완료 `9ccf876`) | **−0.068 s 실측** | `Tensor` 생성자가 131 MB를 `assign(0.0f)`로 페이지폴트 채우는 0.069 s. GPU 의존 없음 → 별도 스레드. bitwise 동일 |
+| **015** | **device-side routing** — top-2와 타일 빌드를 GPU로 | −0.05 s 내외 | 측정-C: 호스트 라우팅 왕복 **0.059 s** (router D2H 0.005 + 호스트 top-2/타일 빌드 0.054). 남은 최대 비-GEMM 항목 |
+| 016 | GEMM 타일 재설계 (projection) | ? | q/o_proj 16.2 TF/s / 35.6 peak. gemm 1.09가 남은 최대 항목 |
+| 017 | GQA grouping + coalesced K staging | −0.05 s | 남은 attn 0.143 s. thread i가 key row `chain[i]`를 직접 읽어 **uncoalesced**(연속 thread 간격 `KVH·D`) |
+| 이후 | LayerNorm coalesced staging + fused residual −0.10 · K/V projection fusion 소액 | | |
 
 ## 하지 않는 것
 
@@ -27,6 +29,7 @@
 | **feature-major 레이아웃 전환** | ncu 실측: sectors/request 14.5~15.8(이상 16), dram_throughput 3.7~10.8%. 메모리 경로에 고칠 것 없음. 대가는 전 커널 재인덱싱 |
 | **attention key 방향 warp 병렬화** | 저쪽이 n=1024에서 실측, **이득 없음(잡음 수준)** |
 | **attention Q-head 4-way (3.49x)** | 적용 대상 없음. 저쪽 3.49x는 GQA grouping으로 head 4개를 한 블록에 묶으며 생긴 페널티를 되돌린 것 — 우리는 묶지 않아 그 페널티가 없다. exploration-003 §2가 스스로 철회, EXP-009 실측이 독립 확인 |
+| **logits D2H를 pinned로** | 측정-C. 131 MB D2H 15 ms를 pinned로 줄이려면 (a) `cudaHostRegister` 13 + 5.8 ms 또는 (b) pinned ring + 청크 파이프라인. 둘 다 실이득 **10~12 ms(0.5%)**인데 `cudaHostAlloc`이 0.83 ms/MB, 청크 GEMM·비블로킹 스트림·이벤트·memcpy 스레드가 붙는다. `Tensor`가 `std::vector`라 할당기를 못 바꾸는 게 근본 제약 |
 | 병렬 LayerNorm reduction · warp dot reduction · 병렬 product+순차 sum | 전부 FP32 누적 순서 변경 → MoE top-2 routing 붕괴. EXP-004(0.211975)와 저쪽(0.211973) 상호 검증 |
 
 ## 측정 규율
