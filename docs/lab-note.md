@@ -3056,3 +3056,63 @@ b5, n=1024, 3회. 커널 계측은 ncu, 1레이어 창.
 있다(에필로그 패스의 읽기/쓰기 혼합). 그 격차를 다 메워도 −3.3 ms다.
 
 세션 누적(034~037): **1.9597 → 1.8693 s, −90.4 ms (−4.61%)**.
+
+---
+
+# EXP-038: expert gather를 w13 GEMM의 A 스테이징으로 접는다
+
+## 1. Background
+037의 전수조사에서 드러난 것: **`gather_rows`(expert)가 레이어당 1.22 ms, 총 39 ms**를
+쓴다. 측정-I의 "비-GEMM 전수조사"가 통째로 빠뜨린 커널이다. 하는 일은 순수 복사
+(d_attn의 행을 패킹 순서로 d_expert_in에 511 MB 읽고 511 MB 쓰기, 91.5% DRAM).
+
+## 2. Hypothesis
+`gemm_grouped`(w13)는 이 버퍼를 A로 읽으면서 **어차피 행 단위로 스테이징**한다.
+A의 행 주소를 `arowmap[r]`로 간접화하면 gather 커널 자체가 사라진다. 출력 쪽에는
+이미 같은 간접화가 있다(`gemm_grouped_combine`의 `rowmap`). 037의 norm 에필로그도
+같은 자리에서 적용하면 된다.
+
+대가: A는 컬럼 타일 수(896/128 = **7회**)만큼 스테이징되므로 에필로그가 원소당 7회
+= 3.6 G op. w13의 114 G FMA 대비 +3.2%.
+
+## 3. Design and Implementation
+- `gemm_nt_body`에 템플릿 `bool AGATHER = false` + `(arowmap, nmean, ninv, nw, nb)`.
+  `a_src = AGATHER && a_ok ? arowmap[a_row] : a_row`로 AGATHER=false면 원래 식으로
+  접힌다(투영 5개의 SASS 보존이 목적 — 아래 실측으로 확인).
+- `gemm_grouped<bool AGATHER>`가 이를 전달. `generate()`에서 gather 호출 삭제,
+  `gemm_grouped<true>(d_attn, ..., d_index, d_nmean, d_ninv, w, b)`.
+- `d_expert_in`은 이제 lm_head gather 전용이라 `batch` 행으로 축소(디바이스 메모리 −450 MB).
+
+**비트 동일성**: gather가 쓰던 fp32를 레지스터에서 그대로 만든다. 연산·순서 동일.
+
+## 4. Result
+b5, n=1024, 3회.
+
+| | Elapsed | seq/s |
+|---|---|---|
+| EXP-037 | 1.8693 s | 547.9 |
+| EXP-038 | **1.8462 s** | **555.0** |
+| | **−23.1 ms (−1.24%)** | |
+
+커널(ncu, 1레이어):
+
+| 커널 | before | after |
+|---|---|---|
+| `gather_rows` (expert) | 1224 µs / 1.02 GB | **삭제** |
+| `gemm_grouped` | 13,015 µs / 1.38 GB | 13,790 µs / 1.98 GB (**+775**) |
+| `gemm_nt_bias` ×3, `_resid` | 13506 / 3445 / 3439 / 13658 | 13576 / 3445 / 3451 / 13677 |
+
+투영 4개는 노이즈 범위 안에서 그대로다 → **AGATHER=false 인스턴스는 스케줄을 유지**했다.
+`gemm_grouped`의 DRAM이 1.38 → 1.98 GB로 **늘었다**: 읽는 고유 데이터는 오히려 절반
+(511 → 255 MB)인데, 행이 흩어져서 7개 컬럼 타일 간 L2 재사용이 나빠졌다. 그래도
+삭제한 1.02 GB가 더 크다.
+
+`-v` PASSED, `-n 1 -d -v` PASSED, **출력 131 MB가 034 이전 빌드와 바이트 단위 동일**.
+
+## 5. Next action
+세션 누적(034~038): **1.9597 → 1.8462 s, −113.5 ms (−5.79%)**.
+b5 **555.0 seq/s**, b7 **626.0 seq/s**.
+
+남은 비-GEMM은 input_norm 40 ms(측정-J로 닫힘)과 attention 30 ms(EXP-036에서 닫힘)뿐.
+레이어당 60 ms 중 **55 ms가 GEMM**이고 FMA 피크는 w13 65.7% / 투영 69~70%다.
+다음은 GEMM 본체 말고는 없다.

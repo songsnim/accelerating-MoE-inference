@@ -163,15 +163,24 @@ __device__ __forceinline__ int gemm_col_slot(int tx, int j) {
 // past its last; everything else is the tile kernel unchanged, down to the
 // bound expressions -- writing them any other way moves ptxas off the
 // instruction schedule the projections were measured on.
+// AGATHER makes A's rows indirect: row r of the tile is `arowmap[r]` of `a`,
+// with a layer norm's epilogue applied on the way in. That is a whole gather
+// kernel -- 511 MB read and 511 MB written per layer at the DRAM roofline --
+// folded into a staging step this kernel was running anyway.
 template <int BM, int BN, int TM, int TN, bool SWIZ, bool FUSE_RESID = false,
-          int COMBINE = 0>
+          int COMBINE = 0, bool AGATHER = false>
 __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
                                              const float* __restrict__ b,
                                              const float* __restrict__ bias,
                                              float* __restrict__ c,
                                              const float* __restrict__ resid,
                                              const int* __restrict__ rowmap,
-                                             int row0, int m, int k, int n) {
+                                             int row0, int m, int k, int n,
+                                             const int* __restrict__ arowmap = nullptr,
+                                             const float* __restrict__ nmean = nullptr,
+                                             const float* __restrict__ ninv = nullptr,
+                                             const float* __restrict__ nw = nullptr,
+                                             const float* __restrict__ nb = nullptr) {
     // Each thread stages two float4 per matrix; that is what makes `lr`/`lr2`
     // cover the tile exactly once. A wider tile has to change the staging.
     static_assert(BM / 2 * (BK / 4) == GEMM_THREADS, "A staging misses rows");
@@ -199,8 +208,28 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
     const int b_row = n0 + lr, b_row2 = n0 + lr2;
     const bool a_ok = a_row < m, a_ok2 = a_row2 < m;
     const bool b_ok = b_row < n, b_ok2 = b_row2 < n;
-    const float* const ab = a + static_cast<long long>(a_row) * k + lc;
-    const float* const ab2 = a + static_cast<long long>(a_row2) * k + lc;
+    // With AGATHER off both of these fold back to `a_row`, so the five
+    // unfused projections keep the address arithmetic they were measured on.
+    const long long a_src = AGATHER && a_ok ? arowmap[a_row] : a_row;
+    const long long a_src2 = AGATHER && a_ok2 ? arowmap[a_row2] : a_row2;
+    const float* const ab = a + a_src * k + lc;
+    const float* const ab2 = a + a_src2 * k + lc;
+    // A row past the edge stages zeros that nothing reads back; normalising it
+    // would index nmean off the end.
+    const float anm = AGATHER && a_ok ? nmean[a_src] : 0.0f;
+    const float aniv = AGATHER && a_ok ? ninv[a_src] : 0.0f;
+    const float anm2 = AGATHER && a_ok2 ? nmean[a_src2] : 0.0f;
+    const float aniv2 = AGATHER && a_ok2 ? ninv[a_src2] : 0.0f;
+    // The four ops layer_norm_rows' third pass ran, in that order.
+    auto anorm = [&](float4& v, int col0, float mm, float iv, bool ok) {
+        if (!AGATHER || !ok) return;
+        const float4 wv = *reinterpret_cast<const float4*>(nw + col0);
+        const float4 bb4 = *reinterpret_cast<const float4*>(nb + col0);
+        v.x = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(v.x, mm), iv), wv.x), bb4.x);
+        v.y = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(v.y, mm), iv), wv.y), bb4.y);
+        v.z = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(v.z, mm), iv), wv.z), bb4.z);
+        v.w = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(v.w, mm), iv), wv.w), bb4.w);
+    };
     const float* const bb = b + static_cast<long long>(b_row) * k + lc;
     const float* const bb2 = b + static_cast<long long>(b_row2) * k + lc;
 
@@ -211,6 +240,8 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
     float4 av2 = av, bv = av, bv2 = av;
     if (a_ok) av = *reinterpret_cast<const float4*>(ab);
     if (a_ok2) av2 = *reinterpret_cast<const float4*>(ab2);
+    anorm(av, lc, anm, aniv, a_ok);
+    anorm(av2, lc, anm2, aniv2, a_ok2);
     if (b_ok) bv = *reinterpret_cast<const float4*>(bb);
     if (b_ok2) bv2 = *reinterpret_cast<const float4*>(bb2);
     as[0][lc + 0][sc] = av.x; as[0][lc + 1][sc] = av.y;
@@ -229,6 +260,8 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
         if (more) {
             if (a_ok) av = *reinterpret_cast<const float4*>(ab + kt + BK);
             if (a_ok2) av2 = *reinterpret_cast<const float4*>(ab2 + kt + BK);
+            anorm(av, kt + BK + lc, anm, aniv, a_ok);
+            anorm(av2, kt + BK + lc, anm2, aniv2, a_ok2);
             if (b_ok) bv = *reinterpret_cast<const float4*>(bb + kt + BK);
             if (b_ok2) bv2 = *reinterpret_cast<const float4*>(bb2 + kt + BK);
         }
@@ -480,16 +513,23 @@ void gemm_gate(const float* __restrict__ a, const float* __restrict__ b,
 // 66% time-weighted wave fill on w13, 53% of its time in sub-one-wave
 // launches). Nothing about a row's arithmetic changes: the tile it lands in
 // does not enter the accumulation.
+template <bool AGATHER = false>
 __global__ __launch_bounds__(GEMM_THREADS, 2)
 void gemm_grouped(const float* __restrict__ a,
                              const float* const* __restrict__ weights,
                              float* __restrict__ c,
-                             const int* __restrict__ tiles, int k, int n) {
+                             const int* __restrict__ tiles, int k, int n,
+                             const int* __restrict__ arowmap = nullptr,
+                             const float* __restrict__ nmean = nullptr,
+                             const float* __restrict__ ninv = nullptr,
+                             const float* __restrict__ nw = nullptr,
+                             const float* __restrict__ nb = nullptr) {
     const int* const t = tiles + blockIdx.y * 3;
     // The grid is sized to the worst-case tile count, so the tail is empty.
     if (t[2] == 0) return;
-    gemm_nt_body<GRP_BM, GRP_BN, GRP_TM, GRP_TN, GRP_SWIZ>(
-        a, weights[t[0]], nullptr, c, nullptr, nullptr, t[1], t[1] + t[2], k, n);
+    gemm_nt_body<GRP_BM, GRP_BN, GRP_TM, GRP_TN, GRP_SWIZ, false, 0, AGATHER>(
+        a, weights[t[0]], nullptr, c, nullptr, nullptr, t[1], t[1] + t[2], k, n,
+        arowmap, nmean, ninv, nw, nb);
 }
 
 // w2 only, in two ordered launches. `moe_combine` read the whole 511 MB expert
@@ -1424,12 +1464,11 @@ void PhiTinyMoEModel::generate(
     // expert GEMMs become one launch, so the row count is the number of
     // (row, expert) pairs -- exactly TOP_K * total.
     const std::size_t packed_rows = total * apss26::TOP_K;
-    // Both are reused by the lm_head gather at the end, which addresses `batch`
-    // rows. Nothing bounds `total` below `batch`: a batch of duplicate short
-    // sequences collapses to fewer than batch/2 nodes, and packed_rows alone
-    // would then be short of what that gather writes.
+    // `index` carries the packing map for the whole MoE and is then reused by
+    // the lm_head gather, so it takes the larger of the two. The gather target
+    // now serves only lm_head, which addresses `batch` rows.
     const std::size_t gather_rows_max = std::max(packed_rows, batch);
-    float* d_expert_in = sc.expert_in.reserve(gather_rows_max * apss26::HIDDEN_SIZE);
+    float* d_expert_in = sc.expert_in.reserve(batch * apss26::HIDDEN_SIZE);
     float* d_gate = sc.gate.reserve(packed_rows * FFDIM);
     float* d_gate_up = sc.gate_up.reserve(packed_rows * 2 * FFDIM);
     int* d_index = sc.index.reserve(gather_rows_max);
@@ -1580,12 +1619,15 @@ void PhiTinyMoEModel::generate(
         cuda_check(cudaGetLastError(), "routing kernels");
         tick(t_d2h);
 
-        gather_rows<true><<<static_cast<unsigned>(packed_rows), 256>>>(
-            d_attn, d_index, d_expert_in, apss26::HIDDEN_SIZE,
-            d_nmean, d_ninv, layer.post_norm.weight, layer.post_norm.bias);
-        gemm_grouped<<<dim3((2 * FFDIM + GRP_BN - 1) / GRP_BN, max13), GEMM_THREADS>>>(
-            d_expert_in, layer.moe.w13_ptrs, d_gate_up, d_tiles,
-            static_cast<int>(apss26::HIDDEN_SIZE), static_cast<int>(2 * FFDIM));
+        // No expert-activation buffer and no gather pass: w13 reads the
+        // residual stream through the packing map and normalises each row as
+        // it stages it. d_attn stays live until COMBINE=2 reads it as the
+        // residual, which is after this.
+        gemm_grouped<true><<<dim3((2 * FFDIM + GRP_BN - 1) / GRP_BN, max13), GEMM_THREADS>>>(
+            d_attn, layer.moe.w13_ptrs, d_gate_up, d_tiles,
+            static_cast<int>(apss26::HIDDEN_SIZE), static_cast<int>(2 * FFDIM),
+            d_index, d_nmean, d_ninv,
+            layer.post_norm.weight, layer.post_norm.bias);
         const long long activated = static_cast<long long>(packed_rows) * FFDIM;
         silu_mul<<<static_cast<unsigned>((activated + 255) / 256), 256>>>(
             d_gate_up, d_gate, static_cast<int>(FFDIM), activated);
