@@ -1,0 +1,1321 @@
+<title>MoE 프리필 최적화 로그</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@300;400;500;600;700&display=swap">
+
+<style>
+:root {
+  color-scheme: light;
+
+  --ground:      #f1f4f3;
+  --surface:     #ffffff;
+  --surface-2:   #e9eeec;
+  --ink:         #101a18;
+  --ink-2:       #3c4a47;
+  --ink-3:       #66746f;
+  --hairline:    #d9e1de;
+  --hairline-2:  #c3cecb;
+
+  --accent:      #0a6360;
+  --accent-soft: #dceceb;
+  --warn:        #9a5f0d;
+  --warn-soft:   #f6ead6;
+  --stop:        #a33a34;
+  --stop-soft:   #f7e3e1;
+
+  --s1: #2a78d6;  /* projection GEMM */
+  --s2: #eb6834;  /* MoE */
+  --s3: #1baf7a;  /* attention */
+  --s4: #eda100;  /* layer_norm */
+  --s5: #e87ba4;  /* PCIe */
+  --s6: #008300;  /* etc */
+
+  --f-sans: "IBM Plex Sans KR", system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --col: 1080px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground:      #0c1211;
+    --surface:     #141c1b;
+    --surface-2:   #1c2624;
+    --ink:         #e3eae8;
+    --ink-2:       #b3c1bd;
+    --ink-3:       #849691;
+    --hairline:    #263331;
+    --hairline-2:  #35443f;
+
+    --accent:      #4fbdb4;
+    --accent-soft: #12312f;
+    --warn:        #d3a04a;
+    --warn-soft:   #33260f;
+    --stop:        #e08a84;
+    --stop-soft:   #37201e;
+
+    --s1: #3987e5;
+    --s2: #d95926;
+    --s3: #199e70;
+    --s4: #c98500;
+    --s5: #d55181;
+    --s6: #17a017;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground:      #0c1211;
+  --surface:     #141c1b;
+  --surface-2:   #1c2624;
+  --ink:         #e3eae8;
+  --ink-2:       #b3c1bd;
+  --ink-3:       #849691;
+  --hairline:    #263331;
+  --hairline-2:  #35443f;
+
+  --accent:      #4fbdb4;
+  --accent-soft: #12312f;
+  --warn:        #d3a04a;
+  --warn-soft:   #33260f;
+  --stop:        #e08a84;
+  --stop-soft:   #37201e;
+
+  --s1: #3987e5;
+  --s2: #d95926;
+  --s3: #199e70;
+  --s4: #c98500;
+  --s5: #d55181;
+  --s6: #17a017;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--f-sans);
+  font-weight: 400;
+  font-size: 16px;
+  line-height: 1.72;
+  -webkit-font-smoothing: antialiased;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.wrap { max-width: var(--col); margin: 0 auto; padding: 0 28px; }
+
+/* ── type scale ─────────────────────────────────────────── */
+h1, h2, h3 { text-wrap: balance; margin: 0; line-height: 1.28; letter-spacing: -0.017em; }
+h1 { font-size: clamp(2.1rem, 5.4vw, 3.35rem); font-weight: 600; }
+h2 { font-size: clamp(1.35rem, 2.7vw, 1.7rem); font-weight: 600; }
+h3 { font-size: 1.055rem; font-weight: 600; letter-spacing: -0.008em; }
+p  { margin: 0; }
+
+.eyebrow {
+  font-family: var(--f-mono);
+  font-size: 0.695rem;
+  font-weight: 500;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.prose { max-width: 40em; color: var(--ink-2); }
+.prose + .prose { margin-top: 0.85em; }
+.mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+code {
+  font-family: var(--f-mono);
+  font-size: 0.86em;
+  background: var(--surface-2);
+  border-radius: 3px;
+  padding: 0.1em 0.36em;
+  color: var(--ink);
+}
+b, strong { font-weight: 600; color: var(--ink); }
+a { color: var(--accent); text-underline-offset: 3px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+
+/* ── masthead ───────────────────────────────────────────── */
+.masthead {
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+  padding: 68px 0 0;
+}
+.masthead .wrap { display: flex; flex-direction: column; gap: 26px; }
+.mast-sub {
+  max-width: 44em; color: var(--ink-2); font-size: 1.045rem;
+}
+.rule-hair { height: 1px; background: var(--hairline); }
+
+.ladder {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  border-top: 1px solid var(--hairline);
+  margin-top: 8px;
+}
+.ladder-cell { padding: 22px 22px 26px 0; }
+.ladder-cell + .ladder-cell { border-left: 1px solid var(--hairline); padding-left: 22px; }
+.ladder-k {
+  font-family: var(--f-mono); font-size: 0.68rem; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 9px;
+}
+.ladder-v {
+  font-family: var(--f-mono); font-variant-numeric: tabular-nums;
+  font-size: clamp(1.5rem, 3.4vw, 2.1rem); font-weight: 500; line-height: 1.05;
+  letter-spacing: -0.03em; color: var(--ink);
+}
+.ladder-v .u { font-size: 0.5em; font-weight: 400; color: var(--ink-3); letter-spacing: 0; margin-left: 0.25em; }
+.ladder-v.hero { color: var(--accent); }
+.ladder-n { display: block; margin-top: 7px; font-size: 0.815rem; color: var(--ink-3); line-height: 1.5; }
+
+/* ── sections ───────────────────────────────────────────── */
+section { padding: 62px 0; border-bottom: 1px solid var(--hairline); }
+section.on-surface { background: var(--surface); }
+.sec-head { display: flex; flex-direction: column; gap: 10px; margin-bottom: 32px; }
+
+/* ── constraint grid ────────────────────────────────────── */
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(232px, 1fr)); gap: 1px; background: var(--hairline); border: 1px solid var(--hairline); }
+.fact { background: var(--surface); padding: 18px 20px 20px; display: flex; flex-direction: column; gap: 4px; }
+.fact dt { font-family: var(--f-mono); font-size: 0.685rem; letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-3); }
+.fact dd { margin: 0; font-size: 0.945rem; color: var(--ink); line-height: 1.55; }
+.fact dd em { font-style: normal; color: var(--ink-3); font-size: 0.87em; display: block; margin-top: 2px; }
+
+.filelists { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-top: 20px; }
+.filelist { border: 1px solid var(--hairline); background: var(--surface); padding: 18px 20px 20px; }
+.filelist h3 { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; font-size: 0.95rem; }
+.filelist .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.filelist ul { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px; }
+.filelist li {
+  font-family: var(--f-mono); font-size: 0.775rem; padding: 3px 8px;
+  border: 1px solid var(--hairline-2); border-radius: 3px; color: var(--ink-2);
+}
+.filelist.no li { color: var(--ink-3); text-decoration: line-through; text-decoration-thickness: 1px; }
+
+/* ── rules ──────────────────────────────────────────────── */
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(258px, 1fr)); gap: 1px; background: var(--hairline); border: 1px solid var(--hairline); }
+.rule { background: var(--surface); padding: 22px 22px 24px; display: flex; flex-direction: column; gap: 9px; }
+.rule-n {
+  font-family: var(--f-mono); font-size: 0.7rem; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--accent);
+}
+.rule h3 { font-size: 1rem; }
+.rule p { font-size: 0.9rem; color: var(--ink-2); line-height: 1.62; }
+
+/* ── callout ────────────────────────────────────────────── */
+.callout {
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-left: 3px solid var(--stop); padding: 26px 28px 28px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.callout .eyebrow { color: var(--stop); }
+.chain { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 2px; }
+.chain-node {
+  font-family: var(--f-mono); font-size: 0.78rem; padding: 5px 10px;
+  background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: 3px;
+  color: var(--ink); line-height: 1.4;
+}
+.chain-node.end { background: var(--stop-soft); border-color: var(--stop); color: var(--stop); font-weight: 500; }
+.chain-arrow { color: var(--ink-3); font-family: var(--f-mono); font-size: 0.8rem; }
+.guards { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.guards li { padding-left: 20px; position: relative; font-size: 0.92rem; color: var(--ink-2); }
+.guards li::before {
+  content: ""; position: absolute; left: 3px; top: 0.72em; width: 7px; height: 7px;
+  border: 1px solid var(--accent); background: var(--accent-soft);
+}
+
+/* ── charts ─────────────────────────────────────────────── */
+.figure { background: var(--surface); border: 1px solid var(--hairline); padding: 26px 26px 22px; }
+.figure + .figure { margin-top: 24px; }
+.fig-head { display: flex; flex-direction: column; gap: 5px; margin-bottom: 22px; }
+.fig-title { font-size: 1rem; font-weight: 600; }
+.fig-note { font-size: 0.845rem; color: var(--ink-3); line-height: 1.55; max-width: 52em; }
+
+.stepchart { display: grid; gap: 3px; }
+.step-row {
+  display: grid; grid-template-columns: 106px 1fr; align-items: center; gap: 12px;
+  padding: 2px 0;
+}
+.step-lab { display: flex; align-items: baseline; gap: 7px; justify-content: flex-end; }
+.step-id { font-family: var(--f-mono); font-size: 0.78rem; font-weight: 500; color: var(--ink); }
+.step-node { font-family: var(--f-mono); font-size: 0.65rem; color: var(--ink-3); }
+.step-track { position: relative; height: 26px; display: flex; align-items: center; }
+.step-bar {
+  height: 15px; background: var(--s1); border-radius: 0 3px 3px 0;
+  transition: width .5s cubic-bezier(.22,.7,.3,1);
+}
+.step-bar.final { background: var(--accent); }
+.step-val {
+  font-family: var(--f-mono); font-variant-numeric: tabular-nums; font-size: 0.78rem;
+  color: var(--ink); margin-left: 9px; white-space: nowrap;
+}
+.step-val .dx { color: var(--ink-3); margin-left: 6px; }
+.step-grid { position: relative; height: 22px; margin-left: 118px; border-top: 1px solid var(--hairline); }
+.step-tick { position: absolute; top: 0; transform: translateX(-50%); padding-top: 4px; font-family: var(--f-mono); font-size: 0.68rem; color: var(--ink-3); }
+.step-tick::before { content: ""; position: absolute; top: -22px; left: 50%; width: 1px; height: 22px; background: var(--hairline); }
+
+.stacks { display: grid; gap: 14px; }
+.stack-row { display: grid; grid-template-columns: 106px 1fr; align-items: center; gap: 12px; }
+.stack-track { display: flex; height: 30px; gap: 2px; }
+.stack-seg { min-width: 0; position: relative; transition: flex-basis .5s cubic-bezier(.22,.7,.3,1); }
+.stack-seg:first-child { border-radius: 3px 0 0 3px; }
+.stack-seg:last-child { border-radius: 0 3px 3px 0; }
+.stack-seg span {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-family: var(--f-mono); font-size: 0.7rem; font-weight: 500; color: #fff;
+  text-shadow: 0 0 3px rgba(0,0,0,.35);
+}
+
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--hairline); }
+.legend-item { display: flex; align-items: center; gap: 7px; font-size: 0.82rem; color: var(--ink-2); }
+.legend-sw { width: 11px; height: 11px; border-radius: 2px; flex: none; }
+
+.tablewrap { overflow-x: auto; margin-top: 22px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.845rem; }
+th, td { text-align: right; padding: 8px 12px; border-bottom: 1px solid var(--hairline); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+thead th {
+  font-family: var(--f-mono); font-size: 0.68rem; font-weight: 500; letter-spacing: 0.09em;
+  text-transform: uppercase; color: var(--ink-3); border-bottom: 1px solid var(--hairline-2);
+}
+tbody td { font-family: var(--f-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+tbody td:first-child { font-weight: 500; color: var(--ink); }
+tbody tr:last-child td { border-bottom: none; }
+td.max { color: var(--ink); font-weight: 600; }
+
+/* ── experiment ledger ──────────────────────────────────── */
+.ledger { border-top: 1px solid var(--hairline-2); }
+.entry {
+  display: grid; grid-template-columns: 118px 1fr; gap: 26px;
+  padding: 30px 0 32px; border-bottom: 1px solid var(--hairline);
+}
+.entry-gutter { display: flex; flex-direction: column; gap: 9px; }
+.entry-id {
+  font-family: var(--f-mono); font-size: 0.98rem; font-weight: 600;
+  letter-spacing: -0.01em; color: var(--ink); line-height: 1.2;
+}
+.chip {
+  align-self: flex-start; font-family: var(--f-mono); font-size: 0.655rem; font-weight: 500;
+  letter-spacing: 0.09em; text-transform: uppercase; padding: 3px 7px; border-radius: 3px;
+  border: 1px solid;
+}
+.chip.keep { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.chip.back { color: var(--stop);   border-color: var(--stop);   background: var(--stop-soft); }
+.chip.meas { color: var(--warn);   border-color: var(--warn);   background: var(--warn-soft); }
+
+.entry-body { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.entry-body h3 { font-size: 1.14rem; }
+.beats { display: grid; gap: 9px; }
+.beat { display: grid; grid-template-columns: 62px 1fr; gap: 14px; align-items: baseline; }
+.beat-k {
+  font-family: var(--f-mono); font-size: 0.67rem; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-3); padding-top: 0.32em;
+}
+.beat-v { font-size: 0.945rem; color: var(--ink-2); line-height: 1.65; }
+.beat.lesson .beat-k { color: var(--accent); }
+.beat.lesson .beat-v { color: var(--ink); }
+
+.metrics { display: flex; flex-wrap: wrap; gap: 1px; background: var(--hairline); border: 1px solid var(--hairline); }
+.metric { background: var(--surface-2); padding: 9px 14px 10px; flex: 1 1 auto; min-width: 118px; }
+.metric-k { display: block; font-family: var(--f-mono); font-size: 0.63rem; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 3px; }
+.metric-v { font-family: var(--f-mono); font-variant-numeric: tabular-nums; font-size: 0.94rem; font-weight: 500; color: var(--ink); }
+.metric-v .arrow { color: var(--ink-3); margin: 0 4px; font-weight: 400; }
+.metric-v.good { color: var(--accent); }
+.metric-v.bad  { color: var(--stop); }
+
+.verdict {
+  display: inline-flex; align-items: center; gap: 8px; align-self: flex-start;
+  font-family: var(--f-mono); font-size: 0.775rem; color: var(--ink-2);
+  border: 1px dashed var(--hairline-2); padding: 5px 11px; border-radius: 3px;
+}
+.verdict.exact { color: var(--accent); border-color: var(--accent); border-style: solid; background: var(--accent-soft); }
+
+/* ── closing ────────────────────────────────────────────── */
+.next { display: grid; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); gap: 1px; background: var(--hairline); border: 1px solid var(--hairline); }
+.next-item { background: var(--surface); padding: 22px; display: flex; flex-direction: column; gap: 8px; }
+.next-item h3 { font-size: 0.99rem; }
+.next-item p { font-size: 0.895rem; color: var(--ink-2); line-height: 1.62; }
+.next-tag { font-family: var(--f-mono); font-size: 0.67rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+
+footer { padding: 44px 0 64px; color: var(--ink-3); font-size: 0.85rem; }
+footer .wrap { display: flex; flex-direction: column; gap: 8px; }
+
+@media (max-width: 720px) {
+  .wrap { padding: 0 20px; }
+  .entry { grid-template-columns: 1fr; gap: 14px; }
+  .entry-gutter { flex-direction: row; align-items: center; gap: 12px; }
+  .beat { grid-template-columns: 1fr; gap: 2px; }
+  .beat-k { padding-top: 0; }
+  .step-row, .stack-row { grid-template-columns: 76px 1fr; }
+  .step-grid { margin-left: 88px; }
+  .ladder-cell + .ladder-cell { border-left: none; border-top: 1px solid var(--hairline); padding-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+</style>
+
+<header class="masthead">
+  <div class="wrap">
+    <span class="eyebrow">APS 2026 · Phi-tiny-MoE-instruct · RTX 3090 ×1</span>
+    <h1>MoE 프리필 최적화 로그</h1>
+    <p class="mast-sub">
+      순차 CPU 코드로 주어진 MoE 추론의 프리필 구간을 4일 동안 <strong>13개의 실험</strong>으로 최적화한
+      기록이다. 각 실험은 가설 하나만 바꾸고, 출력이 직전 실험과 <strong>비트 단위로 같은지</strong>
+      확인하고, 그 결과가 다음 실험을 정한다. 아래는 그 순서와, 순서를 그렇게 정한 이유다.
+    </p>
+    <div class="ladder">
+      <div class="ladder-cell">
+        <span class="ladder-k">EXP-000 기준선</span>
+        <span class="ladder-v">0.0333<span class="u">seq/s</span></span>
+        <span class="ladder-n">n=1을 30.024 s에 처리. GPU 커널 0개.</span>
+      </div>
+      <div class="ladder-cell">
+        <span class="ladder-k">EXP-013 현재</span>
+        <span class="ladder-v hero">444<span class="u">seq/s</span></span>
+        <span class="ladder-n">n=1024 전량을 2.308 s에 처리.</span>
+      </div>
+      <div class="ladder-cell">
+        <span class="ladder-k">누적 배수</span>
+        <span class="ladder-v">13,300<span class="u">×</span></span>
+        <span class="ladder-n">기준선은 n=1, 현재는 n=1024라 배치 이득이 포함된 값이다.</span>
+      </div>
+      <div class="ladder-cell">
+        <span class="ladder-k">정확도</span>
+        <span class="ladder-v">1.79e-4</span>
+        <span class="ladder-n">max abs diff. 임계값 3e-3의 6%. EXP-005 이후 한 번도 변하지 않았다.</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">01 — 무대</span>
+      <h2>무엇을, 어디까지 건드릴 수 있는가</h2>
+      <p class="prose">
+        최적화 대상은 <code>main.cpp</code>가 호출하는 <code>generate()</code> 한 함수다.
+        입력 시퀀스마다 다음 토큰 1개를 생성한다. 모델 구조·알고리즘 변경은 금지이고,
+        cuBLAS/cuDNN을 포함한 외부 라이브러리도 쓸 수 없다. GEMM부터 직접 짜야 한다.
+      </p>
+    </div>
+
+    <dl class="facts">
+      <div class="fact"><dt>하드웨어</dt><dd>RTX 3090 ×1 <em>FP32 피크 35.6 TFLOP/s · 82 SM · 24 GB</em></dd></div>
+      <div class="fact"><dt>호스트</dt><dd>Xeon E5-2650 ×2 <em>64 threads · OpenMP</em></dd></div>
+      <div class="fact"><dt>모델</dt><dd>32 layer · 16 expert top-2 <em>3.75 B param · fp32 15.0 GB</em></dd></div>
+      <div class="fact"><dt>입력</dt><dd>1,024 seq / 19,803 token <em>길이 min·중앙·max = 6 · 19 · 32</em></dd></div>
+      <div class="fact"><dt>연산량</dt><dd>토큰당 1.02 GMAC <em>전체 40 TFLOP + lm_head 0.27</em></dd></div>
+      <div class="fact"><dt>제한</dt><dd>2분 <em>초과하면 제출 자체가 무효</em></dd></div>
+    </dl>
+
+    <div class="filelists">
+      <div class="filelist">
+        <h3><span class="dot" style="background: var(--accent)"></span>수정 가능</h3>
+        <ul>
+          <li>model.h</li><li>model.cu</li><li>model_loader.h</li><li>model_loader.cu</li><li>run.sh</li>
+        </ul>
+      </div>
+      <div class="filelist no">
+        <h3><span class="dot" style="background: var(--stop)"></span>수정 금지</h3>
+        <ul>
+          <li>main.cpp</li><li>tensor.cu</li><li>layer.cu</li><li>config.h</li><li>Makefile</li><li>*.bin</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="prose" style="margin-top: 20px">
+      이 경계가 첫 실험의 형태를 결정했다. 병목이던 <code>tensor.cu</code>의 matmul과
+      <code>layer.cu</code>의 attention은 <strong>고칠 수 없으므로</strong>, <code>model.cu</code>에서
+      <code>layer.h</code>의 공개 클래스를 직접 조립해 <strong>경로를 새로 쓰는</strong> 방식이 되었다.
+      결국 32개 레이어 전체가 자체 커널로 대체되었다.
+    </p>
+  </div>
+</section>
+
+<section class="on-surface">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">02 — 규칙</span>
+      <h2>이 로그를 읽을 때 전제되는 네 가지</h2>
+      <p class="prose">숫자보다 이 네 가지가 먼저다. 여기 어긋난 측정은 이 프로젝트에서 증거로 치지 않는다.</p>
+    </div>
+
+    <div class="rules">
+      <div class="rule">
+        <span class="rule-n">RULE 1</span>
+        <h3>실험 하나에 가설 하나</h3>
+        <p>
+          EXP-001은 배치화와 attention 재작성을 한 커밋에 섞었다. 어느 쪽이 레버인지 몰라
+          나중에 <em>가르는 빌드</em>를 따로 만들어 다시 재야 했다 — 배치화 1.59× × attention 1.82×.
+          큰 쪽은 attention이었고, 원래 기록은 틀려 있었다.
+        </p>
+      </div>
+      <div class="rule">
+        <span class="rule-n">RULE 2</span>
+        <h3><code>cmp</code>가 안전망이다</h3>
+        <p>
+          성능 실험은 매번 직전 실험의 출력과 <strong>바이트 단위로 비교</strong>한다.
+          동일하면 누적 순서를 건드리지 않았다는 증명이고, 다르면 그 이유를 설명할 수 있어야 한다.
+          기준은 host 코드가 아니라 <strong>직전 실험 출력</strong>이다 — EXP-002에서 이미 갈라졌다.
+        </p>
+      </div>
+      <div class="rule">
+        <span class="rule-n">RULE 3</span>
+        <h3>A/B는 한 <code>srun</code> 안에서 교차로</h3>
+        <p>
+          노드 b1은 b5/b6보다 <strong>1.19× 느리다</strong>. EXP-007을 서로 다른 노드에서 재고
+          1.04× 이득이라 착각했다가, 교차 측정하니 0.99× 회귀였다. 몇 % 짜리 효과는
+          교차 측정 없이는 <em>측정 자체가 불가능하다</em>.
+        </p>
+      </div>
+      <div class="rule">
+        <span class="rule-n">RULE 4</span>
+        <h3>추측 금지, 계측</h3>
+        <p>
+          <code>APS_PROFILE=1</code> 단계 타이머, <code>nsys</code> 커널 분해, <code>ncu</code> 점유율·섹터,
+          <code>objdump</code>로 host SASS 확인까지. EXP-002의 가설이 빗나간 것도, EXP-008의
+          메커니즘이 틀린 것도 전부 계측이 잡아냈다.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">03 — 지뢰</span>
+      <h2>왜 비트 단위 동일성이 협상 대상이 아닌가</h2>
+      <p class="prose">
+        이 프로젝트에서 가장 비싼 교훈. EXP-004에서 <code>layer_norm</code>을 평범한
+        block tree reduction으로 짰더니 n=8은 통과하는데 n=1024가 터졌다.
+      </p>
+    </div>
+
+    <div class="callout">
+      <span class="eyebrow">FAILURE MODE · 라우터 양자화 경계</span>
+      <div class="chain">
+        <span class="chain-node">tree reduction<br>합산 순서 변경</span>
+        <span class="chain-arrow">→</span>
+        <span class="chain-node">router logit<br>~1e-7 흔들림</span>
+        <span class="chain-arrow">→</span>
+        <span class="chain-node"><code>ROUTER_SCORE_QUANTUM</code><br>양자화 + tie-eps</span>
+        <span class="chain-arrow">→</span>
+        <span class="chain-node">선택된 expert<br><strong>집합</strong>이 뒤집힘</span>
+        <span class="chain-arrow">→</span>
+        <span class="chain-node end">해당 토큰 출력<br>O(0.1) 오차</span>
+      </div>
+      <p class="prose" style="max-width: 52em">
+        증상은 <span class="mono">max abs diff 0.211975</span>인데 <span class="mono">mean 6.83e-05</span>.
+        1,024개 중 <strong>4개 시퀀스만</strong> 터졌다. 평균은 그대로인데 최대값만 튄다는 것은
+        정밀도 문제가 아니라 <strong>이산적 결정이 뒤집혔다</strong>는 신호다. 634k번의 라우팅 결정 중
+        몇 개면 충분하다. (top-1/top-2 <em>순서</em>만 바뀌는 것은 가중치가 둘 다 0.5라 무해하다.
+        <em>집합</em>이 바뀔 때만 터진다.)
+      </p>
+      <p class="prose" style="max-width: 52em">
+        그래서 이후 모든 커널은 host와 비트 단위로 같게 설계한다. <code>objdump obj/tensor.o</code>로
+        host가 실제로 무엇을 내는지 먼저 확인했다 — <span class="mono">vaddss</span> 단일 accumulator
+        순차 누적, <strong>벡터화도 FMA도 없다</strong>.
+      </p>
+      <ul class="guards">
+        <li>누적은 host와 같은 순서로 <strong>직렬</strong>. 필요하면 thread 0이 혼자 두 번 훑는다 (직렬화 비용 1.2%).</li>
+        <li><code>__fadd_rn</code> / <code>__fsub_rn</code> / <code>__fmul_rn</code>으로 nvcc의 FMA contraction을 차단. host가 안 내는 FMA를 device가 내면 결과가 달라진다.</li>
+        <li><code>rsqrtf</code> 금지 — 저정밀 근사다. <code>1.0f/sqrtf(...)</code>만 쓴다.</li>
+        <li>RoPE의 cos/sin 테이블은 <strong>host에서 계산해 8 KB만 업로드</strong>. device <code>powf/cosf</code>는 glibc와 1 ulp 다를 수 있고, 그 1e-7이 정확히 라우팅을 뒤집는 크기다.</li>
+      </ul>
+      <p class="prose" style="max-width: 52em">
+        반대로 <strong>안전하다고 증명된 것</strong>도 있다. 타일 shape 변경, double buffering,
+        register tiling, W1/W3 융합, grouping — 출력 원소별 k 누적 순서를 건드리지 않으므로
+        전부 비트 동일이었다. <strong>구조는 자유롭게 바꿔도 되고, 순서만 지키면 된다.</strong>
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="on-surface">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">04 — 지도</span>
+      <h2>병목은 여섯 번 이동했다</h2>
+      <p class="prose">
+        이 프로젝트의 전체 서사는 한 문장이다: <strong>가장 큰 항목을 없애면 병목이 다음 항목으로
+        옮겨간다.</strong> 어느 실험도 "전반적으로 빠르게" 하지 않았다. 매번 프로파일의 1등 항목
+        하나만 겨눴다.
+      </p>
+    </div>
+
+    <div class="figure">
+      <div class="fig-head">
+        <span class="fig-title">n=1024 전체 실행 시간</span>
+        <span class="fig-note">
+          로그 스케일. EXP-000~002는 n=1024를 2분 안에 끝내지 못해 이 축에 없다.
+          노드 배지는 측정 노드 — b1은 b5/b6보다 약 1.19× 느리므로 서로 다른 배지의 값은 직접 비교하지 말 것. EXP-008의 막대가 EXP-006보다 긴 것은 퇴행이 아니라 느린 노드(b1)에서 잰 값이기 때문이다. 오른쪽 배수는 같은 노드 안에서 직전 실험과 교차 측정한 값만 표시했다.
+        </span>
+      </div>
+      <div class="stepchart" id="stepchart"></div>
+      <div class="step-grid" id="stepgrid"></div>
+    </div>
+
+    <div class="figure">
+      <div class="fig-head">
+        <span class="fig-title">단계별 시간 구성비</span>
+        <span class="fig-note">
+          <code>APS_PROFILE=1</code> 단계 타이머를 각 마일스톤의 프로파일 합계로 정규화했다.
+          8% 미만 구간은 라벨을 생략했다 — 정확한 초 단위 값은 아래 표에 있다.
+          EXP-003의 프로파일 합계(57.3 s)가 실측 elapsed(48.8 s)보다 큰 것은 계측용 sync가 추가되기 때문이다. EXP-011의 PCIe 값만 추정치다 — 그 실험은 h2d/d2h를 따로 찍지 않아 EXP-012b의 실측 h2d(0.031 s)에 router d2h(≈0.006 s)를 더했다.
+        </span>
+      </div>
+      <div class="stacks" id="stacks"></div>
+      <div class="legend" id="legend"></div>
+      <div class="tablewrap">
+        <table>
+          <caption class="visually-hidden" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">단계별 소요 시간 (초)</caption>
+          <thead>
+            <tr>
+              <th scope="col">단계 (초)</th>
+              <th scope="col">EXP-003</th>
+              <th scope="col">EXP-004</th>
+              <th scope="col">EXP-005</th>
+              <th scope="col">EXP-006</th>
+              <th scope="col">EXP-011</th>
+            </tr>
+          </thead>
+          <tbody id="proftable"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="figure">
+      <div class="fig-head">
+        <span class="fig-title">각 이동이 남긴 한 줄</span>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">시점</th>
+              <th scope="col">1등 항목</th>
+              <th scope="col">비중</th>
+              <th scope="col">대응</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>EXP-000</td><td style="text-align:right">host <code>matmul_transposed</code></td><td>1.2 GMAC/s 고정</td><td style="text-align:right">배치화 · GPU 이관</td></tr>
+            <tr><td>EXP-002</td><td style="text-align:right">MoE (host)</td><td class="max">98.1%</td><td style="text-align:right">EXP-003 MoE 커널화</td></tr>
+            <tr><td>EXP-003</td><td style="text-align:right">host 잔여 + PCIe 왕복</td><td class="max">53%</td><td style="text-align:right">EXP-004 device 상주</td></tr>
+            <tr><td>EXP-004</td><td style="text-align:right">device GEMM</td><td class="max">87%</td><td style="text-align:right">EXP-005 register tiling</td></tr>
+            <tr><td>EXP-005</td><td style="text-align:right">host attention + 버스</td><td class="max">40%</td><td style="text-align:right">EXP-006 attention 커널화</td></tr>
+            <tr><td>EXP-006</td><td style="text-align:right">expert GEMM 점유율</td><td>wave 충전율 66%</td><td style="text-align:right">EXP-010 · 012 융합/grouping</td></tr>
+            <tr><td>EXP-010</td><td style="text-align:right">행 개수 그 자체</td><td>19,803 행</td><td style="text-align:right">EXP-011 prefix trie</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">05 — 로그</span>
+      <h2>실험 순서와, 그 순서를 고른 이유</h2>
+      <p class="prose">
+        번호는 장식이 아니다. 각 실험의 <em>결과</em>가 다음 실험을 정했으므로 순서를 바꿔 읽으면
+        왜 그것을 했는지 알 수 없다. <span class="chip keep" style="display:inline-block">채택</span>
+        <span class="chip back" style="display:inline-block">롤백</span>
+        <span class="chip meas" style="display:inline-block">측정만</span>
+      </p>
+    </div>
+
+    <div class="ledger">
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">EXP-000</span><span class="chip meas">측정만</span></div>
+        <div class="entry-body">
+          <h3>기준선 — 코드 무수정</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">한 일</span><span class="beat-v">스켈레톤 그대로 제출하고 코드를 읽었다.</span></div>
+            <div class="beat"><span class="beat-k">알아낸 것</span><span class="beat-v">
+              <strong>baseline은 GPU를 전혀 쓰지 않는다.</strong> <code>Tensor</code>는 호스트
+              <code>std::vector&lt;float&gt;</code>이고 커널이 하나도 없다. 실효 성능 0.86 GFLOP/s —
+              CPU 피크의 0.4%.<br>
+              입력이 짧아(max 32) sliding window 2047은 <strong>절대 발동하지 않는다</strong> → attention은 병목이 아니다.
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">느린 이유</span><span class="beat-v">
+              ① 시퀀스를 1개씩 처리해 모든 matmul이 M=19행 — 64코어 중 19개만 일한다.
+              ② <code>layer.cu</code>의 attention이 q·k 내적을 <strong>130회 재계산</strong>한다.
+              ③ <code>matmul_transposed</code>가 원소마다 <code>Tensor::at()</code>을 호출 —
+              <code>initializer_list</code> 생성 + 차원별 bounds check로 벡터화 불가.
+            </span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-k">n=1</span><span class="metric-v">30.024 s</span></div>
+            <div class="metric"><span class="metric-k">throughput</span><span class="metric-v">0.0333 seq/s</span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">EXP-001</span><span class="chip keep">채택</span></div>
+        <div class="entry-body">
+          <h3>배치화 — 전 토큰을 <span class="mono">[T, 4096]</span> 한 행렬로</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">가설</span><span class="beat-v">
+              19,803개 토큰을 하나로 연결해 32 레이어를 한 번만 통과시키면 가중치를 레이어당 1회만 읽고,
+              matmul의 M이 19 → 19,803이 되어 OpenMP 병렬화가 살아난다.
+              layer_norm·matmul·silu·MoE 라우팅은 전부 <strong>행 단위 독립</strong>이라 연산 순서가 바뀌지 않는다.
+            </span></div>
+            <div class="beat"><span class="beat-k">결과</span><span class="beat-v">
+              2.88× (n=2 기준). 출력 <strong>bitwise 동일</strong> — 배치화가 부동소수점 순서를 전혀
+              바꾸지 않았음이 증명됐다.
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">배운 것</span><span class="beat-v">
+              가설 두 개를 섞은 대가로 나중에 <em>가르는 빌드</em>를 만들어야 했다:
+              배치화 <strong>1.59×</strong> × attention 재작성 <strong>1.82×</strong>. 큰 쪽은 attention이었다.<br>
+              그리고 진짜 벽을 찾았다 — <code>matmul_transposed</code>는 <strong>shape와 무관하게
+              1.2 GMAC/s에 고정</strong>이다. 이 경로로 20.4 TMAC을 돌리면 1.2시간이 걸린다.
+            </span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-k">n=8</span><span class="metric-v">62.270 s</span></div>
+            <div class="metric"><span class="metric-k">throughput</span><span class="metric-v good">0.1285 seq/s</span></div>
+            <div class="metric"><span class="metric-k">vs baseline</span><span class="metric-v good">3.86×</span></div>
+          </div>
+          <span class="verdict exact">cmp — bitwise identical</span>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">EXP-002</span><span class="chip keep">채택</span></div>
+        <div class="entry-body">
+          <h3>q/k/v/o + lm_head를 자체 CUDA GEMM으로</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">가설</span><span class="beat-v">
+              전체 연산의 66%인 projection을 GPU로 옮기면 사실상 공짜가 되어 <strong>2.5× 이상</strong>.
+              (Amdahl 상한 1/0.34 = 2.9×)
+            </span></div>
+            <div class="beat"><span class="beat-k">한 일</span><span class="beat-v">
+              shared-memory tiled GEMM <code>gemm_nt_bias</code> 커널 1개. 가중치는 생성자에서
+              device로 올리고 host 사본은 즉시 폐기(host RAM 2.7 GB 절약). bias는 커널에 융합.
+            </span></div>
+            <div class="beat"><span class="beat-k">결과</span><span class="beat-v">
+              1.69×. <strong>가설은 틀렸다.</strong> 프로파일을 보니
+              <span class="mono">moe 28.007 / 28.55 s = 98.1%</span>, GPU로 옮긴 GEMM 전체는
+              <span class="mono">0.153 s</span>에 끝난다.
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">배운 것</span><span class="beat-v">
+              <strong>비중을 FLOP으로 추정한 것이 틀렸다.</strong> MoE의 비용은 연산량(34%)이 아니라
+              토큰마다 <code>Tensor</code>를 새로 할당하고 <code>at()</code>으로 원소 단위 gather/scatter를
+              하는 데 있었다. 이후로는 비중을 <strong>반드시 프로파일로</strong> 잡는다.
+            </span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-k">n=8</span><span class="metric-v">62.270 <span class="arrow">→</span> 36.869 s</span></div>
+            <div class="metric"><span class="metric-k">speedup</span><span class="metric-v good">1.69×</span></div>
+            <div class="metric"><span class="metric-k">MoE 비중</span><span class="metric-v bad">98.1%</span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">EXP-003</span><span class="chip keep">채택</span></div>
+        <div class="entry-body">
+          <h3>MoE를 GPU로 — gather → expert GEMM → silu·mul → scatter</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">한 일</span><span class="beat-v">
+              expert 가중치 11.3 GB를 device에 상주(총 16.7 / 24 GB). GEMM 커널은 EXP-002 것을 그대로
+              재사용하고 앞뒤에 <code>gather_rows</code> / <code>silu_mul</code> /
+              <code>scatter_add_rows</code>만 붙였다.<br>
+              <strong>라우팅은 host에 남겼다</strong> — 토큰당 16개 값이라 연산량이 없고,
+              <code>layer.cu</code>의 양자화 + tie-eps 선택 로직을 그대로 옮겨야 하기 때문.
+            </span></div>
+            <div class="beat"><span class="beat-k">결과</span><span class="beat-v">
+              n=8에서 <strong>35.9×</strong>. 그리고 <strong>n=1024 전량이 처음으로 2분 안에 들어왔다.</strong>
+              리더보드 1위 등재.
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">병목 이동</span><span class="beat-v">
+              이제 GPU 연산이 아닌 것이 <strong>53%</strong>다 — host 잔여 20.1 s(norm 16.1이 최대)와
+              그 때문에 생기는 PCIe 왕복 10.1 s. <code>layer_norm</code>은 연산량이 GEMM의 1/500인데
+              시간은 더 크다. 역시 <code>at()</code> 때문이다.
+            </span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-k">n=1024</span><span class="metric-v">48.765 s</span></div>
+            <div class="metric"><span class="metric-k">throughput</span><span class="metric-v good">21.0 seq/s</span></div>
+            <div class="metric"><span class="metric-k">vs baseline</span><span class="metric-v good">630×</span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">EXP-004</span><span class="chip keep">채택</span></div>
+        <div class="entry-body">
+          <h3>layer_norm · residual 커널화 — 활성값을 device에 상주</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">한 일</span><span class="beat-v">
+              residual stream을 32 레이어 내내 device에 두고 double buffer로 교대. 레이어당 버스 통과가
+              q/k/v D2H + context H2D + router logits D2H만 남았다.
+            </span></div>
+            <div class="beat"><span class="beat-k">결과</span><span class="beat-v">
+              2.02×. <span class="mono">norm 16.144 → 0.350</span> (46×),
+              <span class="mono">d2h 7.495 → 0.850</span>. EXP-003 출력과 <strong>bitwise 동일</strong>.
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">이 실험의 알짜</span><span class="beat-v">
+              <strong>첫 시도가 실패했다.</strong> tree reduction norm이 n=8은 통과하고 n=1024에서
+              4개 시퀀스만 터졌다. 위 <em>03 — 지뢰</em> 절이 그 사고 보고서이고, 이후 모든 커널의
+              설계 규칙이 여기서 나왔다.
+            </span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-k">n=1024</span><span class="metric-v">48.765 <span class="arrow">→</span> 24.115 s</span></div>
+            <div class="metric"><span class="metric-k">throughput</span><span class="metric-v good">42.5 seq/s</span></div>
+            <div class="metric"><span class="metric-k">직렬화 비용</span><span class="metric-v">1.2%</span></div>
+          </div>
+          <span class="verdict exact">cmp — bitwise identical</span>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">EXP-005</span><span class="chip keep">채택</span></div>
+        <div class="entry-body">
+          <h3>register-tiled GEMM — 스레드당 4×4 출력</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">가설</span><span class="beat-v">
+              GEMM이 피크의 6%에 머무는 것은 FLOP이 아니라 <strong>shared 대역폭</strong>에 막힌 신호다.
+              스레드당 출력을 1개 → 4×4로 올리면 MAC당 shared 읽기가 2회 → 0.5회로 <strong>4배</strong> 줄어든다.
+            </span></div>
+            <div class="beat"><span class="beat-k">한 일</span><span class="beat-v">
+              <span class="mono">BM=BN=64, BK=16, TM=TN=4</span>. shared를 k-major로 전치 저장하고
+              <span class="mono">+4</span> 패딩으로 16 B 정렬을 유지한 채 bank conflict를 깼다
+              (<code>float4</code> shared 로드의 필수 조건이라 <span class="mono">+1</span>은 못 쓴다).
+            </span></div>
+            <div class="beat"><span class="beat-k">결과</span><span class="beat-v">
+              <strong>3.77×</strong> — 가설(2.5~3×)을 넘겼다. 실효 성능
+              <span class="mono">2.0 → 15.7 TF/s</span>, 피크의 <strong>6% → 44%</strong>.
+              shared bound 진단이 맞았다.
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">배운 것</span><span class="beat-v">
+              출력당 accumulator 1개 + k 오름차순만 지키면 <strong>타일 shape는 정확도 리스크가 없다.</strong>
+              이후 타일 실험을 자유롭게 할 수 있게 된 근거다.
+            </span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-k">n=1024</span><span class="metric-v">24.115 <span class="arrow">→</span> 6.344 s</span></div>
+            <div class="metric"><span class="metric-k">throughput</span><span class="metric-v good">161.4 seq/s</span></div>
+            <div class="metric"><span class="metric-k">peak 대비</span><span class="metric-v good">6% → 44%</span></div>
+          </div>
+          <span class="verdict exact">cmp — bitwise identical</span>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">EXP-006</span><span class="chip keep">채택</span></div>
+        <div class="entry-body">
+          <h3>attention 커널화 — q/k/v/context를 device에 상주</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">가설</span><span class="beat-v">
+              <strong>연산량은 근거가 아니다</strong> — attention 전체가 30 GMAC(전체의 0.15%)다.
+              이건 FLOP 실험이 아니라 <strong>host·버스 제거 실험</strong>이고, 그래서 커널이 느려도 이긴다.
+              host 1.13 s + 버스 왕복 1.2 s(레이어당 405 MB, 32 레이어 13 GB)를 없앤다.
+            </span></div>
+            <div class="beat"><span class="beat-k">결과</span><span class="beat-v">
+              1.61×. <span class="mono">d2h 0.865 → 0.006</span> (<strong>144×</strong>) — 남은 6 ms는
+              router logits뿐이다. 제거한 2.50 s 대비 추가한 커널은 0.303 s.
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">정정</span><span class="beat-v">
+              여기서 관측한 런 간 변동(4.567 s 이상치)을 "GPU 클럭, 노드와 무관"이라 적었는데
+              <strong>틀렸다</strong>. b1이 b5/b6보다 1.19× 느린 것이었다. 이후 모든 A/B는
+              하나의 <code>srun</code> 할당 안에서 교차 실행한다.
+            </span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-k">n=1024</span><span class="metric-v">6.344 <span class="arrow">→</span> 3.93 s</span></div>
+            <div class="metric"><span class="metric-k">throughput</span><span class="metric-v good">260 seq/s</span></div>
+            <div class="metric"><span class="metric-k">attn</span><span class="metric-v good">1.126 → 0.303 s</span></div>
+          </div>
+          <span class="verdict exact">cmp — bitwise identical</span>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">EXP-007</span><span class="chip back">롤백</span></div>
+        <div class="entry-body">
+          <h3>register tile 4×4 → 8×8</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">가설</span><span class="beat-v">
+              타일을 <span class="mono">128×128, BK=8, TM=TN=8</span>로 키우면 shared load 1회당 FMA가
+              2 → 4가 되어 peak 43.6% → 60%+.
+            </span></div>
+            <div class="beat"><span class="beat-k">결과</span><span class="beat-v">
+              <strong>가설은 절반만 맞았고 전체로는 반증됐다.</strong>
+              wide-N GEMM(q/k/v/o)은 <strong>1.17×</strong>(−0.302 s)인데
+              narrow-N expert GEMM은 <strong>0.81×</strong>(+0.341 s). 순효과 −0.8% 회귀 → 롤백.
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">배운 것</span><span class="beat-v">
+              expert w1/w3(M~2475, N=448)의 블록이 <strong>273개 → 80개</strong>로 붕괴한다.
+              82 SM에 80블록이면 SM당 1블록 = 8 warp(최대 48) → latency hiding이 죽는다.
+              N 패딩 낭비 12.5%만으로는 설명되지 않으므로 점유율이 주범이다.<br>
+              <strong>반증이 아니라 분기 지점이다</strong> — 두 호출 지점이 서로 다른 타일 shape를 원한다는
+              것이 이 실험의 실측 결론이고, 이후 EXP-008/010/012가 전부 여기서 갈라져 나온다.
+            </span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-k">wide GEMM</span><span class="metric-v good">1.17×</span></div>
+            <div class="metric"><span class="metric-k">expert GEMM</span><span class="metric-v bad">0.81×</span></div>
+            <div class="metric"><span class="metric-k">전체</span><span class="metric-v bad">0.99×</span></div>
+          </div>
+          <span class="verdict exact">cmp — bitwise identical (타일 shape는 순서를 안 건드린다)</span>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">EXP-008</span><span class="chip keep">채택</span></div>
+        <div class="entry-body">
+          <h3>shared double buffering</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">가설</span><span class="beat-v">
+              K 루프가 <span class="mono">LDG → STS → sync → compute → sync</span> 구조라 매 반복
+              글로벌 로드에서 멈춘다. shared를 2중 버퍼로 두면 다음 타일 로드가 현재 compute에 가려진다.
+            </span></div>
+            <div class="beat"><span class="beat-k">결과</span><span class="beat-v">
+              전체 1.041×, wide GEMM <strong>1.28×</strong> (<span class="mono">15.5 → 19.9 TF/s</span>,
+              피크의 55.9%).
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">배운 것</span><span class="beat-v">
+              <strong>가설은 맞았지만 메커니즘은 틀렸다.</strong> SASS를 보니 ptxas가 LDG를 compute
+              <em>뒤로</em> sink시켰다 — 레지스터 127개로 2 blocks/SM 경계에 붙어 있어 지연 은닉은
+              실패했다. 실제로 작동한 것은 반복당 <span class="mono">BAR.SYNC</span> 2회 → 1회뿐이다.
+              결과가 맞아도 이유를 확인해야 다음 실험을 제대로 고를 수 있다.
+            </span></div>
+            <div class="beat"><span class="beat-k">ncu</span><span class="beat-v">
+              <strong>feature-major 전환 불필요 확정</strong> — sectors/request 14.5~15.8(이상값 16의 90~99%),
+              dram throughput 3.7~10.8%. 메모리 경로에 고칠 것이 없다.<br>
+              대신 expert GEMM의 두 손실을 지목했다: 164 슬롯 중 40~72만 채우는 <strong>블록 붕괴</strong>와
+              N=448에 BN=128이라 생기는 <strong>12.5% 패딩 낭비</strong>.
+            </span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-k">n=1024 (b1)</span><span class="metric-v">4.566 <span class="arrow">→</span> 4.388 s</span></div>
+            <div class="metric"><span class="metric-k">wide GEMM</span><span class="metric-v good">1.719 → 1.341 s</span></div>
+            <div class="metric"><span class="metric-k">peak 대비</span><span class="metric-v good">43.5% → 55.9%</span></div>
+          </div>
+          <span class="verdict exact">cmp — bitwise identical</span>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">EXP-009</span><span class="chip keep">채택</span></div>
+        <div class="entry-body">
+          <h3>softmax의 FP64 <code>exp</code>를 lane에 분산</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">배경</span><span class="beat-v">
+              외부 조사 문서가 2등 참가자의 "Attention Q-head 4-way(3.49×)"를 최우선으로 권했다.
+              <strong>그러나 그 설계는 우리 코드에 이식되지 않는다</strong> — 저쪽은 block이 GQA group
+              하나를 맡아 thread 0이 q head 4개를 연달아 계산했고, 우리는 block =
+              (시퀀스, q head)라 <strong>이미 별도 block에서 병렬</strong>이다. 저쪽이 추가한 병렬성을
+              우리는 이미 갖고 있으므로 배수가 전이되지 않는다.
+            </span></div>
+            <div class="beat"><span class="beat-k">한 일</span><span class="beat-v">
+              직렬 구간을 셋으로 쪼갰다: tid 0이 max 스캔 → <strong>128 lane이
+              <code>exp(sw[i]-max)</code>를 나눠 계산</strong> → tid 0이 denom을 ki 오름차순으로 직렬 누적.
+              <code>exp</code>는 elementwise라 어떤 합산 순서도 건드리지 않는다.
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">배운 것</span><span class="beat-v">
+              대조군으로 직렬 구간을 통째로 삭제한 <strong>진단용 하한(0.178 s, 결과는 오답)</strong>을
+              같이 재서, 이 변경이 가용 여유의 <strong>96%</strong>를 회수했음을 1회 측정으로 확정했다.
+              Q-head 4-way를 완벽히 해내도 상한이 0.113 s다 — <strong>이 방향은 여기서 닫혔다.</strong><br>
+              남의 최적화는 배수가 아니라 <strong>메커니즘</strong>을 보고 우리 구조에 남아 있는지 확인해야 한다.
+            </span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-k">attn</span><span class="metric-v good">0.289 <span class="arrow">→</span> 0.181 s</span></div>
+            <div class="metric"><span class="metric-k">speedup</span><span class="metric-v good">1.59×</span></div>
+            <div class="metric"><span class="metric-k">이론 하한</span><span class="metric-v">0.178 s</span></div>
+          </div>
+          <span class="verdict exact">cmp — bitwise identical</span>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">EXP-010</span><span class="chip keep">채택</span></div>
+        <div class="entry-body">
+          <h3>expert W1/W3를 하나의 GEMM으로 융합</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">가설</span><span class="beat-v">
+              w1(448×4096)과 w3(448×4096)를 행방향으로 쌓아 <strong>896×4096 한 장</strong>으로 만들면
+              N=896=7×128이라 패딩이 0이 되고 launch가 2회 → 1회. 예상 −0.09 s.
+            </span></div>
+            <div class="beat"><span class="beat-k">결과</span><span class="beat-v">
+              <strong>−0.259 s — 예측의 3배.</strong>
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">배운 것</span><span class="beat-v">
+              패딩만 계산했는데 융합이 <strong>블록 붕괴도 절반 해결</strong>했다. 이전에는
+              (4,20)=80블록짜리 launch 2개가 <em>직렬로</em> 각각 164 슬롯의 49%만 채웠는데,
+              융합 후 (7,20)=140블록 하나가 85%를 채운다. 두 효과가 겹쳤다.
+            </span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-k">moe</span><span class="metric-v good">1.412 <span class="arrow">→</span> 1.155 s</span></div>
+            <div class="metric"><span class="metric-k">n=1024 (b6)</span><span class="metric-v">3.558 <span class="arrow">→</span> 3.313 s</span></div>
+            <div class="metric"><span class="metric-k">wave 충전율</span><span class="metric-v good">49% → 85%</span></div>
+          </div>
+          <span class="verdict exact">cmp — bitwise identical</span>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">측정-A</span><span class="chip meas">측정만</span></div>
+        <div class="entry-body">
+          <h3><code>nsys</code> 커널 분해 — 다음 실험을 고르기 위한 1회 측정</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">결론 1</span><span class="beat-v">
+              expert w13의 손실은 <strong>wave 충전율이 전부</strong>다(시간가중 66%, 시간의 53%가
+              1 wave 미만 launch). <span class="mono">11.6 TF/s ÷ 0.66 = 17.6</span> — 충전율만 채우면
+              wide GEMM과 같은 대역에 들어온다. w2는 이미 89%라 손댈 것이 없다.
+            </span></div>
+            <div class="beat"><span class="beat-k">결론 2</span><span class="beat-v">
+              <strong>launch 수와 index H2D는 레버가 아니다</strong> — per-expert
+              <code>cudaMemcpy</code> 776회 합계가 <span class="mono">1.1 ms</span>다.
+              CUDA Graph 후보도 여기서 사망했다.
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">순위 재산정</span><span class="beat-v">
+              prefix trie가 토큰을 21.3% 줄이면 위 표의 <strong>거의 모든 항목에 비례로</strong> 꽂힌다
+              (−0.7 s 규모). grouping(−0.23 s)의 3배다. 둘은 독립이므로
+              <strong>EXP-011을 grouping에서 trie로 교체했다.</strong>
+            </span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">EXP-011</span><span class="chip keep">채택</span></div>
+        <div class="entry-body">
+          <h3>Prefix trie — 공유 prefix 중복 제거</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">가설</span><span class="beat-v">
+              causal attention + 절대위치 RoPE이므로, <strong>앞선 토큰이 전부 같은 두 토큰은 32개 레이어
+              전부에서 동일한 hidden state를 갖는다.</strong> 행을 토큰이 아니라 prefix trie 노드로 잡으면
+              공유 prefix를 1번만 계산한다. 정확히 CSE — 산술 변경 0.<br>
+              실측: <span class="mono">19,803 토큰 → 15,583 노드 (−21.3%)</span>.
+            </span></div>
+            <div class="beat"><span class="beat-k">한 일</span><span class="beat-v">
+              각 노드의 key 집합 = 자기 root path를 depth 오름차순으로 평탄화(863 KB)해 attention이
+              parent 체인을 되짚지 않게 했다. attention block을 (시퀀스, head) →
+              <strong>(노드, head)</strong>로 바꾸고 position은 trie depth를 쓴다.
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">배운 것</span><span class="beat-v">
+              행 수에 비례하는 항목은 전부 −21% 근처로 떨어졌는데 <strong>attn만 −24.7%</strong>로
+              예상(−6.5%)을 크게 넘겼다. <code>qi</code> 직렬 루프가 사라져 블록이
+              16,384개 → 249,328개로 펴진 <strong>병렬성 효과</strong>다.<br>
+              그리고 expert당 행이 줄어 w13 충전율은 더 나빠졌다 — <strong>grouping의 상대 가치가 올라갔다.</strong>
+            </span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-k">행 수</span><span class="metric-v good">19,803 <span class="arrow">→</span> 15,583</span></div>
+            <div class="metric"><span class="metric-k">n=1024 (b5)</span><span class="metric-v">3.281 <span class="arrow">→</span> 2.653 s</span></div>
+            <div class="metric"><span class="metric-k">throughput</span><span class="metric-v good">386 seq/s</span></div>
+          </div>
+          <span class="verdict exact">cmp — bitwise identical · decode(-d) PASSED</span>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">EXP-012</span><span class="chip keep">채택</span></div>
+        <div class="entry-body">
+          <h3>expert GEMM grouping — 16개 launch를 1개로</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">한 일</span><span class="beat-v">
+              16개 expert의 행을 한 버퍼에 이어 붙이고 <strong>(expert, rowtile) work queue</strong>로
+              평탄화했다(레이어당 ~250 타일). gather도 16회 → 1회.
+              <strong>scatter만 expert별로 유지</strong> — 한 행이 expert 2개에 속하므로 launch를 나누는
+              것이 두 add의 경쟁을 막는 방법이다.
+            </span></div>
+            <div class="beat"><span class="beat-k">결과</span><span class="beat-v">
+              moe <strong>1.26×</strong> — 예측(−0.19 s)과 정확히 맞았다. 충전율 가설이 옳았다.<br>
+              단, 코드가 바뀌지 않은 <span class="mono">gemm</span> 구간이 <strong>+0.023 s 퇴행</strong>했다(2rep 재현).
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">기록 원칙</span><span class="beat-v">
+              퇴행의 원인을 그 자리에서 추측하지 않고 <strong>"미해결"로 남겼다.</strong>
+              바로 다음 측정-B가 그것만 파고들었다.
+            </span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-k">moe</span><span class="metric-v good">0.968 <span class="arrow">→</span> 0.768 s</span></div>
+            <div class="metric"><span class="metric-k">gemm</span><span class="metric-v bad">1.046 <span class="arrow">→</span> 1.069 s</span></div>
+            <div class="metric"><span class="metric-k">n=1024 (b6)</span><span class="metric-v">2.665 <span class="arrow">→</span> 2.491 s</span></div>
+          </div>
+          <span class="verdict exact">cmp — bitwise identical</span>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">측정-B</span><span class="chip meas">측정만</span></div>
+        <div class="entry-body">
+          <h3>gemm 퇴행의 원인 — 후보를 하나씩 죽였다</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">버퍼 크기?</span><span class="beat-v">
+              아니다. EXP-011에 <strong>할당만</strong> 똑같이 +650 MB 키운 <code>011big</code>을 만들어
+              3-way 교차 → gemm 그대로. 계획했던 "버퍼를 줄여 되돌린다" 실험이 여기서 소멸했다.
+            </span></div>
+            <div class="beat"><span class="beat-k">리팩터링?</span><span class="beat-v">
+              아니다. 경계 표현을 원본과 문자 단위로 되돌려 <code>gemm_nt_bias</code>의 SASS를
+              EXP-011과 <strong>완전히 동일</strong>하게 만든 <code>012b</code>도 퇴행이 그대로였다.
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">원인</span><span class="beat-v">
+              <strong>boost 클럭이다.</strong> grouped MoE는 같은 FLOP을 0.98 s → 0.78 s에 밀어넣으므로
+              전력 밀도가 26% 높다. GPU가 boost를 한 단 내리고
+              (<span class="mono">1800 → 1755 MHz, −2.5%</span>), 그 손해를 뒤이은 projection과
+              attention이 가져간다(+2.4%, +2.9%). 메모리 바운드 단계(norm·resid·h2d·d2h)는
+              ms 단위로 불변이다. 이미 클럭이 낮은 b1에서는 퇴행이 아예 없다.
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">앞으로</span><span class="beat-v">
+              코드로 되돌릴 수 없는 물리적 트레이드오프다.
+              <strong>연산 밀도를 올리는 최적화는 빠른 노드에서 이론치의 97~98%로 기대값을 잡는다.</strong>
+            </span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="entry">
+        <div class="entry-gutter"><span class="entry-id">EXP-013</span><span class="chip keep">채택</span></div>
+        <div class="entry-body">
+          <h3>embedding lookup을 device로</h3>
+          <div class="beats">
+            <div class="beat"><span class="beat-k">계획 변경</span><span class="beat-v">
+              다음 순서였던 Q/O <code>cp.async</code>가 <strong>구조적으로 막혀 있다</strong>:
+              타일이 <span class="mono">as[BK][BM]</span>로 전치되어 있는데 <code>cp.async</code>는
+              global→shared <em>연속</em> 복사만 된다. 전치를 버리면 내부 루프가
+              <span class="mono">LDS.128 ×4 → LDS.32 ×16</span>이 되어 손해다. 타일 재설계급이라 보류.
+            </span></div>
+            <div class="beat"><span class="beat-k">한 일</span><span class="beat-v">
+              대신 남은 최대 단일 항목이 <strong>전부 호스트 직렬 코드</strong>였다 —
+              15,583행 × 16 KB = 255 MB를 CPU 1스레드로 모으고 다시 255 MB를 업로드.
+              임베딩 테이블(525 MB)을 다른 가중치와 똑같이 로드 시점에 device로 올리고 기존
+              <code>gather_rows</code>를 재사용했다. 순수 복사라 산술 위험 0.
+            </span></div>
+            <div class="beat lesson"><span class="beat-k">배운 것</span><span class="beat-v">
+              −0.23 s로 예측(−0.19)을 넘겼고, <strong>다른 단계는 ms 단위로 불변</strong>이었다 —
+              측정-B의 클럭 효과가 없다. 임베딩 gather는 메모리 바운드라 전력 밀도를 올리지 않기 때문이고,
+              이는 "컴퓨트 바운드 단계만 클럭 손해를 본다"는 결론과 일관된다.<br>
+              부수적으로 <strong>trie 구성 자체는 2 ms</strong>로 확정됐다.
+            </span></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-k">embed</span><span class="metric-v good">0.183 <span class="arrow">→</span> 0.002 s</span></div>
+            <div class="metric"><span class="metric-k">h2d</span><span class="metric-v good">0.031 <span class="arrow">→</span> 0.004 s</span></div>
+            <div class="metric"><span class="metric-k">n=1024 (b0)</span><span class="metric-v">2.528 <span class="arrow">→</span> 2.308 s</span></div>
+          </div>
+          <span class="verdict exact">cmp — bitwise identical</span>
+        </div>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<section class="on-surface">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">06 — 현재</span>
+      <h2>지금 서 있는 자리</h2>
+      <p class="prose">
+        2.308 s 중 남은 큰 항목은 <strong>projection GEMM 1.09 s</strong>와
+        <strong>MoE 0.78 s</strong> 둘뿐이고, 둘 다 컴퓨트 바운드다. 값싼 레버는 소진됐다 —
+        여기서부터는 GEMM 커널 자체를 다시 설계하는 큰 작업이다.
+      </p>
+    </div>
+
+    <div class="next">
+      <div class="next-item">
+        <span class="next-tag">최대 항목</span>
+        <h3>q/o_proj 타일 재설계</h3>
+        <p>
+          16.2 TF/s / 35.6 peak. <code>ncu</code> stall 내역은 barrier 9.4% + long_scoreboard 14.8% +
+          short_scoreboard 10.6%. <code>cp.async</code>가 레이아웃에 막혀 있으므로 남은 길은
+          register tile 확대 또는 k-major 레이아웃 + mma 스타일 인덱싱이다.
+        </p>
+      </div>
+      <div class="next-item">
+        <span class="next-tag">닫힌 방향</span>
+        <h3>손대지 않아도 되는 것들</h3>
+        <p>
+          <strong>feature-major 전환</strong> — sectors/request가 이미 이상값의 90~99%(EXP-008 ncu).<br>
+          <strong>attention 추가 최적화</strong> — 하한 0.178 s를 EXP-009가 이미 0.181로 찍었다.<br>
+          <strong>launch 수 · CUDA Graph</strong> — 776회 합계가 1.1 ms(측정-A).
+        </p>
+      </div>
+      <div class="next-item">
+        <span class="next-tag">기대값 보정</span>
+        <h3>클럭 세금</h3>
+        <p>
+          연산 밀도를 올리는 최적화는 빠른 노드(b0·b6)에서 boost 클럭이 한 단 내려가
+          <strong>이론치의 97~98%</strong>만 나온다. 메모리 바운드 최적화에는 이 세금이 없다.
+          계획 단계에서 미리 깎아 잡아야 한다.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>원본 기록: <code>docs/lab-note.md</code> · 형식: <code>docs/note-format.md</code> · 계획: <code>docs/plan.md</code></p>
+    <p>모든 수치는 <code>./run.sh -v</code> 실측이며, 커널 시간은 <code>APS_PROFILE=1</code> 단계 타이머 기준이다.</p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ── Figure 1: n=1024 elapsed, log scale ───────────────── */
+  var steps = [
+    { id: "EXP-003", node: "",   t: 48.765, dx: null },
+    { id: "EXP-004", node: "",   t: 24.115, dx: "2.02×" },
+    { id: "EXP-005", node: "",   t: 6.344,  dx: "3.77×" },
+    { id: "EXP-006", node: "",   t: 3.930,  dx: "1.61×" },
+    { id: "EXP-008", node: "b1", t: 4.388,  dx: "1.04×" },
+    { id: "EXP-009", node: "b6", t: 3.558,  dx: null },
+    { id: "EXP-010", node: "b6", t: 3.313,  dx: "1.07×" },
+    { id: "EXP-011", node: "b5", t: 2.653,  dx: "1.24×" },
+    { id: "EXP-012", node: "b6", t: 2.491,  dx: "1.07×" },
+    { id: "EXP-013", node: "b0", t: 2.308,  dx: "1.10×" }
+  ];
+
+  var LO = 1.9, HI = 60;
+  function frac(v) {
+    return (Math.log(v) - Math.log(LO)) / (Math.log(HI) - Math.log(LO));
+  }
+
+  var host = document.getElementById("stepchart");
+  steps.forEach(function (s, i) {
+    var row = document.createElement("div");
+    row.className = "step-row";
+
+    var lab = document.createElement("div");
+    lab.className = "step-lab";
+    lab.innerHTML = '<span class="step-id">' + s.id + "</span>" +
+      (s.node ? '<span class="step-node">' + s.node + "</span>" : "");
+
+    var track = document.createElement("div");
+    track.className = "step-track";
+
+    var bar = document.createElement("div");
+    bar.className = "step-bar" + (i === steps.length - 1 ? " final" : "");
+    bar.style.width = "0%";
+    bar.setAttribute("title", s.id + " — " + s.t.toFixed(3) + " s");
+
+    var val = document.createElement("span");
+    val.className = "step-val";
+    val.innerHTML = s.t.toFixed(3) + " s" + (s.dx ? '<span class="dx">' + s.dx + "</span>" : "");
+
+    track.appendChild(bar);
+    track.appendChild(val);
+    row.appendChild(lab);
+    row.appendChild(track);
+    host.appendChild(row);
+
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        bar.style.width = (frac(s.t) * 100).toFixed(2) + "%";
+      });
+    });
+  });
+
+  var grid = document.getElementById("stepgrid");
+  [2, 5, 10, 20, 50].forEach(function (t) {
+    var tick = document.createElement("span");
+    tick.className = "step-tick";
+    tick.style.left = (frac(t) * 100).toFixed(2) + "%";
+    tick.textContent = t + " s";
+    grid.appendChild(tick);
+  });
+
+  /* ── Figure 2: stage composition ───────────────────────── */
+  var series = [
+    { key: "gemm", label: "projection GEMM", css: "--s1" },
+    { key: "moe",  label: "MoE",             css: "--s2" },
+    { key: "attn", label: "attention",       css: "--s3" },
+    { key: "norm", label: "layer_norm",      css: "--s4" },
+    { key: "bus",  label: "PCIe (H2D+D2H)",  css: "--s5" },
+    { key: "etc",  label: "기타 (resid·lm_head·embed)", css: "--s6" }
+  ];
+
+  var profiles = [
+    { id: "EXP-003", note: "host norm·PCIe", gemm: 13.164, moe: 13.449, attn: 1.305, norm: 16.144, bus: 10.113, etc: 3.149 },
+    { id: "EXP-004", note: "device GEMM",    gemm: 13.156, moe: 7.276,  attn: 1.125, norm: 0.350,  bus: 1.411,  etc: 0.223 },
+    { id: "EXP-005", note: "host attention", gemm: 1.704,  moe: 1.276,  attn: 1.126, norm: 0.352,  bus: 1.413,  etc: 0.159 },
+    { id: "EXP-006", note: "GEMM 76%",       gemm: 1.717,  moe: 1.257,  attn: 0.303, norm: 0.142,  bus: 0.036,  etc: 0.159 },
+    { id: "EXP-011", note: "trie 적용 후",    gemm: 1.045,  moe: 0.966,  attn: 0.137, norm: 0.112,  bus: 0.037,  etc: 0.238 }
+  ];
+
+  var stacks = document.getElementById("stacks");
+  profiles.forEach(function (p) {
+    var total = series.reduce(function (a, s) { return a + p[s.key]; }, 0);
+
+    var row = document.createElement("div");
+    row.className = "stack-row";
+
+    var lab = document.createElement("div");
+    lab.className = "step-lab";
+    lab.innerHTML = '<span class="step-id">' + p.id + "</span>" +
+      '<span class="step-node">' + total.toFixed(1) + " s</span>";
+
+    var track = document.createElement("div");
+    track.className = "stack-track";
+
+    series.forEach(function (s) {
+      var pct = p[s.key] / total * 100;
+      var seg = document.createElement("div");
+      seg.className = "stack-seg";
+      seg.style.background = "var(" + s.css + ")";
+      seg.style.flex = "0 0 " + pct.toFixed(3) + "%";
+      seg.setAttribute("title", s.label + " — " + p[s.key].toFixed(3) + " s (" + pct.toFixed(1) + "%)");
+      if (pct >= 8) {
+        var t = document.createElement("span");
+        t.textContent = Math.round(pct) + "%";
+        seg.appendChild(t);
+      }
+      track.appendChild(seg);
+    });
+
+    row.appendChild(lab);
+    row.appendChild(track);
+    stacks.appendChild(row);
+  });
+
+  var legend = document.getElementById("legend");
+  series.forEach(function (s) {
+    var item = document.createElement("span");
+    item.className = "legend-item";
+    item.innerHTML = '<span class="legend-sw" style="background: var(' + s.css + ')"></span>' + s.label;
+    legend.appendChild(item);
+  });
+
+  var tbody = document.getElementById("proftable");
+  series.forEach(function (s) {
+    var tr = document.createElement("tr");
+    var cells = "<td>" + s.label + "</td>";
+    var vals = profiles.map(function (p) { return p[s.key]; });
+    var max = Math.max.apply(null, vals);
+    vals.forEach(function (v) {
+      cells += '<td class="' + (v === max ? "max" : "") + '">' + v.toFixed(3) + "</td>";
+    });
+    tr.innerHTML = cells;
+    tbody.appendChild(tr);
+  });
+
+  var trTotal = document.createElement("tr");
+  var totalCells = "<td>프로파일 합계</td>";
+  profiles.forEach(function (p) {
+    var total = series.reduce(function (a, s) { return a + p[s.key]; }, 0);
+    totalCells += "<td>" + total.toFixed(3) + "</td>";
+  });
+  trTotal.innerHTML = totalCells;
+  tbody.appendChild(trTotal);
+})();
+</script>
