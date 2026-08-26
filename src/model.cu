@@ -847,9 +847,12 @@ __global__ void rope_rows(float* __restrict__ q, float* __restrict__ k,
     }
 }
 
-// Key columns staged per pass. The +1 pad below breaks the shared bank
-// pattern: with stride 33 lane i lands on bank (i + d) % 32.
+// Key columns staged per pass.
 constexpr int ATTN_CHUNK = 32;
+// Shared row stride for the staged keys. A multiple of 4 so a key row can be
+// read as float4, and not a multiple of 32, so the lanes of the dot loop --
+// which differ by one key -- stay on different banks.
+constexpr int ATTN_KSTRIDE = ATTN_CHUNK + 4;   // 36
 
 // Causal attention over the prefix trie. One block per (node, kv head), with
 // HEAD_DIM threads. A node's key set is its own root path, which `anc` lists
@@ -883,9 +886,9 @@ __global__ void attention_heads(const float* __restrict__ q,
     constexpr int KVH = static_cast<int>(apss26::NUM_KV_HEADS);
     constexpr int GROUP = QH / KVH;
     constexpr int WINDOW = static_cast<int>(apss26::SLIDING_WINDOW);
-    // sq is padded to D + 1 so that lanes differing only in g -- which is how
-    // the score loop numbers its threads -- land on different banks.
-    constexpr int QSTRIDE = D + 1;
+    // Padded for the same two reasons as ATTN_KSTRIDE, against lanes that
+    // differ only in g -- which is how the score loop numbers its threads.
+    constexpr int QSTRIDE = D + 4;
 
     extern __shared__ float shared[];
     float* sq = shared;                        // [GROUP][QSTRIDE] query rows
@@ -912,7 +915,7 @@ __global__ void attention_heads(const float* __restrict__ q,
     // same fp32 it would have held in a register, so the __fadd_rn sequence per
     // score is unchanged. A narrow chunk is the point: whole-row staging costs
     // max_len * D floats and loses more to occupancy than coalescing returns.
-    float* const sk = sw + nw;    // <= the max_len * (ATTN_CHUNK + 1) reserved
+    float* const sk = sw + nw;    // <= the max_len * ATTN_KSTRIDE reserved
 
     // The group's GROUP query rows are contiguous in q, so this is GROUP
     // coalesced 512 B loads.
@@ -928,16 +931,25 @@ __global__ void attention_heads(const float* __restrict__ q,
         for (int base = 0; base < nk; base += D / ATTN_CHUNK) {
             const int ki = base + tid / ATTN_CHUNK, col = tid % ATTN_CHUNK;
             if (ki < nk)
-                sk[ki * (ATTN_CHUNK + 1) + col] =
+                sk[ki * ATTN_KSTRIDE + col] =
                     k[static_cast<long long>(chain[ki]) * KVH * D + kh * D + d0 + col];
         }
         __syncthreads();
         for (int i = tid; i < nw; i += D) {
-            const float* kr = sk + (i / GROUP) * (ATTN_CHUNK + 1);
-            const float* qr = sq + (i % GROUP) * QSTRIDE + d0;
+            // 16 B at a time: the same chunk in the same d-ascending order,
+            // for a quarter of the shared-load instructions.
+            const float4* kr =
+                reinterpret_cast<const float4*>(sk + (i / GROUP) * ATTN_KSTRIDE);
+            const float4* qr =
+                reinterpret_cast<const float4*>(sq + (i % GROUP) * QSTRIDE + d0);
             float score = sw[i];
-            for (int d = 0; d < ATTN_CHUNK; ++d)
-                score = __fadd_rn(score, __fmul_rn(qr[d], kr[d]));
+            for (int d = 0; d < ATTN_CHUNK / 4; ++d) {
+                const float4 a = qr[d], b = kr[d];
+                score = __fadd_rn(score, __fmul_rn(a.x, b.x));
+                score = __fadd_rn(score, __fmul_rn(a.y, b.y));
+                score = __fadd_rn(score, __fmul_rn(a.z, b.z));
+                score = __fadd_rn(score, __fmul_rn(a.w, b.w));
+            }
             sw[i] = score;
         }
         __syncthreads();
@@ -1390,9 +1402,9 @@ void PhiTinyMoEModel::generate(
     constexpr std::size_t ATTN_GROUP =
         apss26::NUM_ATTENTION_HEADS / apss26::NUM_KV_HEADS;
     constexpr std::size_t ATTN_SHARED_BASE =
-        ATTN_GROUP * (apss26::HEAD_DIM + 1 + 1) * sizeof(float);
+        ATTN_GROUP * (apss26::HEAD_DIM + 4 + 1) * sizeof(float);
     constexpr std::size_t ATTN_SHARED_PER_KEY =
-        (ATTN_GROUP + ATTN_CHUNK + 1) * sizeof(float);
+        (ATTN_GROUP + ATTN_KSTRIDE) * sizeof(float);
     const unsigned attn_shared = static_cast<unsigned>(
         ATTN_SHARED_BASE + nk_max * ATTN_SHARED_PER_KEY);
     // 48 KB is all a block gets without opting in, and the opt-in has to be
