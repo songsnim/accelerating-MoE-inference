@@ -20,6 +20,7 @@
 | **017** | **GEMM `bs` 뱅크 충돌 제거** — `tx*8` → `tx*4` + `tx*4 + BN/2` | ? (아래 §로그 대조 A) | **최대 레버.** gemm 1.096 + moe 0.698 = **1.79 s (82.5%)**에 동시 적용 |
 | 018 | **bias 에필로그 호이스팅** — `bv[TN]`을 행 루프 밖에서 8회 | ? (로그 실측 기준 ≈+3%) | SASS 실측: `gemm_nt_bias` LDG **68** vs `gemm_grouped` **8**. 차 60 = 스레드당 `bias[col]` 64회. 대상 gemm 1.096 |
 | 019 | **gate 전용 tall-skinny 커널** | −0.03 s 이하 | gate가 `gemm_nt_bias`에 `out=16`. grid.x=1이고 BN=128 타일 중 **16열만 유효 → FFMA·bs 트래픽 87.5% 폐기** |
+| **020** | **스크래치 버퍼 수명을 모델로** — `generate()`의 `DeviceBuffer` 13개를 멤버로 올려 `cudaFree`를 소멸자로 | **−0.021 s 상한 실측** | 측정-E: 에필로그 `cudaFree` 24회 ~1.5 GB가 측정 구간 안에서 **20.77 ms(0.96%)**, GPU idle. D2H 전체의 1.45배. `cudaMalloc`은 구간 안에 그대로 둬 워밍업 캐싱 논점 없음. 산술 무변경 → bitwise 동일 |
 | 이후 | LayerNorm fused residual −0.10 · GEMM 타일 재설계(017 이후 재판단, 아래 참조) | | |
 
 ## `moeoptimizationlog.html` 대조 (v0~v18)
@@ -106,6 +107,7 @@ SASS 실측으로 미적용이 확정됐다: `gemm_nt_bias` LDG **68** vs `gemm_
 | **feature-major 레이아웃 전환** | ncu 실측: sectors/request 14.5~15.8(이상 16), dram_throughput 3.7~10.8%. 메모리 경로에 고칠 것 없음. 대가는 전 커널 재인덱싱 |
 | **attention key 방향 warp 병렬화** | 저쪽이 n=1024에서 실측, **이득 없음(잡음 수준)** |
 | **attention Q-head 4-way (3.49x)** | 적용 대상 없음. 저쪽 3.49x는 GQA grouping으로 head 4개를 한 블록에 묶으며 생긴 페널티를 되돌린 것 — 우리는 묶지 않아 그 페널티가 없다. exploration-003 §2가 스스로 철회, EXP-009 실측이 독립 확인 |
+| **트리플 버퍼링 (H2D / kernel / D2H 3-stream)** | 측정-E. 측정 구간 안의 버스 트래픽 전량이 **7건 14.37 ms(0.66%)**이고 H2D는 1 MB / **0.063 ms(0.003%)** — 가중치 15.0 GB는 전부 생성자다. 파이프라인에 태울 반복 흐름이 없다(1 MB trie 메타는 32레이어가 공유해 청크 불가, logits는 32레이어 후 1회). 커널 윈도우 idle도 1.70 ms(0.08%)라 compute 스트림도 메울 틈이 없다. 겹치기 대상은 꼬리 D2H 하나, 상한 0.66% |
 | **logits D2H를 pinned로** | 측정-C·pinned(`c4ec9d5`). 131 MB D2H 15 ms를 pinned로 줄이려면 (a) `cudaHostRegister` 13 + 5.8 ms 또는 (b) pinned ring + 청크 파이프라인. 둘 다 실이득 **10~12 ms(0.5%)**인데 `cudaHostAlloc`이 0.83 ms/MB, 청크 GEMM·비블로킹 스트림·이벤트·memcpy 스레드가 붙는다. `Tensor`가 `std::vector`라 할당기를 못 바꾸는 게 근본 제약 |
 | 병렬 LayerNorm reduction · warp dot reduction · 병렬 product+순차 sum | 전부 FP32 누적 순서 변경 → MoE top-2 routing 붕괴. EXP-004(0.211975)와 저쪽(0.211973) 상호 검증 |
 | **QKV(K/V) projection 융합** | 로그 기각표 실측 **0%**. "A를 3번이 아니라 1번만 스트리밍"은 맞지만 이득이 없다. 기존 `이후` 행에서 삭제 |
@@ -148,3 +150,4 @@ SASS 실측으로 미적용이 확정됐다: `gemm_nt_bias` LDG **68** vs `gemm_
 - `moeoptimizationlog.html`의 출처가 미확인이다 — 우리 라인의 trie·grouping·device
   embedding을 포함하고 있어 저쪽 단독 기록인지 합본인지 모른다. **기법 목록으로만 쓰고
   절대 수치는 우리 A/B 재측정으로 대체한다.**
+- 측정 섹션 문자: main에 `측정-E`(트리플 버퍼링 판단)가 추가됐다. 016 병합 시 coalescing 브랜치의 `측정-C`는 **`측정-D`로** 개명해 넣는다(비어 있는 문자).
