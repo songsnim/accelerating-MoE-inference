@@ -1261,3 +1261,96 @@ FMA 파이프는 peak의 47~58%, 점유율은 33%(127 레지스터 → 2 blocks/
 남은 길은 EXP-016 타일 재설계 — FMA당 shared 로드/발행 명령 수를 줄이는 방향
 (레지스터 타일 확대 또는 BK 확대)이다. 근거는 위 표: `not_selected + short_sb +
 mio_throttle` 합이 `long_scoreboard`의 약 3배다.
+
+---
+
+# 측정-D: memory coalescing에 남은 여유 (EXP-013 코드에서 측정, `961c1e3`)
+
+EXP-008의 "feature-major 불필요" 판정은 expert GEMM만 본 것이라, trie(011)·
+grouping(012)·device embedding(013)으로 접근 패턴이 바뀐 뒤 전 커널을 다시 쟀다.
+브랜치 `exp013-coalescing`에서 잰 것을 EXP-016과 함께 main으로 옮긴다
+(main의 `측정-C`는 pinned 판단이라 문자 충돌을 피해 개명).
+
+## 1. ncu 전수 (n=128, b6, `--clock-control none --cache-control none`)
+
+| 커널 | ld bytes/sector | dram% | l1% |
+|---|---|---|---|
+| **attention_heads** | **22.60** | 9.75 | **87.57** |
+| rope_rows | 66.22 | 86.42 | 18.87 |
+| gemm_nt_bias | 95.02 | 9.85 | 55.18 |
+| gemm_grouped | 99.89 | 24.62 | 74.00 |
+| gather_rows / scatter_add_rows | 98.65 / 99.32 | 88.81 / 75.63 | 19.97 / 14.25 |
+| layer_norm_rows / silu_mul / add_inplace | 100.00 | 28.7 / 85.6 / 90.8 | 29.6 / 15.0 / 14.3 |
+
+- **여유가 있는 커널은 `attention_heads` 하나뿐이다.** 원인은 q·k 내적의
+  `for (i = tid; i < nk; i += D)` — 워프 32레인이 서로 다른 key 행을 쳐서 32 B 섹터마다
+  4 B만 쓴다(12.5%). value 누적은 100%. 섹터 가중 예상 22.2% vs 실측 22.60%로 일치.
+- 그리고 이 커널은 **L1 87.6% 포화**(dram 9.75%)다. 낭비하는 자원이 곧 병목 자원이다.
+- rope_rows의 66.22%는 8 KB cos/sin 테이블 stride-2 접근인데 dram 86.42%로 대역폭
+  바운드라 섹터를 고쳐도 DRAM 트래픽이 안 줄어든다.
+
+## 2. 천장과 설계 3안 (n=1024, b0, 한 allocation 안에서 교차 2rep)
+
+| 빌드 | attn | elapsed |
+|---|---|---|
+| main (EXP-013) | 0.143 | 2.300 / 2.302 |
+| **D1 진단 하한** (score dot의 global k 로드 삭제, 오답) | **0.069** | 2.231 / 2.229 |
+| D2 key 행 통째 스테이징 | 0.154 | 2.307 / 2.316 |
+| **D3 청크 스테이징** | **0.096** | **2.260 / 2.260** |
+
+- **천장은 0.074 s.** k 로드를 공짜로 만들어도 그 이상은 없다.
+- **D2는 반증됐다.** 행 통째(32 × 129 float = 16.5 KB/block)면 occupancy가 12 → 5
+  blocks/SM으로 떨어져 코얼레싱 이득을 통째로 삼킨다. **여유가 있다는 것과 먹을 수 있다는
+  것은 다르다.**
+- **D3가 답이다.** d를 32열씩 끊으면 shared 4.2 KB로 내려가 occupancy가 유지된다.
+
+## 3. 결론
+
+coalescing에 남은 이론적 여유는 **1.031×**, 실현 가능한 것은 **1.018×**이고 전부
+`attention_heads` 한 곳에 있다. gemm 1.09 + moe 0.78(전체의 81%)은 bytes/sector
+95.0 / 99.9라 coalescing 문제가 아니다. → D3를 EXP-016으로 채택.
+
+---
+
+# EXP-016: attention 청크 스테이징
+
+## 1. Background
+측정-D. `attention_heads`의 q·k 내적만 fetch 바이트의 22.6%를 쓰고, 그 커널은 L1
+87.6%로 포화다. 천장 0.074 s, 설계는 D3(청크 스테이징)로 확정됐다. 다만 측정-D는
+EXP-013 코드에서 잰 값이고, main은 EXP-015로 호스트 대기가 사라져 boost 클럭이 내려간
+상태라 재측정이 필요했다.
+
+## 2. Hypothesis
+key 행을 32열씩 shared로 스테이징하면 global 읽기가 행 연속이 되어 attn이 줄고,
+shared는 `max_len*33` float(4.9 KB)이라 occupancy는 유지된다. 값도 순서도 안 바뀌므로
+출력은 bitwise 동일해야 한다.
+
+## 3. Change (`src/model.cu`)
+`attention_heads`의 내적 블록만 교체. `sk = sw + nk`(할당은 `max_len*(CH+1)` 예약),
+`CH = ATTN_CHUNK = 32`, `+1` 패딩으로 뱅크 회피(stride 33 → 레인 i는 뱅크 `(i+d)%32`).
+스테이징 루프는 128스레드가 `tid/CH`행·`tid%CH`열로 4행×32열씩 채운다.
+
+청크 사이 부분합은 `sw[i]`(shared fp32)에 둔다 — 레지스터에 있었을 때와 같은 fp32라
+score마다 `__fadd_rn` 열이 그대로다. 원본의 `nk <= blockDim` 가정은 넣지 않았다:
+compute도 `for (i = tid; i < nk; i += D)` 스트라이드라 nk가 커져도 성립한다
+(nk ≤ 128인 지금은 동작이 동일). 레지스터 43 → 40.
+
+## 4. Result (노드 b0, 한 allocation 안에서 교차 3rep)
+
+| 빌드 | attn | gemm | moe | elapsed |
+|---|---|---|---|---|
+| base | 0.144 / 0.144 / 0.144 | 1.099 / 1.093 / 1.094 | 0.697 | 2.176 / 2.174 / 2.171 |
+| **D3** | **0.100 / 0.100 / 0.100** | 1.102 / 1.098 / 1.097 | 0.704 / 0.705 / 0.707 | **2.142 / 2.139 / 2.147** |
+
+- **attn −0.044 s** (천장 0.074의 59%), **elapsed −0.031 s = 1.0146×**,
+  throughput 471.1 → 477.9.
+- 출력 `cmp` 결과 **bitwise 동일**(n=1024, max abs diff 0.000179291, PASSED).
+- attn 이득 0.044 중 **0.012가 gemm(+0.004)·moe(+0.008)로 되돌아왔다.** 측정-B의
+  "컴퓨트 밀도를 올리면 빠른 노드에서 이론치의 97~98%"와 같은 현상이고, EXP-013 기준
+  측정치(−0.041)보다 순이득이 0.010 작아진 이유다. 방향과 bitwise 동일성은 그대로.
+
+## 5. Next action
+coalescing 레버는 이걸로 소진(D1 하한까지 남은 0.030 s는 shared 자체 비용이라 접근
+불가). 다음은 017 — `bs` 뱅크 충돌 제거, 대상이 gemm 1.10 + moe 0.70 = 82%다.
+착수 전에 ncu `l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum`으로
+런타임 충돌을 먼저 확인한다(plan §A).

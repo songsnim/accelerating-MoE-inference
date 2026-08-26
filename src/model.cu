@@ -484,6 +484,10 @@ __global__ void rope_rows(float* __restrict__ q, float* __restrict__ k,
     }
 }
 
+// Key columns staged per pass. The +1 pad below breaks the shared bank
+// pattern: with stride 33 lane i lands on bank (i + d) % 32.
+constexpr int ATTN_CHUNK = 32;
+
 // Causal attention over the prefix trie. One block per (node, query head),
 // with HEAD_DIM threads: thread d owns output element d. A node's key set is
 // its own root path, which `anc` lists ascending by depth.
@@ -525,15 +529,39 @@ __global__ void attention_heads(const float* __restrict__ q,
     const int nk = keys - lo;
     const int* const chain = anc + abase + lo;
 
+    // The q.k dot reads k straight from global with one key row per lane, so a
+    // warp touches 32 different rows and each 32 B sector delivers 4 useful
+    // bytes (measured: 22.6% of fetched bytes used, L1 at 87.6% -- the wasted
+    // resource is the saturated one). Staging k through shared in ATTN_CHUNK
+    // column slices makes the global read row-contiguous. The dot still walks d
+    // ascending inside one thread; the per-chunk partial lives in shared as the
+    // same fp32 it would have held in a register, so the __fadd_rn sequence per
+    // score is unchanged. A narrow chunk is the point: whole-row staging costs
+    // max_len * D floats and loses more to occupancy than coalescing returns.
+    float* const sk = sw + nk;    // <= the max_len * (ATTN_CHUNK + 1) reserved
+
     sq[tid] = q[static_cast<long long>(node) * QH * D + qh * D + tid];
+    for (int i = tid; i < nk; i += D) sw[i] = 0.0f;
     __syncthreads();
 
-    for (int i = tid; i < nk; i += D) {
-        const float* kr = k + static_cast<long long>(chain[i]) * KVH * D + kh * D;
-        float score = 0.0f;
-        for (int d = 0; d < D; ++d) score = __fadd_rn(score, __fmul_rn(sq[d], kr[d]));
-        sw[i] = score / scale;
+    for (int d0 = 0; d0 < D; d0 += ATTN_CHUNK) {
+        for (int base = 0; base < nk; base += D / ATTN_CHUNK) {
+            const int ki = base + tid / ATTN_CHUNK, col = tid % ATTN_CHUNK;
+            if (ki < nk)
+                sk[ki * (ATTN_CHUNK + 1) + col] =
+                    k[static_cast<long long>(chain[ki]) * KVH * D + kh * D + d0 + col];
+        }
+        __syncthreads();
+        for (int i = tid; i < nk; i += D) {
+            const float* kr = sk + i * (ATTN_CHUNK + 1);
+            float score = sw[i];
+            for (int d = 0; d < ATTN_CHUNK; ++d)
+                score = __fadd_rn(score, __fmul_rn(sq[d0 + d], kr[d]));
+            sw[i] = score;
+        }
+        __syncthreads();
     }
+    for (int i = tid; i < nk; i += D) sw[i] = sw[i] / scale;
     __syncthreads();
 
     // exp is elementwise, so it may leave thread 0 without disturbing any
@@ -898,8 +926,9 @@ void PhiTinyMoEModel::generate(
                           cudaMemcpyHostToDevice), "cudaMemcpy ancestor offsets");
     cuda_check(cudaMemcpy(d_rope.get(), rope.data(), rope.size() * sizeof(float),
                           cudaMemcpyHostToDevice), "cudaMemcpy rope table");
-    const unsigned attn_shared =
-        static_cast<unsigned>((apss26::HEAD_DIM + 1 + max_len) * sizeof(float));
+    const unsigned attn_shared = static_cast<unsigned>(
+        (apss26::HEAD_DIM + 1 + max_len +
+         max_len * (ATTN_CHUNK + 1)) * sizeof(float));
     const float attn_scale = std::sqrt(static_cast<float>(apss26::HEAD_DIM));
 
     // The embedding lookup is a row gather out of a device-resident table:
