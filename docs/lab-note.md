@@ -2587,3 +2587,52 @@ k 루프 **1147 → 1151**(`SHF` +4). `IMAD.WIDE`는 그대로 남고 `int → 6
 - **lm_head**: 14.20 ms · fma **70.7%**로 나머지 GEMM과 동일하게 효율적이다.
   `t_lm` 0.028의 잔여는 **131 MB logits D2H**이고 커널이 아니다.
 - 남은 비-GEMM은 norm 0.083 · attn 0.117 · logits D2H. **600은 이쪽에 있다.**
+
+---
+
+# EXP-030·031 — 다른 입력 형상에 대한 방어 (성능 무관)
+
+## 1. Background
+
+평가 입력이 지금 것과 달라져도 되는지 물어 입력 의존 가정을 훑었다. 현재 입력은
+1024 seq · 길이 6~32 · 19,803 토큰 → 15,583 노드다. 하드코딩된 상수는 없고 버퍼는
+전부 `total`/`batch`에서 동적으로 잡히지만, 두 곳이 이 형상에서만 성립한다.
+
+## 2. 두 지점
+
+- **030** `d_index`/`d_expert_in`은 `packed_rows = 2*total`로 잡는데 마지막 lm_head
+  gather는 `batch`행을 쓴다. `total < batch/2`면 오버런. trie가 중복 시퀀스를 접으므로
+  `total`은 `batch` 아래로 내려갈 수 있다(현재는 15,583 ≫ 512라 안 걸린다).
+- **031** attention의 dynamic shared는 키 개수에 선형이다:
+  `(HEAD_DIM+1)*4 + nk*(1+ATTN_CHUNK+1)*4` = `516 + 136*nk` B. `cudaFuncSetAttribute`가
+  없어 블록 기본 한도 48 KB에 그대로 걸린다.
+
+## 3. 실측 (sm_86, 128스레드 블록 프로브, 크기당 별도 프로세스)
+
+기본 per-block 49,152 B · opt-in 상한 101,376 B.
+
+| 길이 | shared | opt-in 없음 | opt-in |
+|---|---|---|---|
+| 32 (현재 입력) | 4,868 B | ok | ok |
+| 357 | 49,068 B | ok | ok |
+| 358 | 49,204 B | **FAIL** `cudaErrorInvalidValue` | ok |
+| 600 | 82,116 B | FAIL | ok |
+| 741 | 101,292 B | FAIL | ok |
+| 2047 | 278,908 B | FAIL | **FAIL** |
+
+## 4. 조치
+
+- 030: `reserve(max(packed_rows, batch))`. 현재 입력은 할당량 변화 없음.
+- 031: 크기 산정을 `nk_max = min(max_len, SLIDING_WINDOW)` 기준으로 바꾸고(윈도우 밖
+  키는 커널이 안 읽는다), 48 KB를 넘을 때만 `cudaFuncSetAttribute` opt-in, opt-in 상한도
+  넘으면 "최장 741 토큰"을 적어 throw한다. 현재 입력은 4,868 B라 두 CUDA 호출 다 안 탄다.
+- **절벽 357 → 741 토큰.** 검증 PASSED · 587.3 seq/s(직전 587.5, 노이즈) ·
+  max abs diff 0.000179291로 동일.
+
+## 5. 남는 한계 (조치 안 함)
+
+- 741 토큰 초과는 여전히 못 돈다. shared staging 없는 폴백 커널이 필요한데 누산 순서를
+  비트 단위로 보존해야 하고 현재 입력으로는 그걸 검증할 방법이 없다.
+- `anc`는 `sum(depth+1)`이라 길이에 quadratic이다. 길이 2048짜리 비공유 시퀀스 1024개면
+  `anc_off`의 int32가 넘친다.
+- 활성화 ≈ 127 KB/node. 15 GB 가중치 옆이라 대략 6만 노드가 상한(현재의 약 4배).
