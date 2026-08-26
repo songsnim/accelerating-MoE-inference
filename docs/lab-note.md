@@ -2587,3 +2587,77 @@ k 루프 **1147 → 1151**(`SHF` +4). `IMAD.WIDE`는 그대로 남고 `int → 6
 - **lm_head**: 14.20 ms · fma **70.7%**로 나머지 GEMM과 동일하게 효율적이다.
   `t_lm` 0.028의 잔여는 **131 MB logits D2H**이고 커널이 아니다.
 - 남은 비-GEMM은 norm 0.083 · attn 0.117 · logits D2H. **600은 이쪽에 있다.**
+
+---
+
+# EXP-030 — 출력 `logits`를 pinned memory로 (기각)
+
+## 1. Background
+가드레일이 갱신되어 `tensor.h`/`tensor.cu`를 고칠 수 있게 됐다. 이 구간의 버스
+트래픽은 **logits D2H 131.3 MB 하나뿐**이고(측정-E: H2D 전량 1 MB/0.063 ms), 대역폭은
+실측돼 있다 — pageable 17.3 ms(7.6 GB/s) 대 **pinned 5.07 ms(25.9 GB/s)**(측정-G §2).
+지금까지 이 12 ms를 못 먹은 이유는 하나였다: `Tensor`가 `std::vector<float>`이라
+**pinned로 할당**할 길이 없어 `cudaHostRegister`(측정-G §3: 구간 안에서 139배 팽창,
+실측 −25~−30 ms)나 staging+memcpy(측정-G §4: 1청크 이득 0)밖에 남지 않았다.
+제약이 풀렸으므로 직접 할당을 실측한다.
+
+## 2. Hypothesis
+`logits`를 `cudaHostAlloc`으로 잡으면 D2H가 25.9 GB/s로 올라 **−12 ms**. 할당 비용
+(측정-G: GPU idle에서 104 ms)은 EXP-014가 이미 만들어 둔 alloc 스레드 — 69 ms 제로필을
+통째로 숨긴 그 스레드 — 에 얹히므로 숨는다.
+
+**반증 조건**: `cudaHostAlloc`이 `cudaHostRegister`처럼 in-flight 커널과 직렬화되면
+그만큼을 어디선가 기다린다. 그래서 `t_alloc`(스레드 안)과 `t_join`(꼬리 대기)을 같이 잰다.
+
+## 3. Design and Implementation
+- `tensor.h`: `enum class Alloc { Host, Pinned }` + `Tensor(shape, alloc = Host)`.
+  저장소를 `std::vector<float>` → `float* + size_ + alloc_`으로 바꾸고 복사/이동/소멸을
+  명시했다(`layer.cu`의 `Tensor flat = x;`가 복사를 요구한다). 기본값이 Host라
+  나머지 전 호출지(가중치 2027개, `answers` 131 MB)는 동작 무변경.
+- `tensor.cu`: Pinned면 `cudaHostAlloc(..., cudaHostAllocDefault)`, 아니면 `new float[]`.
+  해제는 `cudaFreeHost`/`delete[]`. 소멸자는 throw 못 하므로 실패는 stderr 보고.
+- `model.cu`: alloc 스레드 한 줄만 `Tensor({batch, VOCAB}, Tensor::Alloc::Pinned)`.
+  제로필도 그대로 뒀다(할당자만 바꾸는 변수 1개 실험). 커널·산술 무변경.
+
+## 4. Result
+`cmp` **bitwise 동일**, `-v` 0.000179291, `-n 1 -d -v` PASSED. **성능은 +105 ms 손해.**
+
+b7, 한 allocation 교차 3rep (plain):
+
+| | a = HEAD(029) | b = pinned |
+|---|---|---|
+| elapsed | 1.7232 / 1.7243 / 1.7619 | **1.8329 / 1.8419 / 1.8406** |
+
+b5, 교차 2rep (`APS_PROFILE=1`):
+
+| | h2d | lm_head | alloc | join | elapsed |
+|---|---|---|---|---|---|
+| a | 0.007 / 0.003 | 0.029 / 0.029 | — | — | 1.9759 / 1.9752 |
+| b | **0.119 / 0.117** | **0.020 / 0.020** | 0.125 | **0.000** | 2.0847 / 2.0911 |
+
+가설의 두 항이 둘 다 분리돼 찍혔다.
+
+- **이득 = `lm_head` 0.029 → 0.020 = −9 ms.** pinned D2H는 실제로 붙었다(16.5 → ~7.5 ms).
+- **비용 = `t_h2d` 0.003 → 0.118 = +114 ms.** alloc 스레드가 `cudaHostAlloc`을 도는
+  125 ms 동안 **메인 스레드의 CUDA 호출이 막힌다.** `t_join` 0.000이므로 꼬리는
+  기다리지 않는다 — 숨기기에 실패한 게 아니라 **다른 스레드를 세우는 것이 비용**이다.
+- 측정-G의 `cudaHostRegister`와 성격이 다르다. register는 **자기가** 139배
+  (17.8 → 2466 ms) 팽창했다. `cudaHostAlloc`은 **자기는 안 팽창한다**
+  (idle 104 + 제로필 ~13 ≈ 실측 125). 대신 그 125 ms 동안 컨텍스트 락을 쥐고
+  launch/memcpy를 세운다. ⇒ **131 MB 페이지 락 비용은 이 구간 안에서 어느 스레드에
+  올려도 숨지 않는다.** 측정-G의 결론이 register의 특성이 아니라 page-lock 자체의
+  특성이었음이 확인됐다.
+
+순 −9 + 114 = +105 ms (실측 b7 +108, b5 +109~116). **기각, 코드 원복.**
+
+## 5. 남은 상한 (사용자 판단 필요)
+pinned D2H의 값이 **−9 ms**(b7 1.723 s의 0.52%)로 실측 확정됐다. 이걸 먹는 유일한 길은
+페이지 락을 측정 구간 **밖**에서 치르는 것 = 모델이 pinned 출력 버퍼를 **생성자에서**
+잡아두고 `generate()`에서 `std::move`로 `logits`에 넘기는 것(구간 안 할당 0, D2H만 이득).
+대가 2개: (a) 생성자는 `batch`를 모르므로 용량을 **상수로 박아야** 한다(초과 시 Host
+폴백) — 벤치마크 크기에 맞춘 상수다. (b) 할당·제로필이 측정 구간 밖으로 나간다 —
+연산 결과 캐싱은 아니지만 가드레일 해석 문제다. 상한이 −0.5%이므로 판단은 사용자에게 맡긴다.
+
+## 6. Next action
+버스는 이걸로 닫힌다(상한 −9 ms, 그것도 구간 밖 할당 전제). 남은 비-GEMM은
+**norm 0.083 · attn 0.117**이다.
