@@ -348,40 +348,118 @@ void add_inplace_device(float* a, const float* b, long long n) {
 // __f*_rn intrinsics that keep nvcc from contracting the multiply-adds into
 // FMAs the host does not emit. One serial thread per row costs ~70 ms in
 // total, against the 16.1 s the host layer norms took.
-constexpr int NORM_BLOCK = 256;
+// Rows per warp: one lane owns one row, so the width is the warp's.
+constexpr int NORM_ROWS = 32;
+// Columns staged per trip, and how many of the 32 rows are staged with their
+// loads batched: the staging is a load-to-shared pair per row, so ptxas has to
+// see a compile-time row count or every pair pays a full global latency.
+// 64 columns per trip keeps a block at 8.4 KB of shared; 16 rows per batch
+// puts 32 loads (4 KB) in flight per warp, which is what it takes to saturate
+// DRAM from the 5.9 warps per SM this mapping leaves resident. Measured:
+// (64,16) and (32,16) tie at 0.083, (64,8) 0.089, (128,4) 0.159.
+constexpr int NORM_CHUNK = 64;
+constexpr int NORM_GROUP = 16;
+constexpr int NORM_PER_ROW = NORM_CHUNK / NORM_ROWS;
+// Padded row stride: the chain reads 32 consecutive floats (one wavefront) and
+// the staging writes land on 32 distinct banks.
+constexpr int NORM_STRIDE = NORM_ROWS + 1;
 
+// One lane per row. Each row keeps its own strictly j-ascending accumulation,
+// so the result is bit-identical to the one-thread-per-block version this
+// replaces; what changes is that every row's chain now runs at once instead of
+// five per SM (16 KB of staged row was what capped it). The price is reading x
+// three times: a row cannot stay resident across mean, variance and output.
 __global__ void layer_norm_rows(const float* __restrict__ x,
                                 const float* __restrict__ weight,
                                 const float* __restrict__ bias,
-                                float* __restrict__ y, int cols, float eps) {
-    extern __shared__ float shared[];
-    float* row = shared;
-    float* stats = shared + cols;
+                                float* __restrict__ y, int rows, int cols,
+                                float eps) {
+    __shared__ float s[NORM_CHUNK * NORM_STRIDE];
+    const int lane = static_cast<int>(threadIdx.x);
+    const int row0 = static_cast<int>(blockIdx.x) * NORM_ROWS;
+    const int rows_here = min(NORM_ROWS, rows - row0);
+    const bool mine = lane < rows_here;
+    const long long base = static_cast<long long>(row0) * cols;
 
-    const long long base = static_cast<long long>(blockIdx.x) * cols;
-    for (int c = threadIdx.x; c < cols; c += blockDim.x) row[c] = x[base + c];
-    __syncthreads();
-
-    if (threadIdx.x == 0) {
-        float sum = 0.0f;
-        for (int j = 0; j < cols; ++j) sum = __fadd_rn(sum, row[j]);
-        const float mean = sum / static_cast<float>(cols);
-
-        float var = 0.0f;
-        for (int j = 0; j < cols; ++j) {
-            const float d = __fsub_rn(row[j], mean);
-            var = __fadd_rn(var, __fmul_rn(d, d));
+    // Column-chunk staging: coalesced row by row on the global side,
+    // transposed on the shared side so a lane reads down one column.
+    // The row count is NORM_ROWS whatever the tail block holds -- an
+    // out-of-range row reads row 0 and its column is never read back -- so the
+    // loop unrolls and the loads of several rows are in flight at once.
+    auto stage = [&](int j0) {
+        __syncwarp();
+        for (int r0 = 0; r0 < NORM_ROWS; r0 += NORM_GROUP) {
+            // Loads of a whole group are issued before the first store, so a
+            // group costs one global latency instead of one per row. Left to
+            // ptxas the pair serialises and the kernel stalls on
+            // long_scoreboard (measured: 24.5 stalls per issue).
+            float v[NORM_GROUP][NORM_PER_ROW];
+#pragma unroll
+            for (int q = 0; q < NORM_GROUP; ++q) {
+                const int r = r0 + q;
+                const int rr = r < rows_here ? r : 0;
+                const float* src =
+                    x + base + static_cast<long long>(rr) * cols + j0;
+#pragma unroll
+                for (int i = 0; i < NORM_PER_ROW; ++i) {
+                    v[q][i] = src[i * NORM_ROWS + lane];
+                }
+            }
+#pragma unroll
+            for (int q = 0; q < NORM_GROUP; ++q) {
+#pragma unroll
+                for (int i = 0; i < NORM_PER_ROW; ++i) {
+                    s[(i * NORM_ROWS + lane) * NORM_STRIDE + r0 + q] = v[q][i];
+                }
+            }
         }
-        stats[0] = mean;
-        stats[1] = 1.0f / sqrtf(var / static_cast<float>(cols) + eps);
-    }
-    __syncthreads();
+        __syncwarp();
+    };
 
-    const float mean = stats[0], inv = stats[1];
-    for (int c = threadIdx.x; c < cols; c += blockDim.x) {
-        const float scaled = __fmul_rn(__fmul_rn(__fsub_rn(row[c], mean), inv),
-                                       weight[c]);
-        y[base + c] = __fadd_rn(scaled, bias[c]);
+    float sum = 0.0f;
+    for (int j0 = 0; j0 < cols; j0 += NORM_CHUNK) {
+        stage(j0);
+        if (mine) {
+            for (int i = 0; i < NORM_CHUNK; ++i) {
+                sum = __fadd_rn(sum, s[i * NORM_STRIDE + lane]);
+            }
+        }
+    }
+    const float mean = sum / static_cast<float>(cols);
+
+    float var = 0.0f;
+    for (int j0 = 0; j0 < cols; j0 += NORM_CHUNK) {
+        stage(j0);
+        if (mine) {
+            for (int i = 0; i < NORM_CHUNK; ++i) {
+                const float d = __fsub_rn(s[i * NORM_STRIDE + lane], mean);
+                var = __fadd_rn(var, __fmul_rn(d, d));
+            }
+        }
+    }
+    const float inv = 1.0f / sqrtf(var / static_cast<float>(cols) + eps);
+
+    // The epilogue needs no chain, so it goes back to one row at a time with
+    // the whole warp on it: coalesced in and out.
+    // float4 because this pass is pure streaming: 32 trips per row instead of
+    // 128, and every trip is a full 128 B line in and out.
+    const float4* w4 = reinterpret_cast<const float4*>(weight);
+    const float4* b4 = reinterpret_cast<const float4*>(bias);
+    for (int r = 0; r < rows_here; ++r) {
+        const float m = __shfl_sync(0xffffffffu, mean, r);
+        const float iv = __shfl_sync(0xffffffffu, inv, r);
+        const long long off = base + static_cast<long long>(r) * cols;
+        const float4* src = reinterpret_cast<const float4*>(x + off);
+        float4* dst = reinterpret_cast<float4*>(y + off);
+        for (int i = lane; i < cols / 4; i += NORM_ROWS) {
+            const float4 xv = src[i], wv = w4[i], bv = b4[i];
+            float4 o;
+            o.x = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(xv.x, m), iv), wv.x), bv.x);
+            o.y = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(xv.y, m), iv), wv.y), bv.y);
+            o.z = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(xv.z, m), iv), wv.z), bv.z);
+            o.w = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(xv.w, m), iv), wv.w), bv.w);
+            dst[i] = o;
+        }
     }
 }
 
@@ -752,9 +830,15 @@ void PhiTinyMoEModel::DeviceNorm::free() {
 
 void PhiTinyMoEModel::DeviceNorm::forward(const float* x, float* y,
                                           std::size_t rows) const {
-    const std::size_t shared = (cols + 2) * sizeof(float);
-    layer_norm_rows<<<static_cast<unsigned>(rows), NORM_BLOCK, shared>>>(
-        x, weight, bias, y, static_cast<int>(cols), apss26::NORM_EPS);
+    if (cols % NORM_CHUNK != 0) {
+        throw std::runtime_error("layer norm width is not a multiple of the staging chunk");
+    }
+    const unsigned blocks =
+        static_cast<unsigned>((rows + NORM_ROWS - 1) / NORM_ROWS);
+    layer_norm_rows<<<blocks, NORM_ROWS>>>(x, weight, bias, y,
+                                           static_cast<int>(rows),
+                                           static_cast<int>(cols),
+                                           apss26::NORM_EPS);
     cuda_check(cudaGetLastError(), "layer_norm_rows launch");
 }
 
