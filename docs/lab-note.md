@@ -983,3 +983,50 @@ global->shared 연속 복사만 된다. 전치를 버리면 내부 루프의 sha
   long_scoreboard 14.8% + short_scoreboard 10.6%. `cp.async`가 막혔으므로 남은 길은
   타일 재설계(register tile 확대 또는 k-major 레이아웃 + mma 스타일 인덱싱)다. 큰 작업.
 - 측정-B에 따라 **컴퓨트 밀도를 올리는 최적화의 기대값은 이론치의 97~98%**로 잡는다.
+
+---
+
+# 측정-C: pageable 전송 실태와 pinned memory 상한
+
+`generate()` 안의 호스트<->디바이스 복사는 **전부 pageable**(`std::vector` / `Tensor`).
+pinned로 바꿨을 때 얼마나 벌 수 있는지 상한을 재봤다.
+
+## 1. 어디서 얼마나 (b0, elapsed 2.312 s, 프로브 빌드로 구간 분리)
+
+| 복사 | 크기 x 횟수 | 실측 | 비고 |
+|---|---|---|---|
+| router D2H (`to_host(router)`) | 997 KB x 32 | **0.005 s** | `t_d2h` 전부 |
+| expert index+tiles H2D | 125 KB + 3 KB x 32 | **0.001 s** | `t_moe` 안 |
+| 셋업 H2D (pos/anc/anc_off/rope/token) | 합 ~1.07 MB x 1 | ~0.001 s | `t_h2d` 안 |
+| **logits D2H (`to_host(logits)`)** | **131.3 MB x 1** | **0.015 s** | `t_lm` 안 |
+
+## 2. 대역폭 (같은 노드, 마이크로벤치)
+
+| 크기 | pageable | pinned |
+|---|---|---|
+| 3 KB | 4.6 us | 5.5 us (**더 느림**) |
+| 125 KB | 6.25 GB/s | 10.99 GB/s |
+| 997 KB | 6.36 GB/s | 19.87 GB/s |
+| 131 MB | 7.95 GB/s | 24.72 GB/s |
+
+## 3. 131 MB logits는 pinned가 답이 아니다
+`Tensor`는 `std::vector<float>`이고 `tensor.h`는 수정 금지 -> 할당기를 못 바꾼다. 대안 실측:
+
+| 방법 | 비용 |
+|---|---|
+| 지금 (pageable D2H) | **15.5 ms** |
+| `cudaHostRegister` + D2H + `Unregister` | 13.1 + 5.4 + 5.8 = **24.3 ms** (퇴행) |
+| pinned staging + omp memcpy(64T) | 5.6 + 9.2 = **14.8 ms** |
+| (참고) `cudaHostAlloc(131 MB)` 자체 | **107 ms** — 측정 구간 안에 두면 불가 |
+
+DMA는 3배 빨라지지만 pinned 버퍼 -> `logits` 호스트 memcpy 9 ms가 이득을 그대로 먹는다.
+
+## 4. 결론
+- pinned 단독 상한 = router D2H 3.4 ms + index H2D 0.3 ms + 셋업 0.1 ms
+  = **약 3.8 ms / 2312 ms = 0.16%**. 노드 클럭 편차(2~3%)에 묻힌다. **하지 않는다.**
+- 진짜 크기의 레버는 pinned가 아니라 그 옆에 있다:
+  - **호스트 라우팅 왕복 0.059 s (2.6%)** = router D2H 0.005 + 호스트 top-2/타일 빌드
+    `route` **0.054**. 디바이스에서 라우팅하면 복사와 함께 통째로 사라진다.
+  - logits D2H 15 ms는 pinned가 아니라 **겹치기**로 지운다. lm_head GEMM이 0.070 s이므로
+    행 청크 단위 async D2H(= pinned 필수)를 두 번째 스트림에 태우면 DMA 5.6 ms는 완전히
+    숨는다. 단 pinned 버퍼는 생성자에서 잡아야 한다(107 ms).
