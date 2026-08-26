@@ -1176,10 +1176,9 @@ void PhiTinyMoEModel::generate(
     const bool profile = std::getenv("APS_PROFILE") != nullptr;
     double t_embed = 0, t_norm = 0, t_h2d = 0, t_gemm = 0, t_d2h = 0,
            t_attn = 0, t_moe = 0, t_lm = 0;
-    // `Tensor`'s constructor zero-fills the 131 MB output page by page: 69 ms
-    // of host faulting that the D2H at the end overwrites in full. It needs
-    // nothing from the GPU, so it runs alongside the 32 layers instead of
-    // after them.
+    // Where the 131 MB of output lands. The model's page-locked reserve is
+    // free to take -- it is already allocated and already resident -- so the
+    // pinned branches cost nothing here.
     const std::size_t need = batch * apss26::VOCAB_SIZE;
     std::thread alloc_thread;
     if (logits.alloc() == Tensor::Alloc::Pinned && logits.capacity() >= need) {
