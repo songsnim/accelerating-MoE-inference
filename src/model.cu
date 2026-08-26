@@ -1339,9 +1339,42 @@ void PhiTinyMoEModel::generate(
                           cudaMemcpyHostToDevice), "cudaMemcpy ancestor offsets");
     cuda_check(cudaMemcpy(d_rope, rope.data(), rope.size() * sizeof(float),
                           cudaMemcpyHostToDevice), "cudaMemcpy rope table");
+    // The kernel stages one score per key plus an ATTN_CHUNK-wide k slice, so
+    // its shared footprint is linear in the key count -- which the sliding
+    // window caps, so a sequence past the window costs no more than the window.
+    const std::size_t nk_max = std::min(max_len, apss26::SLIDING_WINDOW);
+    constexpr std::size_t ATTN_SHARED_BASE = (apss26::HEAD_DIM + 1) * sizeof(float);
+    constexpr std::size_t ATTN_SHARED_PER_KEY = (1 + ATTN_CHUNK + 1) * sizeof(float);
     const unsigned attn_shared = static_cast<unsigned>(
-        (apss26::HEAD_DIM + 1 + max_len +
-         max_len * (ATTN_CHUNK + 1)) * sizeof(float));
+        ATTN_SHARED_BASE + nk_max * ATTN_SHARED_PER_KEY);
+    // 48 KB is all a block gets without opting in, and the opt-in has to be
+    // requested per kernel. Past the device's opt-in cap the kernel cannot run
+    // at all: say which length overflowed rather than let the launch fail with
+    // a bare invalid-argument. The contest input needs 4.9 KB, so neither the
+    // attribute query nor the set runs on it.
+    if (attn_shared > 48 * 1024) {
+        int device = 0;
+        cuda_check(cudaGetDevice(&device), "cudaGetDevice");
+        int optin = 0;
+        cuda_check(cudaDeviceGetAttribute(&optin,
+                                          cudaDevAttrMaxSharedMemoryPerBlockOptin,
+                                          device),
+                   "cudaDeviceGetAttribute(shared memory opt-in)");
+        if (attn_shared > static_cast<unsigned>(optin)) {
+            const std::size_t fits =
+                (static_cast<std::size_t>(optin) - ATTN_SHARED_BASE) / ATTN_SHARED_PER_KEY;
+            throw std::runtime_error(
+                "attention needs " + std::to_string(attn_shared) +
+                " B of shared memory for a " + std::to_string(nk_max) +
+                "-key row, over this device's " + std::to_string(optin) +
+                " B per-block cap; the longest sequence that fits is " +
+                std::to_string(fits) + " tokens");
+        }
+        cuda_check(cudaFuncSetAttribute(attention_heads,
+                                        cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                        static_cast<int>(attn_shared)),
+                   "cudaFuncSetAttribute(attention shared memory)");
+    }
     const float attn_scale = std::sqrt(static_cast<float>(apss26::HEAD_DIM));
 
     // The embedding lookup is a row gather out of a device-resident table:
