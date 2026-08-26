@@ -14,7 +14,7 @@
 | **012** | **expert w13 grouping** — (expert, rowtile) work queue | −0.19 s 이상 | 측정-A: w13 시간가중 wave 충전율 66%, 53%가 1 wave 미만 launch. trie로 expert당 행이 21% 줄어 충전율은 더 나빠졌다 |
 | ~~013~~ | **embedding lookup 디바이스 이전** (완료) | **−0.23 s 실측** | embed 0.181 + h2d 0.023 → 0.002 + 0.004. bitwise 동일. trie 구성 자체는 2 ms로 확정 |
 | ~~014~~ | **출력 Tensor 할당 겹치기** (완료 `9ccf876`) | **−0.068 s 실측** | `Tensor` 생성자가 131 MB를 `assign(0.0f)`로 페이지폴트 채우는 0.069 s. GPU 의존 없음 → 별도 스레드. bitwise 동일 |
-| ~~015~~ | **device-side routing** (완료 `80e57fb`) | **−0.071 s 실측** | 호스트 왕복 0.060 + memset 8.2 GB 제거. moe 0.780→0.698, d2h 0.005→0.002. bitwise 동일. gemm은 boost 클럭으로 +0.012 |
+| ~~015~~ | **device-side routing** (완료 `0db90c5`) | **−0.071 s 실측** | 호스트 왕복 0.060 + memset 8.2 GB 제거. moe 0.780→0.698, d2h 0.005→0.002. bitwise 동일. gemm은 boost 클럭으로 +0.012 |
 | **016** | GEMM 타일 재설계 (projection) | ? | q/o_proj 16.2 TF/s / 35.6 peak. gemm 1.09가 남은 최대 항목 |
 | 017 | GQA grouping + coalesced K staging | −0.05 s | 남은 attn 0.143 s. thread i가 key row `chain[i]`를 직접 읽어 **uncoalesced**(연속 thread 간격 `KVH·D`) |
 | 이후 | LayerNorm coalesced staging + fused residual −0.10 · K/V projection fusion 소액 | | |
