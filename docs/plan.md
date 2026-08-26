@@ -101,7 +101,7 @@ SASS 실측으로 미적용이 확정됐다: `gemm_nt_bias` LDG **68** vs `gemm_
 
 | 항목 | 사유 |
 |---|---|
-| **Q/O `cp.async` 2-stage** | 현재 타일이 `as[BK][BM]` **전치** 레이아웃이라 `cp.async`(연속 복사)로 채울 수 없다. 전치를 버리면 내부 루프 shared 로드가 `LDS.128` 4개 → `LDS.32` 16개. 타일 재설계와 묶어야 한다 |
+| **버퍼링 깊이(cp.async·다단)** | 측정-F. `gemm_nt_body`는 이미 2단이고 **레버 총량이 0.045 s(2.1%)**로 이미 회수됐다(버퍼링 제거 시 gemm +0.041). 더 깊게: 레지스터 선행 깊이 2 **+0.047 s**(레지스터 126·스필 0이라 점유율 문제 아님), cp.async는 전치 레이아웃 탓에 4 B 복사 8개가 `LDG.128` 2개+`STS` 8개를 대체해 **+0.34~0.39 s**(2단/3단/4단 모두). ncu 최대 stall은 `not_selected` — 지연이 아니라 발행 슬롯이 한계 |
 | **Tensor Core (전 범위)** | 정확도 사망. split 3항·4항 모두 0.29916 FAILED이고 **4항을 넣어도 오차 불변** — 원인은 표현 절삭이 아니라 WMMA accumulator 연산 순서라 operand splitting으로 회생 불가. 합법 범위(lm_head + layer 31)는 실측 15 ms(0.35%) |
 | **CUDA Graph / launch 수 감소** | 독립 측정 2건 동일 결론. 저쪽 610 gap 합 2 ms(0.05%), 우리 3969 gap 합 8 ms |
 | **feature-major 레이아웃 전환** | ncu 실측: sectors/request 14.5~15.8(이상 16), dram_throughput 3.7~10.8%. 메모리 경로에 고칠 것 없음. 대가는 전 커널 재인덱싱 |
