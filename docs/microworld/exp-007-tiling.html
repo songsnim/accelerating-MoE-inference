@@ -1,0 +1,1193 @@
+<title>타일링 작업대</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gothic+A1:wght@500;700;900&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#E7EBEF; --panel:#F9FAFB; --panel-2:#EFF3F6; --sunken:#E1E7EC;
+  --ink:#121920; --ink-2:#4A5765; --ink-3:#7A8794;
+  --line:#C7D0D8; --line-2:#DDE3E9;
+  --copper:#AE501D; --steel:#1E6383; --plum:#6A4A7B; --moss:#2C6B52; --idle:#9BA7B3; --hot:#93202C;
+  --copper-w:#F2E2D6; --steel-w:#D8E7EE; --moss-w:#D7E9E0; --hot-w:#F3DADD; --plum-w:#E7DEEE;
+  --shadow:0 1px 0 rgba(18,25,32,.04), 0 8px 24px -18px rgba(18,25,32,.5);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0C1116; --panel:#141B21; --panel-2:#1A232A; --sunken:#0F161B;
+    --ink:#E2E8EE; --ink-2:#9BA8B4; --ink-3:#6F7C88;
+    --line:#26313A; --line-2:#1D262E;
+    --copper:#E08A4B; --steel:#5CA6C4; --plum:#AC8BC4; --moss:#5AA981; --idle:#66727E; --hot:#DD6672;
+    --copper-w:#38251A; --steel-w:#152C38; --moss-w:#163024; --hot-w:#341A1E; --plum-w:#271E31;
+    --shadow:0 1px 0 rgba(0,0,0,.3), 0 10px 30px -20px #000;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0C1116; --panel:#141B21; --panel-2:#1A232A; --sunken:#0F161B;
+  --ink:#E2E8EE; --ink-2:#9BA8B4; --ink-3:#6F7C88;
+  --line:#26313A; --line-2:#1D262E;
+  --copper:#E08A4B; --steel:#5CA6C4; --plum:#AC8BC4; --moss:#5AA981; --idle:#66727E; --hot:#DD6672;
+  --copper-w:#38251A; --steel-w:#152C38; --moss-w:#163024; --hot-w:#341A1E; --plum-w:#271E31;
+  --shadow:0 1px 0 rgba(0,0,0,.3), 0 10px 30px -20px #000;
+}
+*{box-sizing:border-box}
+body{margin:0; background:var(--ground); color:var(--ink);
+  font-family:"IBM Plex Sans KR",system-ui,sans-serif; font-size:15px; line-height:1.6; -webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:"Gothic A1","IBM Plex Sans KR",sans-serif; text-wrap:balance; margin:0}
+h1{font-weight:900; font-size:clamp(26px,3.4vw,40px); letter-spacing:-.02em; line-height:1.15}
+h2{font-weight:900; font-size:23px; letter-spacing:-.01em}
+h3{font-weight:700; font-size:15px}
+p{margin:0}
+code,.mono,.num{font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums}
+code{font-size:.86em; background:var(--panel-2); padding:.1em .35em; border-radius:3px; color:var(--ink-2)}
+.wrap{max-width:1180px; margin:0 auto; padding:0 20px}
+.eyebrow{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3)}
+.lede{color:var(--ink-2); max-width:66ch}
+abbr[title]{text-decoration:underline dotted var(--ink-3); text-underline-offset:3px; cursor:help}
+
+.console{position:sticky; top:0; z-index:50; background:var(--panel); border-bottom:1px solid var(--line); box-shadow:var(--shadow)}
+.console .wrap{display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding-top:10px; padding-bottom:10px}
+.brand{display:flex; flex-direction:column; line-height:1.15; margin-right:auto}
+.brand b{font-family:"Gothic A1",sans-serif; font-weight:900; font-size:17px; letter-spacing:-.01em}
+.brand span{font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--ink-3); letter-spacing:.08em}
+.jump{display:flex; gap:8px; flex-wrap:wrap}
+a.jump-l{font-family:"IBM Plex Mono",monospace; font-size:11.5px; letter-spacing:.06em; color:var(--ink-2);
+  text-decoration:none; border:1px solid var(--line); border-radius:4px; padding:5px 10px; background:var(--panel-2)}
+a.jump-l:hover{border-color:var(--ink-3); color:var(--ink)}
+
+button{font-family:inherit; font-size:13px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line);
+  border-radius:4px; padding:6px 12px; cursor:pointer; transition:background .12s, border-color .12s}
+button:hover{background:var(--sunken); border-color:var(--ink-3)}
+button:focus-visible{outline:2px solid var(--copper); outline-offset:2px}
+button[aria-pressed="true"]{background:var(--ink); color:var(--panel); border-color:var(--ink)}
+button.primary{background:var(--copper); border-color:var(--copper); color:#fff; font-weight:600; min-width:88px}
+button.primary:hover{filter:brightness(1.08); background:var(--copper)}
+.seg{display:flex; border:1px solid var(--line); border-radius:4px; overflow:hidden}
+.seg button{border:0; border-radius:0; border-left:1px solid var(--line); padding:6px 10px}
+.seg button:first-child{border-left:0}
+
+section{padding:46px 0 6px}
+.panel{background:var(--panel); border:1px solid var(--line-2); border-radius:6px; padding:18px; box-shadow:var(--shadow)}
+.panel.sunk{background:var(--panel-2); box-shadow:none}
+.grid{display:grid; gap:16px}
+.two{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.three{grid-template-columns:repeat(3,minmax(0,1fr))}
+.side{grid-template-columns:minmax(0,1fr) minmax(0,300px)}
+.sideL{grid-template-columns:minmax(0,300px) minmax(0,1fr)}
+@media(max-width:980px){.two,.three,.side,.sideL{grid-template-columns:1fr}}
+.head{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:10px}
+.head .eyebrow{margin-left:auto}
+.note{font-size:13px; color:var(--ink-2)}
+.tiny{font-size:12px; color:var(--ink-3)}
+.hr{height:1px; background:var(--line-2); margin:14px 0}
+.stack{display:flex; flex-direction:column; gap:16px}
+.stack.s8{gap:8px}
+.scroll{overflow-x:auto}
+.partmark{display:flex; align-items:center; gap:12px; margin-bottom:6px}
+.partmark b{font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.12em; color:var(--panel);
+  background:var(--ink); border-radius:3px; padding:3px 9px}
+
+/* controls */
+.ctrlbar{display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end; padding:12px 14px;
+  background:var(--panel-2); border:1px solid var(--line-2); border-radius:5px}
+.ctrl{display:flex; flex-direction:column; gap:4px}
+.ctrl>label{font-family:"IBM Plex Mono",monospace; font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3)}
+.ctrl .val{font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--ink)}
+input[type=range]{width:132px; accent-color:var(--copper); background:transparent}
+input[type=range]:focus-visible{outline:2px solid var(--copper); outline-offset:3px}
+.spacer{margin-left:auto}
+
+/* meters */
+.meters{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px}
+.meters.m3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.meter{background:var(--panel-2); border-radius:4px; padding:8px 10px; border:1px solid var(--line-2)}
+.meter .k{font-size:9.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3); font-family:"IBM Plex Mono",monospace}
+.meter .v{font-family:"IBM Plex Mono",monospace; font-size:18px; font-variant-numeric:tabular-nums; line-height:1.3}
+.meter .v small{font-size:11px; color:var(--ink-3); font-weight:400}
+.meter.hot .v{color:var(--hot)} .meter.moss .v{color:var(--moss)}
+.meter.steel .v{color:var(--steel)} .meter.copper .v{color:var(--copper)} .meter.plum .v{color:var(--plum)}
+.prog{height:6px; background:var(--sunken); border-radius:99px; overflow:hidden; margin-top:6px}
+.prog i{display:block; height:100%; background:var(--moss); border-radius:99px; transition:width .1s linear}
+.prog i.h{background:var(--hot)}
+
+table{border-collapse:collapse; width:100%; font-size:13px}
+th,td{text-align:right; padding:6px 9px; border-bottom:1px solid var(--line-2); font-variant-numeric:tabular-nums}
+th{font-family:"IBM Plex Mono",monospace; font-size:10px; letter-spacing:.08em; text-transform:uppercase;
+  color:var(--ink-3); font-weight:500; border-bottom:1px solid var(--line)}
+td:first-child,th:first-child{text-align:left; font-family:"IBM Plex Mono",monospace}
+tr.win td{background:var(--moss-w)}
+td.f{font-family:"IBM Plex Mono",monospace}
+
+/* matrices */
+.mats{display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start; justify-content:center}
+.mat{display:flex; flex-direction:column; gap:5px; align-items:center}
+.mat canvas{display:block; border:1px solid var(--line); border-radius:3px; background:var(--sunken); image-rendering:pixelated}
+.mat .cap{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.05em; display:flex; gap:6px; align-items:baseline}
+.mat .cap b{font-weight:600}
+.mat.a .cap b{color:var(--copper)} .mat.b .cap b{color:var(--steel)} .mat.c .cap b{color:var(--plum)}
+.op{font-family:"Gothic A1",sans-serif; font-weight:900; font-size:22px; color:var(--ink-3); align-self:center; padding-top:14px}
+
+.legend{display:flex; gap:12px; flex-wrap:wrap; font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--ink-3)}
+.legend i{display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; border:1px solid var(--line)}
+.ramp{display:flex; height:9px; width:110px; border:1px solid var(--line); border-radius:2px; overflow:hidden}
+.ramp b{flex:1}
+
+/* cache viewer */
+.cachebox{display:grid; grid-template-columns:repeat(8,1fr); gap:3px}
+.cl{height:20px; border-radius:2px; background:var(--sunken); border:1px solid var(--line-2);
+  font-family:"IBM Plex Mono",monospace; font-size:8.5px; display:flex; align-items:center; justify-content:center; color:var(--ink-3)}
+.cl.A{background:var(--copper-w); border-color:var(--copper); color:var(--copper)}
+.cl.B{background:var(--steel-w); border-color:var(--steel); color:var(--steel)}
+.cl.C{background:var(--plum-w); border-color:var(--plum); color:var(--plum)}
+.cl.now{outline:2px solid var(--ink); outline-offset:1px}
+
+.status{font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--ink-2); background:var(--sunken);
+  border-radius:4px; padding:8px 12px; min-height:36px; display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+.pill{border:1px solid var(--line); border-radius:99px; padding:1px 8px; font-size:10.5px; letter-spacing:.05em}
+.pill.hit{border-color:var(--moss); color:var(--moss); background:var(--moss-w)}
+.pill.miss{border-color:var(--hot); color:var(--hot); background:var(--hot-w)}
+.pill.ph{border-color:var(--steel); color:var(--steel); background:var(--steel-w)}
+
+/* bars */
+.bars{display:flex; flex-direction:column; gap:9px}
+.bar{display:grid; grid-template-columns:104px minmax(0,1fr) 92px; gap:10px; align-items:center; font-size:12.5px}
+.bar .t{font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--ink-2)}
+.bar .track{height:16px; background:var(--sunken); border-radius:3px; overflow:hidden}
+.bar .track i{display:block; height:100%; border-radius:3px; transition:width .18s}
+.bar .track i.n{background:var(--hot)} .bar .track i.t{background:var(--steel)}
+.bar .track i.r{background:var(--moss)} .bar .track i.k{background:var(--plum)}
+.bar .n{font-family:"IBM Plex Mono",monospace; text-align:right; font-variant-numeric:tabular-nums}
+
+.formula{font-family:"IBM Plex Mono",monospace; font-size:12.5px; background:var(--sunken); border-radius:4px;
+  padding:10px 12px; color:var(--ink-2); line-height:1.9}
+.formula b{color:var(--ink); font-weight:600}
+.kv{display:flex; justify-content:space-between; gap:10px; font-size:13px; padding:3px 0; border-bottom:1px dashed var(--line-2)}
+.kv:last-child{border-bottom:0}
+.kv b{font-family:"IBM Plex Mono",monospace; font-weight:500; font-variant-numeric:tabular-nums}
+
+footer{padding:40px 0 60px; color:var(--ink-3); font-size:12.5px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important; animation:none!important}}
+</style>
+
+<div class="console">
+  <div class="wrap">
+    <div class="brand"><b>타일링 작업대</b><span>EXP-007 · WHY TILING WINS · CPU &amp; GPU</span></div>
+    <nav class="jump">
+      <a class="jump-l" href="#why">0 · 재사용</a>
+      <a class="jump-l" href="#cpu">1 · CPU 캐시</a>
+      <a class="jump-l" href="#gpu">2 · GPU shared</a>
+      <a class="jump-l" href="#end">3 · 한 문장</a>
+    </nav>
+    <div class="seg" role="group" aria-label="테마">
+      <button id="th-auto" aria-pressed="true">자동</button>
+      <button id="th-light" aria-pressed="false">밝게</button>
+      <button id="th-dark" aria-pressed="false">어둡게</button>
+    </div>
+  </div>
+</div>
+
+<section id="why">
+  <div class="wrap stack">
+    <div>
+      <span class="eyebrow">0 · 문제의 정체</span>
+      <h1>행렬곱은 계산이 무거운 게 아니라,<br>같은 데이터를 몇 번 다시 읽느냐의 문제다</h1>
+    </div>
+    <p class="lede">N×N 행렬 두 개를 곱하면 곱셈·덧셈은 <b>2N³</b>번 필요하다. 그런데 데이터는 <b>3N²</b>개밖에 없다.
+      계산량은 세제곱, 데이터는 제곱. 즉 원소 하나당 평균 <b>N번쯤</b> 쓰인다. 타일링은 새로운 산수를 하지 않는다.
+      <b>이미 가져온 원소를 다시 쓸 기회를 버리지 않는 것</b>, 그게 전부다. 아래에서 그 기회를 버리는 코드와 붙잡는 코드를
+      나란히 돌려 본다.</p>
+
+    <div class="grid two">
+      <div class="panel">
+        <div class="head"><h3>재사용 잠재력</h3><span class="eyebrow">n을 움직여 보기</span></div>
+        <div class="ctrlbar" style="margin-bottom:12px">
+          <div class="ctrl"><label for="w-n">행렬 크기 N</label>
+            <input type="range" id="w-n" min="4" max="13" step="1" value="10">
+            <span class="val" id="w-nv">1024</span></div>
+        </div>
+        <div class="stack s8">
+          <div class="kv"><span>곱셈·덧셈 횟수 <span class="tiny">2N³</span></span><b id="w-flop">—</b></div>
+          <div class="kv"><span>실제 데이터 원소 <span class="tiny">3N², float</span></span><b id="w-data">—</b></div>
+          <div class="kv"><span>원소 하나가 쓰이는 횟수</span><b id="w-reuse">—</b></div>
+          <div class="kv"><span>재사용을 하나도 못 살리면 읽어야 하는 양</span><b id="w-naive">—</b></div>
+        </div>
+        <p class="tiny" style="margin-top:10px">마지막 줄이 타일링이 걸려 있는 판돈이다. 데이터는 12 MB인데 4 TB를 읽는 코드와,
+          같은 답을 내면서 1/64만 읽는 코드의 차이.</p>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>기계는 계산보다 운반이 느리다</h3><span class="eyebrow">스펙시트</span></div>
+        <div class="scroll">
+        <table>
+          <thead><tr><th>층</th><th>용량</th><th>대역폭</th><th>지연</th></tr></thead>
+          <tbody>
+            <tr><td>레지스터</td><td>~256 B/스레드</td><td>사실상 무한</td><td>1 사이클</td></tr>
+            <tr><td>L1 / shared</td><td>32~100 KB</td><td>~17 TB/s<span class="tiny"> (GPU 전체)</span></td><td>~20~30</td></tr>
+            <tr><td>L2</td><td>256 KB / 6 MB</td><td>~2~3 TB/s</td><td>~200</td></tr>
+            <tr><td>DRAM</td><td>수십 GB</td><td>936 GB/s<span class="tiny"> (3090)</span></td><td>~400~600</td></tr>
+          </tbody>
+        </table>
+        </div>
+        <p class="note" style="margin-top:12px">위로 갈수록 빠르지만 작다. 그래서 규칙은 하나다 —
+          <b>작고 빠른 층에 조각을 올려놓고, 거기서 뽑아낼 계산을 다 뽑아낸 다음 버린다.</b>
+          그 조각이 <abbr title="행렬을 잘라낸 정사각형 조각. CPU에서는 캐시 블록, GPU에서는 shared memory 타일로 불린다">타일</abbr>이고,
+          이 아래 두 개의 부는 같은 규칙을 서로 다른 기계에서 실행한 것이다.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="cpu">
+  <div class="wrap stack">
+    <div class="partmark"><b>1 부</b><span class="eyebrow">CPU · 캐시가 대신 타일을 잡아준다</span></div>
+    <h2>CPU에서 타일링은 “캐시에 남아 있게 만드는 기술”이다</h2>
+    <p class="lede">CPU에는 shared memory 같은 수동 조작 창고가 없다. 대신 <abbr title="자동으로 최근에 쓴 데이터를 보관하는 작은 초고속 메모리. 프로그래머가 직접 넣는 게 아니라, 읽는 순간 하드웨어가 알아서 채운다">캐시</abbr>가
+      읽은 것을 알아서 보관한다. 문제는 캐시가 작다는 것. 다시 필요해질 때까지 남아 있으려면 <b>다시 쓰기까지의 간격</b>이 캐시 용량보다 짧아야 한다.
+      타일링은 그 간격을 강제로 줄이는 루프 재배치다. 아래 시뮬레이터는 매 메모리 접근을 하나씩 따라가며
+      <abbr title="원하는 데이터가 이미 캐시에 있어 즉시 읽히는 경우">히트</abbr>와
+      <abbr title="캐시에 없어서 아래 층(DRAM)까지 다녀와야 하는 경우. 수백 배 느리다">미스</abbr>를 센다.</p>
+
+    <div class="ctrlbar">
+      <div class="ctrl"><label>루프 방식</label>
+        <div class="seg" role="group" aria-label="루프 방식">
+          <button id="cv-ijk" aria-pressed="true">나이브 i-j-k</button>
+          <button id="cv-ikj" aria-pressed="false">순서만 바꿈 i-k-j</button>
+          <button id="cv-tile" aria-pressed="false">타일링</button>
+        </div></div>
+      <div class="ctrl"><label for="c-n">행렬 N</label><input type="range" id="c-n" min="8" max="40" step="8" value="24"><span class="val" id="c-nv">24</span></div>
+      <div class="ctrl"><label for="c-b">타일 크기 B</label><input type="range" id="c-b" min="2" max="16" step="2" value="8"><span class="val" id="c-bv">8</span></div>
+      <div class="ctrl"><label for="c-cap">캐시 라인 수</label><input type="range" id="c-cap" min="4" max="64" step="4" value="16"><span class="val" id="c-capv">16 라인 = 128 float</span></div>
+      <div class="ctrl"><label for="c-sp">속도</label><input type="range" id="c-sp" min="0" max="5" step="1" value="2"><span class="val" id="c-spv">16 접근/프레임</span></div>
+      <div class="ctrl spacer"><label>&nbsp;</label>
+        <div style="display:flex; gap:8px">
+          <button class="primary" id="c-play">▶ 재생</button>
+          <button id="c-step">한 접근</button>
+          <button id="c-fin">끝까지</button>
+          <button id="c-reset">↺</button>
+        </div></div>
+    </div>
+
+    <div class="grid side">
+      <div class="panel">
+        <div class="head"><h3>메모리 접근 지도</h3>
+          <div class="seg" role="group" aria-label="색칠 기준">
+            <button id="c-mode-miss" aria-pressed="true">미스 횟수로 색칠</button>
+            <button id="c-mode-hit" aria-pressed="false">접근 횟수로 색칠</button>
+          </div>
+        </div>
+        <div class="mats">
+          <div class="mat a"><canvas id="c-ca" width="220" height="220"></canvas>
+            <div class="cap"><b>A</b><span id="c-la">읽기 —</span></div></div>
+          <div class="op">×</div>
+          <div class="mat b"><canvas id="c-cb" width="220" height="220"></canvas>
+            <div class="cap"><b>B</b><span id="c-lb">읽기 —</span></div></div>
+          <div class="op">=</div>
+          <div class="mat c"><canvas id="c-cc" width="220" height="220"></canvas>
+            <div class="cap"><b>C</b><span id="c-lc">누적 —</span></div></div>
+        </div>
+        <div class="hr"></div>
+        <div class="legend">
+          <span><span class="ramp" id="c-ramp"><b></b><b></b><b></b><b></b><b></b></span></span>
+          <span>왼쪽 = 0회, 오른쪽 = 최다</span>
+          <span><i style="background:var(--ink)"></i>지금 건드리는 원소</span>
+          <span><i style="border-color:var(--ink); background:transparent"></i>현재 타일 경계</span>
+        </div>
+        <div class="status" id="c-status" style="margin-top:12px">리셋 상태. ▶ 재생을 누르면 첫 접근부터 따라간다.</div>
+      </div>
+
+      <div class="stack">
+        <div class="panel">
+          <div class="head"><h3>실시간 계수기</h3></div>
+          <div class="meters">
+            <div class="meter"><div class="k">진행</div><div class="v" id="c-m-prog">0<small>%</small></div>
+              <div class="prog"><i id="c-m-progbar" style="width:0%"></i></div></div>
+            <div class="meter"><div class="k">총 메모리 접근</div><div class="v" id="c-m-acc">0</div></div>
+            <div class="meter moss"><div class="k">캐시 히트</div><div class="v" id="c-m-hit">0</div></div>
+            <div class="meter hot"><div class="k">캐시 미스</div><div class="v" id="c-m-miss">0</div></div>
+          </div>
+          <div class="hr"></div>
+          <div class="stack s8">
+            <div class="kv"><span>히트율</span><b id="c-m-rate">—</b></div>
+            <div class="prog"><i id="c-m-ratebar" style="width:0%"></i></div>
+            <div class="kv"><span>DRAM에서 끌어온 양 <span class="tiny">미스 × 라인</span></span><b id="c-m-bytes">—</b></div>
+            <div class="kv"><span>연산 밀도 <span class="tiny">FLOP / DRAM 바이트</span></span><b id="c-m-ai">—</b></div>
+            <div class="kv"><span>나이브 대비 운반량</span><b id="c-m-vs">—</b></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="head"><h3>캐시 내용물</h3><span class="eyebrow">LRU</span></div>
+          <div class="cachebox" id="c-cache"></div>
+          <p class="tiny" style="margin-top:9px">한 칸이 <abbr title="캐시는 원소 단위가 아니라 연속된 덩어리(보통 64바이트 = float 16개) 단위로 옮긴다. 그래서 옆칸을 같이 읽으면 공짜다">캐시 라인</abbr> 하나(연속 8 float).
+            꽉 차면 <abbr title="Least Recently Used: 가장 오래 안 쓴 것을 버리는 교체 정책">가장 오래 안 쓴 것</abbr>이 밀려난다.
+            나이브 코드에서 B 조각들이 다시 쓰이기 전에 밀려나는 걸 눈으로 볼 수 있다.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel sunk">
+      <div class="head"><h3>지금 무엇이 왜 그렇게 되었나</h3><span class="eyebrow">루프 방식별 해설</span></div>
+      <p class="note" id="c-explain">—</p>
+    </div>
+
+    <div class="grid two">
+      <div class="panel">
+        <div class="head"><h2>이론값 계산기</h2><span class="eyebrow">실제 크기로</span></div>
+        <p class="note" style="margin-bottom:12px">시뮬레이터는 장난감 크기다. 같은 논리를 실제 행렬 크기에 적용하면 이렇게 된다.
+          타일 하나가 캐시에 머무는 동안 그 타일로 <b>B번</b>의 재사용을 뽑아내므로, 운반량은 정확히 <b>B분의 1</b>이 된다.</p>
+        <div class="ctrlbar" style="margin-bottom:12px">
+          <div class="ctrl"><label for="t-n">행렬 N</label><input type="range" id="t-n" min="6" max="13" step="1" value="10"><span class="val" id="t-nv">1024</span></div>
+          <div class="ctrl"><label for="t-b">타일 B</label><input type="range" id="t-b" min="3" max="9" step="1" value="6"><span class="val" id="t-bv">64</span></div>
+          <div class="ctrl"><label for="t-cache">캐시 용량</label>
+            <div class="seg" role="group" aria-label="캐시 용량">
+              <button id="t-c-l1" aria-pressed="true">L1 32KB</button>
+              <button id="t-c-l2" aria-pressed="false">L2 256KB</button>
+              <button id="t-c-l3" aria-pressed="false">L3 20MB</button>
+            </div></div>
+        </div>
+        <div class="formula" id="t-formula">—</div>
+        <div class="hr"></div>
+        <div class="bars">
+          <div class="bar"><span class="t">나이브</span><span class="track"><i class="n" id="t-bar-n" style="width:100%"></i></span><span class="n" id="t-num-n">—</span></div>
+          <div class="bar"><span class="t">타일 B</span><span class="track"><i class="t" id="t-bar-t" style="width:6%"></i></span><span class="n" id="t-num-t">—</span></div>
+        </div>
+        <div class="hr"></div>
+        <div class="stack s8">
+          <div class="kv"><span>타일 3장이 캐시에서 차지하는 자리 <span class="tiny">3B²·4B</span></span><b id="t-fit">—</b></div>
+          <div class="kv"><span>이 캐시에 들어가는 최대 타일 <span class="tiny">B ≤ √(용량/12)</span></span><b id="t-bmax">—</b></div>
+          <div class="kv"><span>예상 소요 시간 <span class="tiny">루프라인, 1코어</span></span><b id="t-time">—</b></div>
+          <div class="kv"><span>예상 속도 향상</span><b id="t-speed">—</b></div>
+        </div>
+        <p class="tiny" style="margin-top:10px">모델: 시간 = max(연산량/32 GFLOP·s⁻¹, 운반량/10 GB·s⁻¹). Xeon E5-2650 1코어 AVX 피크와
+          1코어가 실제로 뽑아낼 수 있는 DRAM 대역폭. 두 항 중 큰 쪽이 병목이다.</p>
+      </div>
+
+      <div class="stack">
+        <div class="panel">
+          <div class="head"><h3>이 노드에서 실제로 재보면</h3><span class="eyebrow">1코어 · -O3 -march=native</span></div>
+          <div class="scroll">
+          <table>
+            <thead><tr><th>N</th><th>나이브 i-j-k</th><th>순서만 i-k-j</th><th>i·j·k 다 타일</th><th>i·k만 타일</th></tr></thead>
+            <tbody>
+              <tr><td>256</td><td>0.75</td><td>6.39</td><td>7.11</td><td>—</td></tr>
+              <tr><td>512</td><td>0.60</td><td>6.91</td><td>6.63</td><td>—</td></tr>
+              <tr><td>1024</td><td>0.15</td><td>6.25</td><td>5.15</td><td>—</td></tr>
+              <tr class="win"><td>2048</td><td>0.13<span class="tiny">*</span></td><td>4.84</td><td>5.48</td><td><b>7.26</b></td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p class="tiny" style="margin-top:8px">단위 GFLOP/s, 높을수록 빠름. * N=2048 나이브는 64행 조각을 재고 32배로 환산(전체 측정에 2분+).
+            측정 코드: <code>exp-007-tiling-cpu-bench.cpp</code></p>
+        </div>
+        <div class="panel">
+          <div class="head"><h3>이론이 곧바로 이기지 않는 지점</h3><span class="eyebrow">트레이드오프</span></div>
+          <div class="stack s8">
+            <p class="note"><b>① 1차 레버는 타일이 아니라 걷는 방향이었다.</b> N=1024에서 루프 순서만 i-k-j로 바꾸자 41배가 나왔다.
+              나이브는 B를 세로로 걸어서 캐시 라인 8~16개 원소 중 1개만 쓰고 버린다. 타일링 전에 이걸 먼저 고쳐야 한다.</p>
+            <p class="note"><b>② N=1024에서는 타일링이 오히려 손해였다</b>(6.25 → 5.15). B 전체가 4 MB로 L3(20 MB)에 이미 들어앉아 있으면
+              덜어낼 DRAM 트래픽이 없다. 대신 짧아진 내부 루프가 <abbr title="한 명령으로 float 8개를 동시에 계산하는 벡터 연산. 루프가 짧으면 준비·마무리 비용이 본체보다 커진다">SIMD</abbr> 효율만 깎는다.
+              <b>타일링은 워킹셋이 캐시를 넘겼을 때만 이득이다.</b></p>
+            <p class="note"><b>③ 그래서 j는 타일링하지 않는다.</b> N=2048에서 i·j·k를 모두 자르면 5.48, i와 k만 자르고 j는 행 전체를 달리게 두면 7.26.
+              재사용을 챙기면서 벡터 루프 길이를 지키는 쪽이 이긴다. GPU 커널이 <code>BK</code>만 작게 쪼개고 <code>BM/BN</code>은 128로 크게 두는 것과 같은 이유다.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="gpu">
+  <div class="wrap stack">
+    <div class="partmark"><b>2 부</b><span class="eyebrow">GPU · 타일을 손으로 옮긴다</span></div>
+    <h2>GPU에서 타일링은 “여럿이 한 조각을 나눠 쓰는 계약”이다</h2>
+    <p class="lede">GPU에는 <abbr title="한 블록의 스레드들만 공유하는 작은 수동 메모리. 캐시와 달리 프로그래머가 직접 올리고 내린다. 블록당 보통 48~100 KB">shared memory</abbr>라는
+      창고가 있다. 캐시처럼 알아서 채워지는 게 아니라 <b>스레드들이 직접 한 조각씩 들고 와 쌓는다.</b>
+      결정적인 건 이것 — 블록 안 T×T개 스레드가 <b>같은 타일</b>을 본다. 한 명이 가져온 원소를 T명이 쓴다. 협동이 곧 재사용이다.
+      아래는 <b>블록 하나</b>가 K 방향을 끝까지 훑는 과정이다. 나이브 커널과 타일 커널은 <b>계산 순서도 결과도 완전히 같고</b>,
+      다른 건 오직 <b>어디서 읽는가</b>뿐이다.</p>
+
+    <div class="ctrlbar">
+      <div class="ctrl"><label>커널</label>
+        <div class="seg" role="group" aria-label="커널">
+          <button id="gv-naive" aria-pressed="true">나이브 (글로벌 직독)</button>
+          <button id="gv-tile" aria-pressed="false">shared 타일링</button>
+        </div></div>
+      <div class="ctrl"><label for="g-n">행렬 N</label><input type="range" id="g-n" min="16" max="64" step="16" value="32"><span class="val" id="g-nv">32</span></div>
+      <div class="ctrl"><label for="g-t">블록 타일 T</label><input type="range" id="g-t" min="4" max="16" step="4" value="8"><span class="val" id="g-tv">8 (스레드 64개)</span></div>
+      <div class="ctrl"><label for="g-sp">속도</label><input type="range" id="g-sp" min="0" max="4" step="1" value="2"><span class="val" id="g-spv">보통</span></div>
+      <div class="ctrl spacer"><label>&nbsp;</label>
+        <div style="display:flex; gap:8px">
+          <button class="primary" id="g-play">▶ 재생</button>
+          <button id="g-step">한 단계</button>
+          <button id="g-fin">끝까지</button>
+          <button id="g-reset">↺</button>
+        </div></div>
+    </div>
+
+    <div class="grid side">
+      <div class="panel">
+        <div class="head"><h3>글로벌 메모리 · 블록 하나가 훑는 범위</h3><span class="eyebrow" id="g-phase">대기</span></div>
+        <div class="scroll"><canvas id="g-glob" width="700" height="420" style="max-width:100%"></canvas></div>
+        <div class="hr"></div>
+        <div class="legend">
+          <span><i style="background:var(--copper-w); border-color:var(--copper)"></i>A 블록 행</span>
+          <span><i style="background:var(--steel-w); border-color:var(--steel)"></i>B 블록 열</span>
+          <span><i style="background:var(--plum-w); border-color:var(--plum)"></i>C 출력 타일</span>
+          <span><i style="background:var(--ink)"></i>지금 글로벌에서 읽는 중</span>
+          <span>진한 칸 = 글로벌에서 여러 번 읽힌 원소</span>
+        </div>
+        <div class="status" id="g-status" style="margin-top:12px">리셋 상태.</div>
+      </div>
+      <div class="stack">
+        <div class="panel">
+          <div class="head"><h3>빠른 층</h3><span class="eyebrow">shared · 레지스터</span></div>
+          <canvas id="g-fast" width="300" height="260" style="max-width:100%; display:block"></canvas>
+          <p class="tiny" style="margin-top:8px" id="g-fastnote">—</p>
+        </div>
+        <div class="panel">
+          <div class="head"><h3>계수기</h3><span class="eyebrow">블록 1개</span></div>
+          <div class="meters">
+            <div class="meter"><div class="k">진행</div><div class="v" id="g-m-prog">0<small>%</small></div>
+              <div class="prog"><i id="g-m-progbar" style="width:0%"></i></div></div>
+            <div class="meter"><div class="k">FMA</div><div class="v" id="g-m-fma">0</div></div>
+            <div class="meter hot"><div class="k">글로벌 원소 로드</div><div class="v" id="g-m-gl">0</div></div>
+            <div class="meter steel"><div class="k">shared 읽기</div><div class="v" id="g-m-sr">0</div></div>
+          </div>
+          <div class="hr"></div>
+          <div class="stack s8">
+            <div class="kv"><span>32B 트랜잭션 <span class="tiny">병합 기준</span></span><b id="g-m-tx">—</b></div>
+            <div class="kv"><span>shared 저장</span><b id="g-m-sw">—</b></div>
+            <div class="kv"><span><code>__syncthreads()</code></span><b id="g-m-sync">—</b></div>
+            <div class="kv"><span>shared 사용량 / 블록</span><b id="g-m-smem">—</b></div>
+            <div class="kv"><span>원소 하나가 재사용된 횟수</span><b id="g-m-reuse">—</b></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel sunk">
+      <div class="head"><h3>지금 무슨 일이 일어나는가</h3><span class="eyebrow">커널별 해설</span></div>
+      <p class="note" id="g-explain">—</p>
+    </div>
+
+    <div class="grid two">
+      <div class="panel">
+        <div class="head"><h3>전체 행렬로 확장</h3><span class="eyebrow">블록 (N/T)²개</span></div>
+        <p class="note" style="margin-bottom:12px">블록 하나에서 본 비율은 행렬 전체에서 그대로 유지된다. 블록 수만 곱하면 된다.</p>
+        <div class="bars">
+          <div class="bar"><span class="t">나이브</span><span class="track"><i class="n" id="g-bar-n" style="width:100%"></i></span><span class="n" id="g-num-n">—</span></div>
+          <div class="bar"><span class="t">shared 타일 T</span><span class="track"><i class="t" id="g-bar-t"></i></span><span class="n" id="g-num-t">—</span></div>
+        </div>
+        <div class="hr"></div>
+        <div class="stack s8">
+          <div class="kv"><span>연산 밀도 · 나이브 <span class="tiny">FLOP/글로벌 바이트</span></span><b id="g-ai-n">—</b></div>
+          <div class="kv"><span>연산 밀도 · 타일 T</span><b id="g-ai-t">—</b></div>
+          <div class="kv"><span>RTX 3090 균형점 <span class="tiny">35.6 TFLOP/s ÷ 936 GB/s</span></span><b>38.0 FLOP/B</b></div>
+          <div class="kv"><span>예상 시간 · 나이브</span><b id="g-t-n">—</b></div>
+          <div class="kv"><span>예상 시간 · 타일 T</span><b id="g-t-t">—</b></div>
+          <div class="kv"><span>예상 속도 향상</span><b id="g-t-s">—</b></div>
+        </div>
+        <p class="tiny" style="margin-top:10px">모델: 시간 = max(2N³/35.6 TFLOP·s⁻¹, 글로벌 바이트/936 GB·s⁻¹).
+          L2 캐시가 나이브 커널의 일부를 대신 구제해 주므로 실제 나이브는 이 예측보다 덜 나쁘다 — 방향은 같고 크기는 과장이다.</p>
+      </div>
+
+      <div class="panel">
+        <div class="head"><h3>타일을 무한정 키우지 못하는 이유</h3><span class="eyebrow">용량 ↔ 병렬성</span></div>
+        <div class="formula" id="g-cap">—</div>
+        <div class="hr"></div>
+        <div class="stack s8">
+          <div class="kv"><span>타일 2장 <span class="tiny">2·T²·4 B</span></span><b id="g-cap-b">—</b></div>
+          <div class="kv"><span>48 KB 한계 안의 최대 T</span><b>T ≤ 78</b></div>
+          <div class="kv"><span>SM 하나에 동시 상주 가능한 블록</span><b id="g-cap-occ">—</b></div>
+          <div class="kv"><span>블록당 스레드 <span class="tiny">1스레드 1출력 가정</span></span><b id="g-cap-thr">—</b></div>
+        </div>
+        <p class="note" style="margin-top:12px">타일을 키우면 재사용은 늘지만 창고가 꽉 차서 SM에 올릴 수 있는 블록 수가 줄고,
+          <abbr title="한 SM이 동시에 붙들고 있는 워프의 비율. 낮으면 메모리 대기 시간을 다른 워프의 계산으로 가릴 수 없다">동시 실행량</abbr>이 떨어져
+          메모리 대기를 가릴 여지가 없어진다. 게다가 T=32면 스레드가 1024개로 블록 한계에 닿는다.
+          <b>여기서 막히기 때문에 다음 층이 필요해진다.</b></p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="head"><h2>한 층 더 — 레지스터 타일링</h2><span class="eyebrow">shared도 무한히 빠르지 않다</span></div>
+      <p class="note" style="max-width:74ch; margin-bottom:14px">shared 타일링으로 글로벌 병목을 넘기면, 곧바로 그 아래 병목이 드러난다.
+        1스레드가 1출력만 맡으면 FMA 하나마다 shared에서 2개를 읽는다 — <b>0.25 FLOP/B</b>. 그런데 3090의 shared 대역폭 대비 균형점은 <b>2.0 FLOP/B</b>.
+        8배 부족하다. 답은 같은 수법을 한 층 아래에 또 쓰는 것: 스레드 하나가 TM×TN 출력을 <b>레지스터에</b> 들고,
+        shared에서 TM+TN개만 읽어 TM×TN번의 FMA를 한다.</p>
+      <div class="grid three">
+        <div class="stack">
+          <div class="ctrlbar" style="flex-direction:column; align-items:stretch">
+            <div class="ctrl"><label for="r-bm">블록 타일 BM = BN</label><input type="range" id="r-bm" min="4" max="8" step="1" value="7"><span class="val" id="r-bmv">128</span></div>
+            <div class="ctrl"><label for="r-bk">K 방향 두께 BK</label><input type="range" id="r-bk" min="2" max="6" step="1" value="3"><span class="val" id="r-bkv">8</span></div>
+            <div class="ctrl"><label for="r-tm">스레드 타일 TM = TN</label><input type="range" id="r-tm" min="0" max="4" step="1" value="3"><span class="val" id="r-tmv">8</span></div>
+          </div>
+          <div class="panel sunk">
+            <p class="tiny">기본값은 이 저장소의 실제 커널(<code>src/model.cu</code>)이 쓰는 값이다 —
+              BM=BN=128, BK=8, TM=TN=8. 아래 숫자가 왜 그 조합이었는지 말해 준다.</p>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="formula" id="r-formula">—</div>
+          <div class="stack s8">
+            <div class="kv"><span>글로벌 연산밀도</span><b id="r-ai-g">—</b></div>
+            <div class="kv"><span>shared 연산밀도</span><b id="r-ai-s">—</b></div>
+            <div class="kv"><span>스레드/블록</span><b id="r-thr">—</b></div>
+            <div class="kv"><span>스레드당 누산 레지스터</span><b id="r-reg">—</b></div>
+            <div class="kv"><span>shared 사용량 / 블록</span><b id="r-smem">—</b></div>
+            <div class="kv"><span>세 병목 중 승자</span><b id="r-bound">—</b></div>
+            <div class="kv"><span>피크 대비 도달 가능</span><b id="r-peak">—</b></div>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="panel sunk" style="padding:12px">
+            <div class="eyebrow" style="margin-bottom:8px">2단 루프라인</div>
+            <svg id="r-roof" viewBox="0 0 320 260" style="width:100%; height:auto" role="img" aria-label="연산 밀도 대비 도달 가능 성능 그래프"></svg>
+          </div>
+          <p class="tiny">가로축 = 연산 밀도(FLOP/B), 세로축 = 낼 수 있는 성능. 두 개의 사선은 글로벌·shared 대역폭 천장,
+            수평선은 연산 유닛 천장. 점이 사선 위에 있으면 <b>운반이 병목</b>, 수평선에 닿으면 <b>계산이 병목</b>이다.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="end">
+  <div class="wrap stack">
+    <div class="partmark"><b>3 부</b><span class="eyebrow">정리</span></div>
+    <div class="grid two">
+      <div class="panel">
+        <h2 style="margin-bottom:10px">같은 문장이 두 기계에서 반복된다</h2>
+        <p class="note">계산량은 <b>2N³</b>으로 고정이다. 어떤 타일링도 FMA를 한 번도 줄이지 못한다.
+          줄어드는 건 <b>운반량</b>뿐이고, 그 값은 언제나 <b>2N³/타일크기</b>다.
+          그래서 이야기는 매번 똑같다 — <b>작고 빠른 층에 타일을 올려, 거기서 뽑을 계산을 다 뽑고 버린다.</b>
+          층이 여러 개면 층마다 이 문장을 한 번씩 적용한다. GPU 커널이 shared 타일 128×128과 레지스터 타일 8×8을 겹쳐 쓰는 게 바로 그것이다.</p>
+        <div class="hr"></div>
+        <div class="stack s8">
+          <div class="kv"><span>CPU · 타일이 사는 곳</span><b>L1/L2/L3 — 하드웨어가 자동</b></div>
+          <div class="kv"><span>CPU · 타일을 만드는 방법</span><b>루프 순서 재배치</b></div>
+          <div class="kv"><span>CPU · 크기 상한</span><b>3B²·4 ≤ 캐시 용량</b></div>
+          <div class="kv"><span>GPU · 타일이 사는 곳</span><b>shared memory — 손으로 적재</b></div>
+          <div class="kv"><span>GPU · 타일을 만드는 방법</span><b>블록 협동 적재 + 배리어</b></div>
+          <div class="kv"><span>GPU · 크기 상한</span><b>2T²·4 ≤ 48 KB, 동시 실행량</b></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3 style="margin-bottom:10px">직접 확인해 볼 것들</h3>
+        <div class="stack s8">
+          <p class="note">· 1부에서 <b>캐시 라인 수를 4로</b> 낮추고 나이브를 돌리면 히트율이 어디까지 떨어지는가. 그 상태에서 타일 B를 2로 낮추면 왜 다시 오르는가.</p>
+          <p class="note">· 1부 타일링에서 <b>B를 캐시 용량보다 크게</b> 잡으면(예: 라인 8개 = 64 float, B=16 → 타일 3장 768 float) 타일링을 해도 히트율이 안 오른다. 이론값 계산기의 <code>B ≤ √(용량/12)</code>가 그 경계다.</p>
+          <p class="note">· 2부에서 <b>T를 4 → 16</b>으로 키우며 글로벌 로드가 정확히 T배로 줄어드는지 본다. 동시에 shared 사용량이 T²로 늘어 동시 상주 블록이 깎이는 것도 같이 본다.</p>
+          <p class="note">· 3부 계산기에서 <b>TM=TN=1</b>로 되돌려 보면, 글로벌 병목은 사라졌는데 shared 병목에 걸려 피크의 12%에 머무는 걸 볼 수 있다. 레지스터 타일링이 왜 선택이 아니라 필수인지.</p>
+          <p class="note">· <b>BK를 64로</b> 키워 보면 타일 2장만으로 64 KB — 48 KB 한계를 넘긴다. 실제 커널은 여기에 <abbr title="다음 타일을 미리 불러오는 동안 현재 타일로 계산하기 위해 타일을 2벌 둔다. 메모리 대기를 계산으로 가리는 대신 shared를 2배 쓴다">이중 버퍼링</abbr>까지 얹어 BK=8에서도 33.8 KB를 쓰므로, BK=32면 SM 한계(100 KB)에 부딪힌다.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer><div class="wrap">
+  EXP-007 · 타일링 작업대 · CPU 측정값은 이 노드(Xeon E5-2650, 1코어)에서 실측,
+  GPU 수치는 RTX 3090 스펙시트(35.6 TFLOP/s FP32, 936 GB/s, 82 SM)에 기반한 루프라인 모델.
+  시뮬레이터의 캐시는 완전 연관 LRU·라인 8 float의 축소 모형이며, 실제 하드웨어의 집합 연관성과 프리페처는 모델에 없다.
+</div></footer>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+/* ---------- 서식 ---------- */
+const fi = n => Math.round(n).toLocaleString('en-US');
+function fnum(n){
+  if(!isFinite(n)) return '—';
+  if(n < 1e3) return (n % 1 === 0 ? n.toFixed(0) : n.toFixed(2));
+  if(n < 1e6) return (n/1e3).toFixed(n<1e4?2:1)+'K';
+  if(n < 1e9) return (n/1e6).toFixed(n<1e7?2:1)+'M';
+  if(n < 1e12) return (n/1e9).toFixed(2)+'G';
+  return (n/1e12).toFixed(2)+'T';
+}
+function fbytes(b){
+  if(b < 1024) return b.toFixed(0)+' B';
+  if(b < 1048576) return (b/1024).toFixed(1)+' KB';
+  if(b < 1073741824) return (b/1048576).toFixed(1)+' MB';
+  if(b < 1099511627776) return (b/1073741824).toFixed(2)+' GB';
+  return (b/1099511627776).toFixed(2)+' TB';
+}
+function ftime(s){
+  if(s < 1e-6) return (s*1e9).toFixed(0)+' ns';
+  if(s < 1e-3) return (s*1e6).toFixed(1)+' µs';
+  if(s < 1) return (s*1e3).toFixed(1)+' ms';
+  if(s < 60) return s.toFixed(2)+' s';
+  return (s/60).toFixed(1)+' 분';
+}
+
+/* ---------- 팔레트 (테마 대응) ---------- */
+let PAL = null;
+const PKEYS = ['--ink','--ink-2','--ink-3','--line','--line-2','--sunken','--panel','--panel-2',
+               '--copper','--steel','--plum','--moss','--hot','--idle'];
+function pal(){
+  if(!PAL){ const cs = getComputedStyle(document.documentElement); PAL = {};
+    PKEYS.forEach(k => PAL[k] = cs.getPropertyValue(k).trim()); }
+  return PAL;
+}
+function h2r(h){ h = h.replace('#',''); if(h.length===3) h = h.split('').map(c=>c+c).join('');
+  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)]; }
+function mix(a,b,t){ const A=h2r(a), B=h2r(b); t=Math.max(0,Math.min(1,t));
+  return 'rgb('+A.map((v,i)=>Math.round(v+(B[i]-v)*t)).join(',')+')'; }
+
+const themeBtns = {auto:$('th-auto'), light:$('th-light'), dark:$('th-dark')};
+function setTheme(m){
+  if(m==='auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', m);
+  for(const k in themeBtns) themeBtns[k].setAttribute('aria-pressed', String(k===m));
+  PAL = null; redrawAll();
+}
+for(const k in themeBtns) themeBtns[k].addEventListener('click', () => setTheme(k));
+if(window.matchMedia) matchMedia('(prefers-color-scheme: dark)')
+  .addEventListener('change', () => { PAL = null; redrawAll(); });
+
+function redrawAll(){ paintRamp(); cpuDraw(); gpuDraw(); drawRoof(); }
+function paintRamp(){
+  const p = pal(), r = $('c-ramp');
+  [...r.children].forEach((b,i) => b.style.background = mix(p['--sunken'], p['--hot'], (i+1)/5));
+}
+
+/* ================= 0 · 재사용 잠재력 ================= */
+function why(){
+  const N = 1 << +$('w-n').value;
+  $('w-nv').textContent = N;
+  const flop = 2*N*N*N, data = 3*N*N;
+  $('w-flop').textContent = fnum(flop)+' FLOP';
+  $('w-data').textContent = fi(data)+' 개 · '+fbytes(data*4);
+  $('w-reuse').textContent = fnum(flop/(2*data))+' 번';
+  $('w-naive').textContent = fbytes(8*N*N*N)+' ('+fnum(8*N*N*N/(data*4))+'배)';
+}
+$('w-n').addEventListener('input', why);
+
+/* ================= 1 부 · CPU 캐시 ================= */
+const LINE = 8;                      // 라인 하나 = float 8개 (축소 모형)
+const cpu = {
+  N:24, B:8, variant:'ijk', lines:16, speed:2, mode:'miss',
+  M:null, R:null, C:null, I:null, J:null, K:null, total:0, ptr:0,
+  hits:0, misses:0, fmas:0, clock:0,
+  cLine:null, cM:null, cClk:null,
+  heat:[null,null,null], acc:[null,null,null], hmax:[1,1,1],
+  cur:null, playing:false, raf:0, nowLine:-1
+};
+const SPEEDS = [1,4,16,64,256,4096], SPEEDL = ['1','4','16','64','256','4096'];
+const CV = {ijk:$('cv-ijk'), ikj:$('cv-ikj'), tile:$('cv-tile')};
+
+function cpuBuild(){
+  const N = cpu.N, B = cpu.B, v = cpu.variant;
+  const M=[],R=[],C=[],I=[],J=[],K=[];
+  const push=(m,r,c,i,j,k)=>{M.push(m);R.push(r);C.push(c);I.push(i);J.push(j);K.push(k);};
+  if(v==='ijk'){
+    for(let i=0;i<N;i++) for(let j=0;j<N;j++){
+      for(let k=0;k<N;k++){ push(0,i,k,i,j,k); push(1,k,j,i,j,k); }
+      push(2,i,j,i,j,N-1);
+    }
+  } else if(v==='ikj'){
+    for(let i=0;i<N;i++) for(let k=0;k<N;k++){
+      push(0,i,k,i,0,k);
+      for(let j=0;j<N;j++){ push(1,k,j,i,j,k); push(2,i,j,i,j,k); }
+    }
+  } else {
+    for(let i0=0;i0<N;i0+=B) for(let k0=0;k0<N;k0+=B) for(let j0=0;j0<N;j0+=B){
+      const iM=Math.min(i0+B,N), kM=Math.min(k0+B,N), jM=Math.min(j0+B,N);
+      for(let i=i0;i<iM;i++) for(let k=k0;k<kM;k++){
+        push(0,i,k,i,j0,k);
+        for(let j=j0;j<jM;j++){ push(1,k,j,i,j,k); push(2,i,j,i,j,k); }
+      }
+    }
+  }
+  cpu.M=Uint8Array.from(M); cpu.R=Int16Array.from(R); cpu.C=Int16Array.from(C);
+  cpu.I=Int16Array.from(I); cpu.J=Int16Array.from(J); cpu.K=Int16Array.from(K);
+  cpu.total=M.length;
+}
+function cpuReset(rebuild){
+  cpuStop();
+  if(rebuild) cpuBuild();
+  const N = cpu.N;
+  cpu.ptr=0; cpu.hits=0; cpu.misses=0; cpu.fmas=0; cpu.clock=0; cpu.cur=null; cpu.nowLine=-1;
+  cpu.cLine = new Int32Array(cpu.lines).fill(-1);
+  cpu.cM = new Int8Array(cpu.lines).fill(-1);
+  cpu.cClk = new Float64Array(cpu.lines);
+  for(let m=0;m<3;m++){ cpu.heat[m]=new Int32Array(N*N); cpu.acc[m]=new Int32Array(N*N); cpu.hmax[m]=1; }
+  $('c-status').textContent = '리셋 상태. ▶ 재생을 누르면 첫 접근부터 따라간다.';
+  cpuDraw(); cpuMeters(); cpuExplain();
+}
+function cpuAccess(m,r,c){
+  const N = cpu.N, addr = m*N*N + r*N + c, line = (addr/LINE)|0;
+  cpu.nowLine = line; cpu.clock++;
+  for(let s=0;s<cpu.lines;s++) if(cpu.cLine[s]===line){ cpu.cClk[s]=cpu.clock; cpu.hits++; return true; }
+  let vic=0, best=Infinity;
+  for(let s=0;s<cpu.lines;s++){ if(cpu.cLine[s]===-1){ vic=s; break; } if(cpu.cClk[s]<best){ best=cpu.cClk[s]; vic=s; } }
+  cpu.cLine[vic]=line; cpu.cM[vic]=m; cpu.cClk[vic]=cpu.clock; cpu.misses++;
+  const h = cpu.heat[m], idx = r*N+c; h[idx]++; if(h[idx]>cpu.hmax[m]) cpu.hmax[m]=h[idx];
+  return false;
+}
+function cpuStep(){
+  if(cpu.ptr >= cpu.total) return false;
+  const p = cpu.ptr, m = cpu.M[p], r = cpu.R[p], c = cpu.C[p];
+  const hit = cpuAccess(m,r,c);
+  cpu.acc[m][r*cpu.N+c]++;
+  if(m===1) cpu.fmas++;
+  cpu.cur = {m,r,c,i:cpu.I[p],j:cpu.J[p],k:cpu.K[p],hit};
+  cpu.ptr++;
+  return true;
+}
+const MNAME = ['A','B','C'];
+function cpuStatus(){
+  const c = cpu.cur; if(!c){ return; }
+  const what = c.m===0 ? 'A['+c.i+']['+c.k+'] 읽기'
+             : c.m===1 ? 'B['+c.k+']['+c.j+'] 읽기'
+             : 'C['+c.i+']['+c.j+'] 읽고 더해 쓰기';
+  $('c-status').innerHTML = '<span class="pill ph">i='+c.i+' k='+c.k+' j='+c.j+'</span>'+
+    '<span>'+what+'</span>'+
+    '<span class="pill '+(c.hit?'hit':'miss')+'">'+(c.hit?'캐시 히트':'미스 → DRAM 왕복')+'</span>'+
+    '<span class="tiny">라인 #'+cpu.nowLine+'</span>';
+}
+function cpuMeters(){
+  const acc = cpu.hits+cpu.misses, prog = cpu.total ? cpu.ptr/cpu.total : 0;
+  $('c-m-prog').innerHTML = (prog*100).toFixed(prog>0&&prog<0.01?2:0)+'<small>%</small>';
+  $('c-m-progbar').style.width = (prog*100)+'%';
+  $('c-m-acc').textContent = fnum(acc);
+  $('c-m-hit').textContent = fnum(cpu.hits);
+  $('c-m-miss').textContent = fnum(cpu.misses);
+  const rate = acc ? cpu.hits/acc : 0;
+  $('c-m-rate').textContent = acc ? (rate*100).toFixed(1)+' %' : '—';
+  const rb = $('c-m-ratebar'); rb.style.width = (rate*100)+'%';
+  rb.className = rate < 0.5 ? 'h' : '';
+  const bytes = cpu.misses*LINE*4;
+  $('c-m-bytes').textContent = fbytes(bytes);
+  $('c-m-ai').textContent = bytes ? (2*cpu.fmas/bytes).toFixed(3)+' FLOP/B' : '—';
+  const N = cpu.N, naive = 8*N*N*N*(cpu.ptr/Math.max(cpu.total,1));
+  $('c-m-vs').textContent = bytes ? (bytes/Math.max(naive,1)*100).toFixed(1)+' %' : '—';
+  const p = pal(), box = $('c-cache');
+  if(box.children.length !== cpu.lines){
+    box.innerHTML = ''; for(let s=0;s<cpu.lines;s++){ const d=document.createElement('div'); d.className='cl'; box.appendChild(d); }
+  }
+  for(let s=0;s<cpu.lines;s++){
+    const d = box.children[s], m = cpu.cM[s];
+    d.className = 'cl' + (m>=0 ? ' '+MNAME[m] : '') + (cpu.cLine[s]===cpu.nowLine && m>=0 ? ' now' : '');
+    d.textContent = cpu.cLine[s]>=0 ? MNAME[m]+cpu.cLine[s] : '·';
+  }
+  const bl = ['읽기','읽기','누적'];
+  for(let m=0;m<3;m++){
+    let a=0; const A=cpu.acc[m]; for(let i=0;i<A.length;i++) a+=A[i];
+    $(['c-la','c-lb','c-lc'][m]).textContent = bl[m]+' '+fnum(a)+' · 미스 '+fnum(cpu.heat[m].reduce((x,y)=>x+y,0));
+  }
+  void p;
+}
+function cpuDraw(){
+  const p = pal(), N = cpu.N, cell = Math.max(4, Math.floor(210/N)), dpr = window.devicePixelRatio||1;
+  const accent = [p['--copper'], p['--steel'], p['--plum']];
+  const ids = ['c-ca','c-cb','c-cc'];
+  for(let m=0;m<3;m++){
+    const cv = $(ids[m]), px = N*cell+2;
+    if(cv.width !== px*dpr){ cv.width = px*dpr; cv.height = px*dpr; cv.style.width = px+'px'; cv.style.height = px+'px'; }
+    const g = cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
+    g.fillStyle = p['--sunken']; g.fillRect(0,0,px,px);
+    const src = cpu.mode==='miss' ? cpu.heat[m] : cpu.acc[m];
+    let mx = 1; for(let i=0;i<src.length;i++) if(src[i]>mx) mx = src[i];
+    const to = cpu.mode==='miss' ? p['--hot'] : accent[m];
+    for(let r=0;r<N;r++) for(let c=0;c<N;c++){
+      const v = src[r*N+c]; if(!v) continue;
+      g.fillStyle = mix(p['--sunken'], to, 0.22+0.78*Math.sqrt(v/mx));
+      g.fillRect(1+c*cell, 1+r*cell, cell-1, cell-1);
+    }
+    if(cell>=7){ g.strokeStyle = p['--line-2']; g.lineWidth = 0.5;
+      for(let i=0;i<=N;i++){ g.beginPath(); g.moveTo(1+i*cell,1); g.lineTo(1+i*cell,1+N*cell);
+        g.moveTo(1,1+i*cell); g.lineTo(1+N*cell,1+i*cell); g.stroke(); } }
+    const cur = cpu.cur;
+    if(cur){
+      if(cpu.variant==='tile'){
+        const B = cpu.B, i0 = Math.floor(cur.i/B)*B, j0 = Math.floor(cur.j/B)*B, k0 = Math.floor(cur.k/B)*B;
+        const rc = m===0 ? [i0,k0] : m===1 ? [k0,j0] : [i0,j0];
+        g.strokeStyle = p['--ink']; g.lineWidth = 1.5;
+        g.strokeRect(1+rc[1]*cell, 1+rc[0]*cell, Math.min(B,N-rc[1])*cell, Math.min(B,N-rc[0])*cell);
+      }
+      const pos = m===0 ? [cur.i,cur.k] : m===1 ? [cur.k,cur.j] : [cur.i,cur.j];
+      if(m===cur.m){ g.fillStyle = p['--ink']; g.fillRect(1+pos[1]*cell, 1+pos[0]*cell, Math.max(cell-1,2), Math.max(cell-1,2)); }
+      else { g.strokeStyle = p['--ink']; g.lineWidth = 1;
+        g.strokeRect(1+pos[1]*cell+0.5, 1+pos[0]*cell+0.5, Math.max(cell-2,2), Math.max(cell-2,2)); }
+    }
+  }
+}
+const CEXP = {
+  ijk:'<b>나이브 i-j-k.</b> 출력 하나를 끝까지 완성한 뒤 다음으로 넘어간다. 사람이 손으로 계산하는 순서이고, 최악의 순서다. '+
+      'k 루프가 B를 <b>세로로</b> 걸어가므로 캐시 라인 8칸을 끌어와 1칸만 쓰고 버린다. 게다가 B 전체를 훑고 나서야 다음 j로 가는데, '+
+      '그때 맨 위 라인은 이미 밀려나 있다. 재사용 기회 N번 중 실제로 살리는 건 거의 0.',
+  ikj:'<b>순서만 바꾼 i-k-j.</b> A 원소 하나를 잡고 그것을 B의 <b>한 행 전체</b>에 뿌린다. 이제 B도 C도 가로로 걸으므로 '+
+      '캐시 라인 8칸을 8번 다 쓴다. 타일링을 하기 전에 이것부터 해야 한다 — 실측에서 N=1024일 때 이 변경만으로 41배가 나왔다. '+
+      '하지만 아직 B 전체를 i마다 한 번씩 다시 읽는다. 캐시보다 B가 크면 그 재방문은 전부 미스다.',
+  tile:'<b>타일링.</b> i·k·j를 각각 B칸씩 잘라, 작은 정사각형 조각 안에서 계산을 몰아 끝낸다. '+
+       'A 타일과 B 타일이 캐시에 함께 머무는 동안 그 둘로 만들 수 있는 B³번의 FMA를 전부 해치운 뒤 버린다. '+
+       '한 번 끌어온 원소가 <b>B번</b> 쓰이므로 운반량이 B분의 1로 준다. 단, 타일 3장이 캐시에 <b>동시에</b> 들어가야 성립한다 — '+
+       '캐시 라인 수를 줄여 보면 그 조건이 깨지는 순간을 볼 수 있다.'
+};
+function cpuExplain(){ $('c-explain').innerHTML = CEXP[cpu.variant]; }
+function cpuStop(){ cpu.playing=false; if(cpu.raf) cancelAnimationFrame(cpu.raf); cpu.raf=0; $('c-play').textContent='▶ 재생'; }
+function cpuLoop(){
+  const n = SPEEDS[cpu.speed];
+  let alive = true;
+  for(let i=0;i<n && alive;i++) alive = cpuStep();
+  cpuDraw(); cpuMeters(); cpuStatus();
+  if(!alive){ cpuStop(); $('c-status').insertAdjacentHTML('beforeend',' <span class="pill">완료</span>'); return; }
+  cpu.raf = requestAnimationFrame(cpuLoop);
+}
+$('c-play').addEventListener('click', () => {
+  if(cpu.playing){ cpuStop(); return; }
+  if(cpu.ptr >= cpu.total) cpuReset(false);
+  cpu.playing = true; $('c-play').textContent = '⏸ 멈춤'; cpu.raf = requestAnimationFrame(cpuLoop);
+});
+$('c-step').addEventListener('click', () => { cpuStop(); cpuStep(); cpuDraw(); cpuMeters(); cpuStatus(); });
+$('c-fin').addEventListener('click', () => { cpuStop(); while(cpuStep()){} cpuDraw(); cpuMeters(); cpuStatus(); });
+$('c-reset').addEventListener('click', () => cpuReset(false));
+for(const k in CV) CV[k].addEventListener('click', () => {
+  cpu.variant = k; for(const q in CV) CV[q].setAttribute('aria-pressed', String(q===k)); cpuReset(true);
+});
+$('c-n').addEventListener('input', e => { cpu.N = +e.target.value; $('c-nv').textContent = cpu.N; cpuReset(true); });
+$('c-b').addEventListener('input', e => { cpu.B = +e.target.value; $('c-bv').textContent = cpu.B; cpuReset(true); });
+$('c-cap').addEventListener('input', e => { cpu.lines = +e.target.value;
+  $('c-capv').textContent = cpu.lines+' 라인 = '+(cpu.lines*LINE)+' float'; cpuReset(false); });
+$('c-sp').addEventListener('input', e => { cpu.speed = +e.target.value; $('c-spv').textContent = SPEEDL[cpu.speed]+' 접근/프레임'; });
+$('c-mode-miss').addEventListener('click', () => { cpu.mode='miss';
+  $('c-mode-miss').setAttribute('aria-pressed','true'); $('c-mode-hit').setAttribute('aria-pressed','false'); cpuDraw(); });
+$('c-mode-hit').addEventListener('click', () => { cpu.mode='acc';
+  $('c-mode-hit').setAttribute('aria-pressed','true'); $('c-mode-miss').setAttribute('aria-pressed','false'); cpuDraw(); });
+
+/* ---------- CPU 이론값 계산기 ---------- */
+const CPU_PEAK = 32e9, CPU_BW = 10e9;
+let tcap = 32*1024;
+const TC = {'t-c-l1':32*1024, 't-c-l2':256*1024, 't-c-l3':20*1024*1024};
+function theory(){
+  const N = 1 << +$('t-n').value, B = 1 << +$('t-b').value;
+  $('t-nv').textContent = N; $('t-bv').textContent = B;
+  const flop = 2*N*N*N, nb = 8*N*N*N, tb = nb/B;
+  $('t-num-n').textContent = fbytes(nb); $('t-num-t').textContent = fbytes(tb);
+  $('t-bar-t').style.width = Math.max(100/B, 1.2)+'%';
+  const fit = 3*B*B*4, bmax = Math.floor(Math.sqrt(tcap/12));
+  const over = fit > tcap;
+  $('t-fit').innerHTML = (over?'<span style="color:var(--hot)">':'<span style="color:var(--moss)">')+fbytes(fit)+'</span> / '+fbytes(tcap);
+  $('t-bmax').textContent = 'B ≤ '+bmax;
+  const tn = Math.max(flop/CPU_PEAK, nb/CPU_BW), tt = Math.max(flop/CPU_PEAK, tb/CPU_BW);
+  $('t-time').innerHTML = ftime(tn)+' → <b>'+ftime(tt)+'</b>';
+  $('t-speed').textContent = (tn/tt).toFixed(1)+' 배';
+  $('t-formula').innerHTML =
+    '나이브 &nbsp;: 출력 N²개 × 원소 2N개 = <b>2N³</b> = '+fnum(2*N*N*N)+' 원소 → '+fbytes(nb)+'<br>'+
+    '타일 B : 블록 (N/B)²개 × (N/B)단계 × 2B² = <b>2N³/B</b> = '+fnum(2*N*N*N/B)+' 원소 → '+fbytes(tb)+'<br>'+
+    '연산 밀도 : 0.25 → <b>B/4 = '+(B/4)+' FLOP/B</b> ('+B+'배)<br>'+
+    (over ? '<span style="color:var(--hot)">⚠ 타일 3장이 이 캐시를 넘긴다 → 타일 안에서도 미스가 나므로 위 이득은 실현되지 않는다.</span>'
+          : '<span style="color:var(--moss)">✓ 타일 3장이 캐시에 동시에 들어간다 → 위 이득이 실현될 조건 충족.</span>');
+}
+$('t-n').addEventListener('input', theory);
+$('t-b').addEventListener('input', theory);
+for(const id in TC) $(id).addEventListener('click', () => {
+  tcap = TC[id]; for(const q in TC) $(q).setAttribute('aria-pressed', String(q===id)); theory();
+});
+</script>
+
+<script>
+"use strict";
+/* ================= 2 부 · GPU shared memory ================= */
+const G_PEAK = 35600, G_BWG = 936, G_BWS = 17800;   // GFLOP/s, GB/s, GB/s
+const gs = {
+  N:32, T:8, mode:'naive', speed:2,
+  step:0, total:0, kt:0, phase:'load', sub:0,
+  gl:0, tx:0, sw:0, sr:0, fma:0, sync:0,
+  heatA:null, heatB:null, heatC:null, sA:null, sB:null,
+  nowA:[], nowB:[], nowKK:-1, playing:false, raf:0
+};
+const GSPEED = [1,2,6,20,200], GSPEEDL = ['한 단계씩','느리게','보통','빠르게','아주 빠르게'];
+const GV = {naive:$('gv-naive'), tile:$('gv-tile')};
+
+function gTotal(){ return gs.mode==='naive' ? gs.N : (gs.N/gs.T)*(2*gs.T+2); }
+function gpuReset(){
+  gpuStop();
+  const N = gs.N, T = gs.T;
+  gs.step=0; gs.kt=0; gs.phase='load'; gs.sub=0;
+  gs.gl=0; gs.tx=0; gs.sw=0; gs.sr=0; gs.fma=0; gs.sync=0;
+  gs.heatA = new Int32Array(T*N); gs.heatB = new Int32Array(N*T); gs.heatC = new Int32Array(T*T);
+  gs.sA = new Uint8Array(T*T); gs.sB = new Uint8Array(T*T);
+  gs.nowA = []; gs.nowB = []; gs.nowKK = -1;
+  gs.total = gTotal();
+  $('g-status').textContent = '리셋 상태. ▶ 재생을 누르면 블록 하나가 K를 훑기 시작한다.';
+  $('g-phase').textContent = '대기';
+  gpuDraw(); gpuMeters(); gpuExplain(); gpuScale();
+}
+function gStep(){
+  const N = gs.N, T = gs.T;
+  if(gs.step >= gs.total) return false;
+  gs.nowA = []; gs.nowB = []; gs.nowKK = -1;
+  if(gs.mode === 'naive'){
+    const k = gs.step;
+    for(let t=0;t<T;t++){ gs.heatA[t*N+k] += T; gs.nowA.push([t,k]); }
+    for(let j=0;j<T;j++){ gs.heatB[k*T+j] += T; gs.nowB.push([k,j]); }
+    for(let i=0;i<T*T;i++) gs.heatC[i]++;
+    gs.gl += 2*T*T;
+    gs.tx += T*(1 + Math.ceil(T/8));
+    gs.fma += T*T;
+    gs.phase = 'compute';
+    $('g-status').innerHTML = '<span class="pill ph">k = '+k+'</span>'+
+      '<span>스레드 '+(T*T)+'개가 각자 A['+'i'+']['+k+'], B['+k+'][j]를 <b>글로벌에서 직접</b> 읽어 1회 FMA</span>'+
+      '<span class="pill miss">글로벌 로드 '+(2*T*T)+'개</span>';
+  } else {
+    if(gs.phase === 'load'){
+      if(gs.sub === 0){ gs.sA.fill(0); gs.sB.fill(0); }
+      const ty = gs.sub;
+      for(let x=0;x<T;x++){
+        gs.heatA[ty*N + gs.kt*T + x]++; gs.nowA.push([ty, gs.kt*T+x]); gs.sA[ty*T+x] = 1;
+        gs.heatB[(gs.kt*T+ty)*T + x]++; gs.nowB.push([gs.kt*T+ty, x]); gs.sB[ty*T+x] = 1;
+      }
+      gs.gl += 2*T; gs.sw += 2*T; gs.tx += 2*Math.ceil(T/8);
+      $('g-status').innerHTML = '<span class="pill ph">타일 '+(gs.kt+1)+'/'+(N/T)+' · 적재</span>'+
+        '<span>스레드 행 '+ty+'가 A·B에서 연속한 '+T+'칸씩을 shared로 옮긴다</span>'+
+        '<span class="pill miss">글로벌 로드 '+(2*T)+'개 · 트랜잭션 '+(2*Math.ceil(T/8))+'</span>';
+      if(++gs.sub >= T){ gs.sub = 0; gs.phase = 'sync1'; }
+    } else if(gs.phase === 'sync1' || gs.phase === 'sync2'){
+      gs.sync++;
+      $('g-status').innerHTML = '<span class="pill ph">__syncthreads()</span>'+
+        '<span>'+(gs.phase==='sync1'
+          ? '모두가 적재를 끝낼 때까지 대기 — 아직 안 올라온 칸을 읽으면 오답이 된다'
+          : '모두가 계산을 끝낼 때까지 대기 — 다음 타일이 shared를 덮어쓰기 전에')+'</span>';
+      if(gs.phase === 'sync1'){ gs.phase = 'compute'; }
+      else { gs.phase = 'load'; gs.kt++; }
+    } else {
+      const kk = gs.sub; gs.nowKK = kk;
+      gs.sr += 2*T*T; gs.fma += T*T;
+      for(let i=0;i<T*T;i++) gs.heatC[i]++;
+      $('g-status').innerHTML = '<span class="pill ph">타일 '+(gs.kt+1)+'/'+(N/T)+' · 계산 kk='+kk+'</span>'+
+        '<span>스레드 '+(T*T)+'개가 <b>shared에서</b> As[·]['+kk+'], Bs['+kk+'][·]를 읽어 1회 FMA — 글로벌 접근 0</span>'+
+        '<span class="pill hit">shared 읽기 '+(2*T*T)+'개</span>';
+      if(++gs.sub >= T){ gs.sub = 0; gs.phase = 'sync2'; }
+    }
+  }
+  gs.step++;
+  const PH = {load:'글로벌 → shared 적재', sync1:'배리어', sync2:'배리어', compute:'shared → 레지스터 계산'};
+  $('g-phase').textContent = gs.mode==='naive' ? '글로벌 직독 계산' : PH[gs.phase];
+  return true;
+}
+function gpuMeters(){
+  const N = gs.N, T = gs.T, prog = gs.total ? gs.step/gs.total : 0;
+  $('g-m-prog').innerHTML = (prog*100).toFixed(0)+'<small>%</small>';
+  $('g-m-progbar').style.width = (prog*100)+'%';
+  $('g-m-fma').textContent = fnum(gs.fma);
+  $('g-m-gl').textContent = fnum(gs.gl);
+  $('g-m-sr').textContent = fnum(gs.sr);
+  $('g-m-tx').textContent = fi(gs.tx)+' 회';
+  $('g-m-sw').textContent = fi(gs.sw)+' 개';
+  $('g-m-sync').textContent = fi(gs.sync)+' 회';
+  $('g-m-smem').textContent = gs.mode==='naive' ? '0 B (사용 안 함)' : fbytes(2*T*T*4);
+  $('g-m-reuse').textContent = gs.mode==='naive' ? '1 배 (재사용 없음)' : T+' 배';
+}
+function gpuDraw(){
+  const p = pal(), N = gs.N, T = gs.T, dpr = window.devicePixelRatio||1;
+  const cw = Math.max(4, Math.min(12, Math.floor(340/N)));
+  const gap = 16, ox = 10, oy = 24;
+  const bx = ox + N*cw + gap, by = oy;
+  const ay = oy + N*cw + gap + 14, ax = ox, cx = bx, cy = ay;
+  const W = bx + T*cw + 12, H = ay + T*cw + 16;
+  const cv = $('g-glob');
+  if(cv.width !== Math.round(W*dpr)){ cv.width = Math.round(W*dpr); cv.height = Math.round(H*dpr);
+    cv.style.width = W+'px'; cv.style.height = H+'px'; }
+  const g = cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,W,H);
+  g.font = '500 10px "IBM Plex Mono",monospace'; g.textBaseline = 'alphabetic';
+
+  const grid = (x,y,rows,cols,heat,idxr,accent,label) => {
+    g.fillStyle = p['--ink-3']; g.fillText(label, x, y-6);
+    g.fillStyle = p['--sunken']; g.fillRect(x,y,cols*cw,rows*cw);
+    let mx = 1; for(let i=0;i<heat.length;i++) if(heat[i]>mx) mx = heat[i];
+    for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+      const v = heat[idxr(r,c)]; if(!v) continue;
+      g.fillStyle = mix(p['--sunken'], accent, 0.2+0.8*Math.sqrt(v/mx));
+      g.fillRect(x+c*cw, y+r*cw, cw-0.6, cw-0.6);
+    }
+    if(cw >= 7){ g.strokeStyle = p['--line-2']; g.lineWidth = 0.5;
+      for(let i=0;i<=cols;i++){ g.beginPath(); g.moveTo(x+i*cw,y); g.lineTo(x+i*cw,y+rows*cw); g.stroke(); }
+      for(let i=0;i<=rows;i++){ g.beginPath(); g.moveTo(x,y+i*cw); g.lineTo(x+cols*cw,y+i*cw); g.stroke(); } }
+    g.strokeStyle = p['--line']; g.lineWidth = 1; g.strokeRect(x,y,cols*cw,rows*cw);
+  };
+  grid(bx, by, N, T, gs.heatB, (r,c)=>r*T+c, p['--steel'], 'B · K×T 열 슬랩');
+  grid(ax, ay, T, N, gs.heatA, (r,c)=>r*N+c, p['--copper'], 'A · T행×K 슬랩');
+  grid(cx, cy, T, T, gs.heatC, (r,c)=>r*T+c, p['--plum'], 'C · 출력 타일 T×T');
+
+  if(gs.mode === 'tile' && gs.kt < N/gs.T){
+    g.strokeStyle = p['--ink']; g.lineWidth = 1.6; g.setLineDash([3,2]);
+    g.strokeRect(ax + gs.kt*T*cw, ay, T*cw, T*cw);
+    g.strokeRect(bx, by + gs.kt*T*cw, T*cw, T*cw);
+    g.setLineDash([]);
+  }
+  g.fillStyle = p['--ink'];
+  gs.nowA.forEach(([r,c]) => g.fillRect(ax+c*cw, ay+r*cw, Math.max(cw-0.6,2), Math.max(cw-0.6,2)));
+  gs.nowB.forEach(([r,c]) => g.fillRect(bx+c*cw, by+r*cw, Math.max(cw-0.6,2), Math.max(cw-0.6,2)));
+
+  /* 빠른 층 */
+  const fs = Math.max(5, Math.min(14, Math.floor(104/T)));
+  const fx1 = 10, fy = 28, fx2 = 10 + T*fs + 22, ry = fy + T*fs + 32;
+  const FW = Math.max(fx2 + T*fs + 10, 240), FH = ry + T*fs + 14;
+  const cf = $('g-fast');
+  if(cf.width !== Math.round(FW*dpr)){ cf.width = Math.round(FW*dpr); cf.height = Math.round(FH*dpr);
+    cf.style.width = FW+'px'; cf.style.height = FH+'px'; }
+  const f = cf.getContext('2d'); f.setTransform(dpr,0,0,dpr,0,0);
+  f.clearRect(0,0,FW,FH); f.font = '500 10px "IBM Plex Mono",monospace';
+  const box = (x,y,rows,cols,fill,accent,label,ink) => {
+    f.fillStyle = p['--ink-3']; f.fillText(label, x, y-6);
+    f.fillStyle = p['--sunken']; f.fillRect(x,y,cols*fs,rows*fs);
+    for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+      const v = fill(r,c); if(!v) continue;
+      f.fillStyle = typeof v === 'number' ? mix(p['--sunken'], accent, 0.2+0.8*v) : v;
+      f.fillRect(x+c*fs, y+r*fs, fs-1, fs-1);
+    }
+    f.strokeStyle = p['--line']; f.lineWidth = 1; f.strokeRect(x,y,cols*fs,rows*fs);
+    if(ink){ f.strokeStyle = p['--ink']; f.lineWidth = 1.6; ink(x,y); }
+  };
+  if(gs.mode === 'naive'){
+    f.fillStyle = p['--ink-3']; f.fillText('shared memory — 사용 안 함', fx1, fy-6);
+    f.strokeStyle = p['--line']; f.setLineDash([4,3]);
+    f.strokeRect(fx1, fy, T*fs*2+22, T*fs); f.setLineDash([]);
+    f.fillStyle = p['--idle']; f.fillText('0 B', fx1+8, fy+T*fs/2+4);
+  } else {
+    box(fx1, fy, T, T, (r,c) => gs.sA[r*T+c] ? 0.85 : 0, p['--copper'], 'shared As',
+      gs.nowKK >= 0 ? (x,y) => f.strokeRect(x+gs.nowKK*fs, y, fs, T*fs) : null);
+    box(fx2, fy, T, T, (r,c) => gs.sB[r*T+c] ? 0.85 : 0, p['--steel'], 'shared Bs',
+      gs.nowKK >= 0 ? (x,y) => f.strokeRect(x, y+gs.nowKK*fs, T*fs, fs) : null);
+  }
+  let mc = 1; for(let i=0;i<gs.heatC.length;i++) if(gs.heatC[i]>mc) mc = gs.heatC[i];
+  box(fx1, ry, T, T, (r,c) => gs.heatC[r*T+c]/mc, p['--plum'], '레지스터 누산기 · 스레드 T×T', null);
+  $('g-fastnote').innerHTML = gs.mode === 'naive'
+    ? '나이브 커널은 빠른 층을 <b>쓰지 않는다</b>. 스레드마다 누산기 레지스터 1개가 전부이고, 필요한 값은 매번 글로벌까지 내려가 가져온다.'
+    : 'As·Bs가 채워지는 동안엔 계산이 없고, 계산 중엔 글로벌 접근이 없다. 두 국면을 <code>__syncthreads()</code>가 갈라 준다. '+
+      '진한 칸이 누적된 FMA 횟수 — '+fnum(gs.fma)+'회.';
+}
+const GEXP = {
+  naive:'<b>나이브 커널.</b> 스레드 하나가 C의 원소 하나를 맡고, k를 돌면서 필요한 A·B 원소를 <b>매번 글로벌 메모리에서</b> 가져온다. '+
+    '문제는 낭비의 구조다 — 같은 A[i][k] 하나를 같은 블록의 T개 스레드가 각자 따로 요청하고, 같은 B[k][j]를 다른 T개 스레드가 또 따로 요청한다. '+
+    '블록 하나가 글로벌에서 끌어오는 원소는 <b>2·K·T²</b>개. 정작 필요한 서로 다른 원소는 2·K·T개뿐이니, <b>T배를 헛되이 나른다.</b>',
+  tile:'<b>shared 타일 커널.</b> 국면을 둘로 나눈다. ① 적재 — T×T개 스레드가 <b>협동해서</b> A 타일과 B 타일을 한 칸씩 shared로 옮긴다. '+
+    '② 계산 — 배리어를 지난 뒤, 모두가 shared에서만 읽어 T번의 FMA를 한다. 한 번 나른 원소가 <b>T명에게</b> 쓰이므로 글로벌 로드가 정확히 T분의 1로 준다. '+
+    '적재는 연속한 주소를 한 번에 읽으므로 <abbr title="워프의 32개 스레드가 연속된 주소를 읽으면 한 번의 메모리 트랜잭션으로 처리된다">병합</abbr>도 자연히 따라온다. '+
+    '값은 하나도 변하지 않고 FMA 횟수도 같다 — 바뀐 건 읽는 장소뿐이다.'
+};
+function gpuExplain(){ $('g-explain').innerHTML = GEXP[gs.mode]; }
+function gpuScale(){
+  const N = gs.N, T = gs.T, blocks = (N/T)*(N/T);
+  const en = 2*N*T*T*blocks, et = 2*N*T*blocks;
+  $('g-num-n').textContent = fnum(en)+' 원소';
+  $('g-num-t').textContent = fnum(et)+' 원소';
+  $('g-bar-t').style.width = Math.max(100/T, 2)+'%';
+  $('g-ai-n').textContent = '0.25 FLOP/B';
+  $('g-ai-t').textContent = (T/4).toFixed(2)+' FLOP/B ('+T+'배)';
+  const R = 4096, flop = 2*R*R*R;
+  const tn = Math.max(flop/(G_PEAK*1e9), 8*R*R*R/(G_BWG*1e9));
+  const tt = Math.max(flop/(G_PEAK*1e9), 8*R*R*R/T/(G_BWG*1e9));
+  $('g-t-n').innerHTML = ftime(tn)+' <small>N=4096</small>';
+  $('g-t-t').innerHTML = ftime(tt)+' <small>N=4096</small>';
+  $('g-t-s').textContent = (tn/tt).toFixed(1)+' 배';
+  const smem = 2*T*T*4, thr = T*T;
+  $('g-cap').innerHTML =
+    'shared 사용량 = 타일 2장 × T² × 4 B = <b>'+fbytes(smem)+'</b><br>'+
+    '블록당 스레드 = T² = <b>'+thr+'</b> (한계 1024)<br>'+
+    '글로벌 재사용 = <b>T = '+T+'배</b> ← 키우고 싶은 값<br>'+
+    'SM 하나의 shared = 100 KB, 블록 한계 = 16 ← 키우면 걸리는 벽';
+  $('g-cap-b').textContent = fbytes(smem);
+  $('g-cap-occ').textContent = Math.min(16, Math.floor(102400/smem), Math.floor(1536/thr))+' 개';
+  $('g-cap-thr').textContent = thr+' 개';
+}
+function gpuStop(){ gs.playing=false; if(gs.raf) cancelAnimationFrame(gs.raf); gs.raf=0; $('g-play').textContent='▶ 재생'; }
+function gpuLoop(){
+  let alive = true;
+  for(let i=0;i<GSPEED[gs.speed] && alive;i++) alive = gStep();
+  gpuDraw(); gpuMeters();
+  if(!alive){ gpuStop(); $('g-status').insertAdjacentHTML('beforeend',' <span class="pill">완료</span>'); return; }
+  gs.raf = requestAnimationFrame(gpuLoop);
+}
+$('g-play').addEventListener('click', () => {
+  if(gs.playing){ gpuStop(); return; }
+  if(gs.step >= gs.total) gpuReset();
+  gs.playing = true; $('g-play').textContent = '⏸ 멈춤'; gs.raf = requestAnimationFrame(gpuLoop);
+});
+$('g-step').addEventListener('click', () => { gpuStop(); gStep(); gpuDraw(); gpuMeters(); });
+$('g-fin').addEventListener('click', () => { gpuStop(); while(gStep()){} gpuDraw(); gpuMeters(); });
+$('g-reset').addEventListener('click', gpuReset);
+for(const k in GV) GV[k].addEventListener('click', () => {
+  gs.mode = k; for(const q in GV) GV[q].setAttribute('aria-pressed', String(q===k)); gpuReset();
+});
+$('g-n').addEventListener('input', e => { gs.N = +e.target.value; $('g-nv').textContent = gs.N; gpuReset(); });
+$('g-t').addEventListener('input', e => { gs.T = +e.target.value;
+  $('g-tv').textContent = gs.T+' (스레드 '+(gs.T*gs.T)+'개)'; gpuReset(); });
+$('g-sp').addEventListener('input', e => { gs.speed = +e.target.value; $('g-spv').textContent = GSPEEDL[gs.speed]; });
+
+/* ---------- 레지스터 타일링 + 2단 루프라인 ---------- */
+let RK = {BM:128, BK:8, TM:8};
+function reg(){
+  const BM = 1 << +$('r-bm').value, BK = 1 << +$('r-bk').value, TM = 1 << +$('r-tm').value;
+  RK = {BM, BK, TM};
+  $('r-bmv').textContent = BM; $('r-bkv').textContent = BK; $('r-tmv').textContent = TM;
+  const aig = BM*BM/(2*(BM+BM));          // = BM/4  (BM=BN)
+  const ais = TM*TM/(2*(TM+TM));          // = TM/4  (TM=TN)
+  const thr = (BM/TM)*(BM/TM), regs = TM*TM, smem = 2*BM*BK*4;
+  const pg = aig*G_BWG, ps = ais*G_BWS;
+  const perf = Math.min(G_PEAK, pg, ps);
+  const bound = perf===G_PEAK ? '<span style="color:var(--moss)">연산 유닛 (이상적)</span>'
+              : (pg < ps ? '<span style="color:var(--hot)">글로벌 대역폭</span>'
+                         : '<span style="color:var(--copper)">shared 대역폭</span>');
+  $('r-formula').innerHTML =
+    '글로벌: 타일단계마다 BK·(BM+BN) 적재 → BM·BN·BK FMA<br>'+
+    '&nbsp;&nbsp;밀도 = BM·BN / 2(BM+BN) = <b>'+aig.toFixed(2)+'</b><br>'+
+    'shared: 스레드가 TM+TN 읽어 TM·TN FMA<br>'+
+    '&nbsp;&nbsp;밀도 = TM·TN / 2(TM+TN) = <b>'+ais.toFixed(2)+'</b><br>'+
+    '균형점: 글로벌 <b>38.0</b> · shared <b>2.0</b>';
+  $('r-ai-g').innerHTML = aig.toFixed(2)+' FLOP/B '+(aig>=38?'<span style="color:var(--moss)">✓</span>':'<span style="color:var(--hot)">부족</span>');
+  $('r-ai-s').innerHTML = ais.toFixed(2)+' FLOP/B '+(ais>=2?'<span style="color:var(--moss)">✓</span>':'<span style="color:var(--hot)">부족</span>');
+  $('r-thr').innerHTML = thr+' 개'+(thr>1024?' <span style="color:var(--hot)">한계 초과</span>':'');
+  $('r-reg').textContent = regs+' 개 (float)';
+  $('r-smem').innerHTML = fbytes(smem)+(smem>49152?' <span style="color:var(--hot)">48 KB 초과</span>':'');
+  $('r-bound').innerHTML = bound;
+  $('r-peak').textContent = (perf/G_PEAK*100).toFixed(1)+' % · '+fnum(perf)+' GFLOP/s';
+  drawRoof();
+}
+['r-bm','r-bk','r-tm'].forEach(id => $(id).addEventListener('input', reg));
+
+function drawRoof(){
+  const W = 320, H = 260, L = 36, R = 8, Tp = 12, Bt = 28;
+  const x0 = Math.log2(0.125), x1 = Math.log2(512);
+  const y0 = Math.log10(100), y1 = Math.log10(60000);
+  const X = ai => L + (Math.log2(ai)-x0)/(x1-x0)*(W-L-R);
+  const Y = p  => H-Bt - (Math.log10(p)-y0)/(y1-y0)*(H-Bt-Tp);
+  const clamp = v => Math.max(100, Math.min(60000, v));
+  let s = '';
+  s += '<rect x="'+L+'" y="'+Tp+'" width="'+(W-L-R)+'" height="'+(H-Bt-Tp)+'" fill="var(--sunken)" stroke="var(--line-2)"/>';
+  [0.25,1,4,16,64,256].forEach(t => { s += '<line x1="'+X(t)+'" y1="'+Tp+'" x2="'+X(t)+'" y2="'+(H-Bt)+'" stroke="var(--line-2)" stroke-width="0.6"/>'+
+    '<text x="'+X(t)+'" y="'+(H-Bt+12)+'" fill="var(--ink-3)" font-size="8" text-anchor="middle" font-family="IBM Plex Mono,monospace">'+t+'</text>'; });
+  [100,1000,10000].forEach(t => { s += '<line x1="'+L+'" y1="'+Y(t)+'" x2="'+(W-R)+'" y2="'+Y(t)+'" stroke="var(--line-2)" stroke-width="0.6"/>'+
+    '<text x="'+(L-4)+'" y="'+(Y(t)+3)+'" fill="var(--ink-3)" font-size="8" text-anchor="end" font-family="IBM Plex Mono,monospace">'+fnum(t)+'</text>'; });
+  s += '<text x="'+(W-R)+'" y="'+(H-4)+'" fill="var(--ink-3)" font-size="8" text-anchor="end" font-family="IBM Plex Mono,monospace">FLOP / byte</text>';
+  // 연산 유닛 천장
+  s += '<line x1="'+X(G_PEAK/G_BWS)+'" y1="'+Y(G_PEAK)+'" x2="'+(W-R)+'" y2="'+Y(G_PEAK)+'" stroke="var(--moss)" stroke-width="1.6"/>'+
+       '<text x="'+(W-R-2)+'" y="'+(Y(G_PEAK)-4)+'" fill="var(--moss)" font-size="8" text-anchor="end" font-family="IBM Plex Mono,monospace">35.6 TFLOP/s 피크</text>';
+  // 대역폭 사선
+  const slope = (bw,color,label) => {
+    const aiHit = G_PEAK/bw;
+    s += '<line x1="'+X(0.125)+'" y1="'+Y(clamp(0.125*bw))+'" x2="'+X(aiHit)+'" y2="'+Y(G_PEAK)+'" stroke="'+color+'" stroke-width="1.4" stroke-dasharray="3,2"/>'+
+         '<text x="'+(X(aiHit)+3)+'" y="'+(Y(G_PEAK)+11)+'" fill="'+color+'" font-size="8" font-family="IBM Plex Mono,monospace">'+label+'</text>';
+  };
+  slope(G_BWS, 'var(--copper)', 'shared 17.8 TB/s');
+  slope(G_BWG, 'var(--hot)', '글로벌 936 GB/s');
+  // 점
+  const pt = (ai, perf, color, label, dy) => {
+    s += '<circle cx="'+X(ai)+'" cy="'+Y(clamp(perf))+'" r="4" fill="'+color+'" stroke="var(--panel)" stroke-width="1.2"/>'+
+         '<text x="'+(X(ai)+7)+'" y="'+(Y(clamp(perf))+(dy||3))+'" fill="'+color+'" font-size="8.5" font-family="IBM Plex Mono,monospace">'+label+'</text>';
+  };
+  const aig = RK.BM/4, ais = RK.TM/4;
+  pt(0.25, 0.25*G_BWG, 'var(--hot)', '나이브', 3);
+  pt(aig, Math.min(G_PEAK, aig*G_BWG, 0.25*G_BWS), 'var(--steel)', 'shared만 (TM=1)', -6);
+  pt(aig, Math.min(G_PEAK, aig*G_BWG, ais*G_BWS), 'var(--plum)', '현재 설정', 12);
+  $('r-roof').innerHTML = s;
+}
+
+/* ---------- 초기화 ---------- */
+why(); theory(); reg();
+$('c-spv').textContent = SPEEDL[cpu.speed]+' 접근/프레임';
+$('g-spv').textContent = GSPEEDL[gs.speed];
+cpuBuild(); cpuReset(false);
+gpuReset();
+paintRamp();
+</script>
