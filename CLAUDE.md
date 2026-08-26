@@ -21,13 +21,14 @@
     - 시간 측정 부분 외에서 모델 추론 연산 수행 금지
     - warmup 등 시간 측정 외 부분에서 주요 연산 결과를 캐싱해두고 이를 시간 측정 시에 사용하는 것 금지
     - 동일한 출력을 만들어 내는 다른 모델/알고리즘 사용 금지
+    - 양자화 불가
 
 
 # 3. SAFETY GUARDRAIL
 - NEVER EDIT
-    - inputs.bin, answers.bin, decode_answers.bin, model.bin, main.cpp, config.h, Makefile, tensor.h, tensor.cu, layer.h, layer.cu
+    - inputs.bin, answers.bin, decode_answers.bin, model.bin, main.cpp, config.h, Makefile
 - can edit
-    - model.h, model.cu, model_loader.h, model_loader.cu, run.sh
+    - tensor.h, tensor.cu, layer.h, layer.cu, model.h, model.cu, model_loader.h, model_loader.cu, run.sh
 
 # 4. Rule
 - Don't guess, but measure.
