@@ -1685,3 +1685,60 @@ smem 16,896 → 33,792 B(2블록 = 67,584 B ≤ 100 KB).
   구조적 바닥에 가깝다.**
 - 따라서 다음은 gemm 내부가 아니라 **낭비되는 일**로 간다: 020 gate tall-skinny
   (BN=128 타일 중 16열만 유효 → 87.5% 폐기), 021 스크래치 버퍼 수명.
+
+---
+
+# EXP-022a — `gemm_nt_body`를 타일 형상 템플릿으로 (제어 변수 고정, 무변경 확인)
+
+## 1. Background
+022는 `gemm_nt_bias`만 `128×256`/`8×16`으로 옮기는 실험인데, 착수해 보니 설계 메모에
+없던 장벽이 먼저 있었다: `gemm_nt_body`가 `__device__ __forceinline__`이고 `BM/BN/TM/TN`이
+**파일 스코프 상수**라 두 커널이 같은 형상을 공유한다. 한쪽만 바꾸려면 body를 템플릿화해야
+하고, 그러면 `gemm_grouped`의 코드젠도 같이 건드린다. 코드 주석 자체가 경고한다 —
+*"writing them any other way moves ptxas off the instruction schedule the projections were
+measured on"*(`src/model.cu`). 022 본체 측정이 오염되지 않도록 **리팩터가 공짜임을 먼저**
+못박는다. 019가 `launch_bounds`를 별도 대조 행으로 잡은 것과 같은 규율.
+
+## 2. Hypothesis
+형상 상수를 템플릿 인자로 올리기만 하고 **값을 그대로 두면** ptxas 출력이 불변이어야
+한다. 기대 Δ = **0**. 0이 아니면 022b의 이득/손실을 리팩터와 분리할 수 없다.
+
+## 3. Design and Implementation (`src/model.cu`)
+- `gemm_nt_body` → `template <int BM, int BN, int TM, int TN>`. `BK`와 블록 크기(256)는
+  설계상 두 커널 공통이라 **템플릿 인자로 올리지 않았다**(019가 `BK=16`을 고정했고,
+  이번에 움직일 것은 `TM·TN`뿐이라는 가설 1개 규율).
+- `gemm_col_slot` → `template <int BN>`. `BN/2` 오프셋이 형상에 의존한다.
+- 파일 스코프 `BM,BN,TM,TN` 삭제 → `PROJ_*`(gemm_nt_bias) / `GRP_*`(gemm_grouped) 두 조.
+  현재 값은 둘 다 `128,128,8,8`이라 **호스트 grid 계산도 값이 불변**이다.
+- static_assert 3종 추가: 타일이 블록을 채우는지(`(BM/TM)*(BN/TN)==256`), 스테이징이
+  타일을 정확히 덮는지(`BM/2*(BK/4)==256`, `BN/2*(BK/4)==256`).
+  **후자가 022b의 안전장치다** — `BN=256`이면 스레드당 float4가 2개에서 4개로 늘어야
+  하는데, 이 assert가 없으면 조용히 절반만 스테이징된 타일을 계산한다.
+
+## 4. Result
+
+**SASS가 완전히 동일하다.** `cuobjdump -sass`를 HEAD와 대조하면 14,965행 중 차이는
+번역 단위 이름이 들어간 mangled name 12곳뿐이고 **명령은 0곳**이다(`old.cu` vs `model.cu`).
+`ptxas -v`도 019 기록과 일치: `gemm_nt_bias` **123** · `gemm_grouped` **125** 레지스터,
+spill 0, smem 33,792 B.
+
+end-to-end (노드 b7, 한 allocation 안에서 교차 2rep):
+
+| 빌드 | gemm | moe | elapsed | seq/s |
+|---|---|---|---|---|
+| HEAD | 0.951 / 0.951 | 0.600 / 0.600 | 1.8859 / 1.8839 | 542.97 / 543.56 |
+| **022a** | 0.944 / 0.955 | 0.606 / 0.598 | **1.8792 / 1.8837** | 544.92 / 543.61 |
+
+**Δ elapsed −0.0035 s (0.19%), 노이즈 이하.** 출력 `cmp` **bitwise 동일**, 양쪽 PASSED
+(max abs 0.000179291). SASS가 같으므로 이것은 예측이 아니라 **필연**이다.
+
+부수 관찰: b7이 1.884를 냈다. EXP-015가 b1·b7을 slow(2.58 vs 2.16, 1.196×)로 분류했는데
+이번엔 b0 기록(1.884)과 같다. **노드 분류가 그때 그대로인지 미확인** — A/B를 한
+allocation 안에서 돌리는 규율은 그대로 유지한다.
+
+## 5. Next action
+**022b**: `PROJ_BM×PROJ_BN = 128×256`, `PROJ_TM×PROJ_TN = 8×16`. 이제 한 줄 변경 +
+스테이징 확장(스레드당 float4 2 → 4, B만) + `extern __shared__` +
+`cudaFuncSetAttribute(MaxDynamicSharedMemorySize)` + `__launch_bounds__(256,1)`.
+`GRP_*`는 손대지 않는다(`N=896`이라 `BN=256`이면 12.5% 패딩이 부활 — EXP-010이 없앤 손해).
+반증 조건은 plan 그대로: ncu `long_scoreboard`가 0.02에서 되살아나면 즉시 기각.

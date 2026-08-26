@@ -76,8 +76,18 @@ void to_host(Tensor& host, const float* device) {
 // two kernels below holds that 2-block residency: without it ptxas gives
 // `gemm_grouped` 141 registers and residency drops to one block. It spills
 // nothing at 128.
-constexpr int BM = 128, BN = 128, BK = 16, TM = 8, TN = 8;
-constexpr int GEMM_THREADS = (BM / TM) * (BN / TN);  // 256
+// The body below is a template on the output tile so the projections and the
+// grouped expert GEMM can carry different tiles. Both are 128x128 / 8x8 today,
+// so the split is a no-op; EXP-022 moves the projections alone. `BK` and the
+// block size stay common to both by design.
+constexpr int BK = 16;
+constexpr int GEMM_THREADS = 256;
+constexpr int PROJ_BM = 128, PROJ_BN = 128, PROJ_TM = 8, PROJ_TN = 8;
+constexpr int GRP_BM = 128, GRP_BN = 128, GRP_TM = 8, GRP_TN = 8;
+static_assert((PROJ_BM / PROJ_TM) * (PROJ_BN / PROJ_TN) == GEMM_THREADS,
+              "projection tile does not fill the block");
+static_assert((GRP_BM / GRP_TM) * (GRP_BN / GRP_TN) == GEMM_THREADS,
+              "grouped tile does not fill the block");
 // The +4 keeps the shared rows 16B-aligned while breaking the bank-conflict
 // pattern of a bare [BK][BM] layout.
 constexpr int SPAD = 4;
@@ -90,6 +100,7 @@ constexpr int SPAD = 4;
 // two float4 halves half a tile apart makes the same 8 lanes cover all 32 banks
 // exactly once. Only which thread owns which output column changes; every
 // output still accumulates the same k-ascending FMA sequence.
+template <int BN>
 __device__ __forceinline__ int gemm_col_slot(int tx, int j) {
     return tx * 4 + (j >> 2) * (BN / 2) + (j & 3);
 }
@@ -105,11 +116,17 @@ __device__ __forceinline__ int gemm_col_slot(int tx, int j) {
 // past its last; everything else is the tile kernel unchanged, down to the
 // bound expressions -- writing them any other way moves ptxas off the
 // instruction schedule the projections were measured on.
+template <int BM, int BN, int TM, int TN>
 __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
                                              const float* __restrict__ b,
                                              const float* __restrict__ bias,
                                              float* __restrict__ c,
                                              int row0, int m, int k, int n) {
+    // Each thread stages two float4 per matrix; that is what makes `lr`/`lr2`
+    // cover the tile exactly once. A wider tile has to change the staging.
+    static_assert(BM / 2 * (BK / 4) == GEMM_THREADS, "A staging misses rows");
+    static_assert(BN / 2 * (BK / 4) == GEMM_THREADS, "B staging misses rows");
+
     __shared__ __align__(16) float as[2][BK][BM + SPAD];
     __shared__ __align__(16) float bs[2][BK][BN + SPAD];
 
@@ -175,7 +192,7 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
 #pragma unroll
             for (int j = 0; j < TN; j += 4) {
                 const float4 t =
-                    *reinterpret_cast<const float4*>(&bc[p][gemm_col_slot(tx, j)]);
+                    *reinterpret_cast<const float4*>(&bc[p][gemm_col_slot<BN>(tx, j)]);
                 bv4[j] = t.x; bv4[j + 1] = t.y; bv4[j + 2] = t.z; bv4[j + 3] = t.w;
             }
 #pragma unroll
@@ -207,7 +224,7 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
         if (row >= m) continue;
 #pragma unroll
         for (int j = 0; j < TN; ++j) {
-            const int col = n0 + gemm_col_slot(tx, j);
+            const int col = n0 + gemm_col_slot<BN>(tx, j);
             if (col >= n) continue;
             float v = acc[i][j];
             if (bias != nullptr) v += bias[col];
@@ -222,7 +239,8 @@ void gemm_nt_bias(const float* __restrict__ a,
                   const float* __restrict__ bias,
                   float* __restrict__ c,
                   int m, int k, int n) {
-    gemm_nt_body(a, b, bias, c, blockIdx.y * BM, m, k, n);
+    gemm_nt_body<PROJ_BM, PROJ_BN, PROJ_TM, PROJ_TN>(
+        a, b, bias, c, blockIdx.y * PROJ_BM, m, k, n);
 }
 
 // One launch for all 16 experts of a layer. `tiles` holds three ints per row
@@ -240,7 +258,8 @@ void gemm_grouped(const float* __restrict__ a,
     const int* const t = tiles + blockIdx.y * 3;
     // The grid is sized to the worst-case tile count, so the tail is empty.
     if (t[2] == 0) return;
-    gemm_nt_body(a, weights[t[0]], nullptr, c, t[1], t[1] + t[2], k, n);
+    gemm_nt_body<GRP_BM, GRP_BN, GRP_TM, GRP_TN>(
+        a, weights[t[0]], nullptr, c, t[1], t[1] + t[2], k, n);
 }
 
 // dst[i, :] = src[index[i], :]
@@ -439,10 +458,10 @@ __global__ void route_scan(int* __restrict__ blk, int nrb,
     int off = 0, j = 0;
     for (int x = 0; x < static_cast<int>(apss26::NUM_EXPERTS); ++x) {
         eoff[x] = off;
-        for (int r = 0; r < tot[x]; r += BM) {
+        for (int r = 0; r < tot[x]; r += GRP_BM) {
             tiles[3 * j] = x;
             tiles[3 * j + 1] = off + r;
-            tiles[3 * j + 2] = tot[x] - r < BM ? tot[x] - r : BM;
+            tiles[3 * j + 2] = tot[x] - r < GRP_BM ? tot[x] - r : GRP_BM;
             ++j;
         }
         off += tot[x];
@@ -681,8 +700,8 @@ void PhiTinyMoEModel::DeviceLinear::forward(const float* x, float* y,
     // The kernel loads the K window as float4 without a k bound check; every
     // shape in this model has K divisible by BK.
     if (in % BK != 0) throw std::runtime_error("DeviceLinear: K not a multiple of BK");
-    const dim3 grid(static_cast<unsigned>((out + BN - 1) / BN),
-                    static_cast<unsigned>((rows + BM - 1) / BM));
+    const dim3 grid(static_cast<unsigned>((out + PROJ_BN - 1) / PROJ_BN),
+                    static_cast<unsigned>((rows + PROJ_BM - 1) / PROJ_BM));
     gemm_nt_bias<<<grid, GEMM_THREADS>>>(x, weight, bias, y,
                                          static_cast<int>(rows),
                                          static_cast<int>(in),
@@ -930,12 +949,12 @@ void PhiTinyMoEModel::generate(
     // per-block per-expert counts the scan turns into offsets.
     const int nrb = static_cast<int>((total + ROUTE_BLOCK - 1) / ROUTE_BLOCK);
     const int max_tiles =
-        static_cast<int>(packed_rows / BM + apss26::NUM_EXPERTS);
+        static_cast<int>(packed_rows / GRP_BM + apss26::NUM_EXPERTS);
     DeviceBuffer<int> d_pair(packed_rows), d_slot(packed_rows);
     DeviceBuffer<int> d_blk(static_cast<std::size_t>(nrb) * apss26::NUM_EXPERTS);
     DeviceBuffer<int> d_eoff(apss26::NUM_EXPERTS);
     // Three ints per row tile; an expert contributes at most one partial tile.
-    DeviceBuffer<int> d_tiles(3 * (packed_rows / BM + apss26::NUM_EXPERTS + 1));
+    DeviceBuffer<int> d_tiles(3 * (packed_rows / GRP_BM + apss26::NUM_EXPERTS + 1));
 
     // Attention runs on the device now, so it needs the batch layout there:
     // each row's position inside its sequence (for RoPE) and each sequence's
@@ -1026,13 +1045,13 @@ void PhiTinyMoEModel::generate(
 
         gather_rows<<<static_cast<unsigned>(packed_rows), 256>>>(
             d_norm.get(), d_index.get(), d_expert_in.get(), apss26::HIDDEN_SIZE);
-        gemm_grouped<<<dim3((2 * FFDIM + BN - 1) / BN, max_tiles), GEMM_THREADS>>>(
+        gemm_grouped<<<dim3((2 * FFDIM + GRP_BN - 1) / GRP_BN, max_tiles), GEMM_THREADS>>>(
             d_expert_in.get(), layer.moe.w13_ptrs, d_gate_up.get(), d_tiles.get(),
             static_cast<int>(apss26::HIDDEN_SIZE), static_cast<int>(2 * FFDIM));
         const long long activated = static_cast<long long>(packed_rows) * FFDIM;
         silu_mul<<<static_cast<unsigned>((activated + 255) / 256), 256>>>(
             d_gate_up.get(), d_gate.get(), static_cast<int>(FFDIM), activated);
-        gemm_grouped<<<dim3((apss26::HIDDEN_SIZE + BN - 1) / BN, max_tiles), GEMM_THREADS>>>(
+        gemm_grouped<<<dim3((apss26::HIDDEN_SIZE + GRP_BN - 1) / GRP_BN, max_tiles), GEMM_THREADS>>>(
             d_gate.get(), layer.moe.w2_ptrs, d_expert_out.get(), d_tiles.get(),
             static_cast<int>(FFDIM), static_cast<int>(apss26::HIDDEN_SIZE));
         // One pass per row instead of one launch per expert, so `d_next` is
