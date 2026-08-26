@@ -128,12 +128,14 @@ __device__ __forceinline__ int gemm_col_slot(int tx, int j) {
 // past its last; everything else is the tile kernel unchanged, down to the
 // bound expressions -- writing them any other way moves ptxas off the
 // instruction schedule the projections were measured on.
-template <int BM, int BN, int TM, int TN, bool FUSE_RESID = false>
+template <int BM, int BN, int TM, int TN, bool FUSE_RESID = false,
+          int COMBINE = 0>
 __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
                                              const float* __restrict__ b,
                                              const float* __restrict__ bias,
                                              float* __restrict__ c,
                                              const float* __restrict__ resid,
+                                             const int* __restrict__ rowmap,
                                              int row0, int m, int k, int n) {
     // Each thread stages two float4 per matrix; that is what makes `lr`/`lr2`
     // cover the tile exactly once. A wider tile has to change the staging.
@@ -235,11 +237,14 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
     for (int i = 0; i < TM; ++i) {
         const int row = m0 + ty * TM + i;
         if (row >= m) continue;
+        // The combining variants write the token's row, not the packed row.
+        int orow = row;
+        if (COMBINE != 0) orow = rowmap[row];
 #pragma unroll
         for (int j = 0; j < TN; ++j) {
             const int col = n0 + gemm_col_slot<BN>(tx, j);
             if (col >= n) continue;
-            const long long o = static_cast<long long>(row) * n + col;
+            const long long o = static_cast<long long>(orow) * n + col;
             float v = acc[i][j];
             if (bias != nullptr) v += bias[col];
             // The residual add, folded in where the value is already in a
@@ -247,7 +252,18 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
             // pass used to read back, so adding the residual now gives the
             // same float it did.
             if (FUSE_RESID) v += resid[o];
-            c[o] = v;
+            if (COMBINE == 1) {
+                // Lower expert of the token: halving is exact, so this is
+                // moe_combine's `acc = 0.0f; acc += 0.5f * lo[c];`.
+                c[o] = 0.5f * v;
+            } else if (COMBINE == 2) {
+                // Higher expert, after the lower launch has landed: the same
+                // two adds moe_combine made, in the same order.
+                const float s = c[o] + 0.5f * v;
+                c[o] = s + resid[o];
+            } else {
+                c[o] = v;
+            }
         }
     }
 }
@@ -259,7 +275,7 @@ void gemm_nt_bias(const float* __restrict__ a,
                   float* __restrict__ c,
                   int m, int k, int n) {
     gemm_nt_body<PROJ_BM, PROJ_BN, PROJ_TM, PROJ_TN>(
-        a, b, bias, c, nullptr, blockIdx.y * PROJ_BM, m, k, n);
+        a, b, bias, c, nullptr, nullptr, blockIdx.y * PROJ_BM, m, k, n);
 }
 
 // o_proj only: `c = a * b^T + bias + resid`, the attention residual add folded
@@ -277,7 +293,7 @@ void gemm_nt_bias_resid(const float* __restrict__ a,
                         const float* __restrict__ resid,
                         int m, int k, int n) {
     gemm_nt_body<PROJ_BM, PROJ_BN, PROJ_TM, PROJ_TN, true>(
-        a, b, bias, c, resid, blockIdx.y * PROJ_BM, m, k, n);
+        a, b, bias, c, resid, nullptr, blockIdx.y * PROJ_BM, m, k, n);
 }
 
 // One launch for all 16 experts of a layer. `tiles` holds three ints per row
@@ -296,7 +312,31 @@ void gemm_grouped(const float* __restrict__ a,
     // The grid is sized to the worst-case tile count, so the tail is empty.
     if (t[2] == 0) return;
     gemm_nt_body<GRP_BM, GRP_BN, GRP_TM, GRP_TN>(
-        a, weights[t[0]], nullptr, c, nullptr, t[1], t[1] + t[2], k, n);
+        a, weights[t[0]], nullptr, c, nullptr, nullptr, t[1], t[1] + t[2], k, n);
+}
+
+// w2 only, in two ordered launches. `moe_combine` read the whole 511 MB expert
+// output back to halve and pair it -- 1.02 GB at 95% of DRAM peak, so the only
+// way to make it cheaper was to delete it. Here the halving and the pairing
+// happen in the epilogue that produced the value and that buffer is never
+// written at all; the extra reads land in a kernel whose DRAM is 27% busy.
+// What makes it possible is the packing: a token's two copies sit in separate
+// row sub-ranges, so COMBINE=1 runs to completion before COMBINE=2 reads what
+// it wrote and the launch boundary supplies the ordering the two adds need.
+// `rowmap` is the gather index -- packed row to token row -- read once per row,
+// so each row's 128 columns are still written contiguously.
+template <int COMBINE>
+__global__ __launch_bounds__(GEMM_THREADS, 2)
+void gemm_grouped_combine(const float* __restrict__ a,
+                          const float* const* __restrict__ weights,
+                          float* __restrict__ c,
+                          const int* __restrict__ tiles,
+                          const int* __restrict__ rowmap,
+                          const float* __restrict__ resid, int k, int n) {
+    const int* const t = tiles + blockIdx.y * 3;
+    if (t[2] == 0) return;
+    gemm_nt_body<GRP_BM, GRP_BN, GRP_TM, GRP_TN, false, COMBINE>(
+        a, weights[t[0]], nullptr, c, resid, rowmap, t[1], t[1] + t[2], k, n);
 }
 
 // dst[i, :] = src[index[i], :]
@@ -307,30 +347,6 @@ __global__ void gather_rows(const float* __restrict__ src,
     const float* in = src + static_cast<long long>(row) * cols;
     float* out = dst + static_cast<long long>(blockIdx.x) * cols;
     for (int c = threadIdx.x; c < cols; c += blockDim.x) out[c] = in[c];
-}
-
-// dst[t, :] = 0.5 * src[slot_lo(t), :] + 0.5 * src[slot_hi(t), :] + resid[t, :]
-// One block per row. The two halves are added low expert index first and
-// through an accumulator that starts at zero, which is exactly what the
-// zero-fill plus one launch per expert did before. The MoE residual add is
-// folded in on the store for the same reason as the o_proj one -- `acc` holds
-// the value the separate pass read back -- except that this kernel is itself at
-// the roofline (91.9%), so it pays one extra DRAM trip to delete three.
-__global__ void moe_combine(const float* __restrict__ src,
-                            const int* __restrict__ slot,
-                            const float* __restrict__ resid,
-                            float* __restrict__ dst, int cols) {
-    const int t = blockIdx.x;
-    const float* lo = src + static_cast<long long>(slot[2 * t]) * cols;
-    const float* hi = src + static_cast<long long>(slot[2 * t + 1]) * cols;
-    const float* res = resid + static_cast<long long>(t) * cols;
-    float* out = dst + static_cast<long long>(t) * cols;
-    for (int c = threadIdx.x; c < cols; c += blockDim.x) {
-        float acc = 0.0f;
-        acc += 0.5f * lo[c];
-        acc += 0.5f * hi[c];
-        out[c] = acc + res[c];
-    }
 }
 
 // PhiMLP applies silu to the w1 branch and multiplies the w3 branch into it.
@@ -513,16 +529,24 @@ __device__ __forceinline__ void route_top2(const float* __restrict__ logits,
 }
 
 // Rows per routing block. The placement pass below walks a block's rows once
-// per expert, so this also bounds that scan.
+// per range, so this also bounds that scan.
 constexpr int ROUTE_BLOCK = 256;
+
+// Packed rows are grouped by (expert, which of the token's two experts this
+// copy is): sub-range 2e holds the copies where e is the token's lower expert,
+// 2e + 1 the ones where it is the higher. Separating the two is what lets w2's
+// epilogue combine them -- see gemm_grouped_combine. The two sub-ranges of an
+// expert stay adjacent, so w13 still sees one contiguous block per expert and
+// the 16 extra partial row tiles are w2's alone.
+constexpr int NUM_RANGES = 2 * static_cast<int>(apss26::NUM_EXPERTS);
 
 // Pass 1: each row's two experts, stored low index first because the per-expert
 // scatter this replaces applied them in ascending expert order. Also each
-// block's per-expert row count, the input to the scan.
+// block's per-sub-range row count, the input to the scan.
 __global__ void route_count(const float* __restrict__ router, int total,
                             int* __restrict__ pair, int* __restrict__ blk) {
-    __shared__ int cnt[apss26::NUM_EXPERTS];
-    if (threadIdx.x < apss26::NUM_EXPERTS) cnt[threadIdx.x] = 0;
+    __shared__ int cnt[NUM_RANGES];
+    if (threadIdx.x < NUM_RANGES) cnt[threadIdx.x] = 0;
     __syncthreads();
     const int t = blockIdx.x * ROUTE_BLOCK + threadIdx.x;
     if (t < total) {
@@ -533,79 +557,98 @@ __global__ void route_count(const float* __restrict__ router, int total,
         const int hi = first < second ? second : first;
         pair[2 * t] = lo;
         pair[2 * t + 1] = hi;
-        atomicAdd(&cnt[lo], 1);
-        atomicAdd(&cnt[hi], 1);
+        atomicAdd(&cnt[2 * lo], 1);
+        atomicAdd(&cnt[2 * hi + 1], 1);
     }
     __syncthreads();
-    if (threadIdx.x < apss26::NUM_EXPERTS) {
-        blk[blockIdx.x * static_cast<int>(apss26::NUM_EXPERTS) + threadIdx.x] =
-            cnt[threadIdx.x];
+    if (threadIdx.x < NUM_RANGES) {
+        blk[blockIdx.x * NUM_RANGES + threadIdx.x] = cnt[threadIdx.x];
     }
 }
 
-// Pass 2: one block, one thread per expert. Turns the counts into each block's
-// base inside its expert's packed range and each expert's base inside the
-// packed buffer, then writes the tile list. The grid is launched at max_tiles
-// so the count never has to come back to the host; the surplus tiles carry
-// zero rows and return immediately.
+// Pass 2: one block, one thread per sub-range. Turns the counts into each
+// block's base inside its sub-range and each sub-range's base inside the packed
+// buffer, then writes the tile lists. The grids are launched at their worst-case
+// tile counts so the count never has to come back to the host; the surplus
+// tiles carry zero rows and return immediately.
+//
+// Three lists, back to back in one buffer: w13's, over whole experts, then w2's
+// two, over the lower-expert sub-ranges and the higher-expert ones. Only w2
+// needs the split, so only w2 pays for the extra tile boundaries.
 __global__ void route_scan(int* __restrict__ blk, int nrb,
                            int* __restrict__ eoff, int* __restrict__ tiles,
-                           int max_tiles) {
-    __shared__ int tot[apss26::NUM_EXPERTS];
-    const int e = threadIdx.x;
+                           int max13, int half_tiles) {
+    __shared__ int tot[NUM_RANGES];
+    const int rg = threadIdx.x;
     int run = 0;
     for (int b = 0; b < nrb; ++b) {
-        const int at = b * static_cast<int>(apss26::NUM_EXPERTS) + e;
+        const int at = b * NUM_RANGES + rg;
         const int c = blk[at];
         blk[at] = run;
         run += c;
     }
-    tot[e] = run;
+    tot[rg] = run;
     __syncthreads();
-    if (e != 0) return;
+    if (rg != 0) return;
     int off = 0, j = 0;
     for (int x = 0; x < static_cast<int>(apss26::NUM_EXPERTS); ++x) {
-        eoff[x] = off;
-        for (int r = 0; r < tot[x]; r += GRP_BM) {
+        eoff[2 * x] = off;
+        eoff[2 * x + 1] = off + tot[2 * x];
+        const int cnt = tot[2 * x] + tot[2 * x + 1];
+        for (int r = 0; r < cnt; r += GRP_BM) {
             tiles[3 * j] = x;
             tiles[3 * j + 1] = off + r;
-            tiles[3 * j + 2] = tot[x] - r < GRP_BM ? tot[x] - r : GRP_BM;
+            tiles[3 * j + 2] = cnt - r < GRP_BM ? cnt - r : GRP_BM;
             ++j;
         }
-        off += tot[x];
+        off += cnt;
     }
-    for (; j < max_tiles; ++j) {
+    for (; j < max13; ++j) {
         tiles[3 * j] = 0;
         tiles[3 * j + 1] = 0;
         tiles[3 * j + 2] = 0;
     }
+    for (int h = 0; h < 2; ++h) {
+        int j2 = max13 + h * half_tiles;
+        for (int x = 0; x < static_cast<int>(apss26::NUM_EXPERTS); ++x) {
+            const int r0 = 2 * x + h;
+            for (int r = 0; r < tot[r0]; r += GRP_BM) {
+                tiles[3 * j2] = x;
+                tiles[3 * j2 + 1] = eoff[r0] + r;
+                tiles[3 * j2 + 2] = tot[r0] - r < GRP_BM ? tot[r0] - r : GRP_BM;
+                ++j2;
+            }
+        }
+        for (; j2 < max13 + (h + 1) * half_tiles; ++j2) {
+            tiles[3 * j2] = 0;
+            tiles[3 * j2 + 1] = 0;
+            tiles[3 * j2 + 2] = 0;
+        }
+    }
 }
 
-// Pass 3: place each row's two copies into its experts' packed ranges. Threads
-// walk their expert's rows in ascending row order, so the packed layout is the
-// one the host build produced. `slot` records where each copy landed, which is
-// what lets the combine below read the two halves back without a scatter.
+// Pass 3: place each row's two copies into their sub-ranges. Threads walk their
+// sub-range's rows in ascending row order, so the packed layout is the one the
+// host build produced. `index` maps a packed row back to its token row, which
+// is what both the gather and w2's combining epilogue read.
 __global__ void route_place(const int* __restrict__ pair, int total,
                             const int* __restrict__ blk,
                             const int* __restrict__ eoff,
-                            int* __restrict__ index, int* __restrict__ slot) {
+                            int* __restrict__ index) {
     __shared__ int sp[2 * ROUTE_BLOCK];
     const int base = blockIdx.x * ROUTE_BLOCK;
     const int n = total - base < ROUTE_BLOCK ? total - base : ROUTE_BLOCK;
     for (int i = threadIdx.x; i < 2 * n; i += ROUTE_BLOCK) sp[i] = pair[2 * base + i];
     __syncthreads();
-    if (threadIdx.x >= apss26::NUM_EXPERTS) return;
-    const int e = threadIdx.x;
-    int at = eoff[e] + blk[blockIdx.x * static_cast<int>(apss26::NUM_EXPERTS) + e];
+    if (threadIdx.x >= NUM_RANGES) return;
+    // A thread now owns one of a token's two copies rather than both: sub-range
+    // 2e takes the rows whose lower expert is e, 2e + 1 those whose higher is.
+    const int rg = threadIdx.x;
+    const int e = rg >> 1, half = rg & 1;
+    int at = eoff[rg] + blk[blockIdx.x * NUM_RANGES + rg];
     for (int i = 0; i < n; ++i) {
-        // The two experts of a row are distinct, so at most one arm fires.
-        if (sp[2 * i] == e) {
+        if (sp[2 * i + half] == e) {
             index[at] = base + i;
-            slot[2 * (base + i)] = at;
-            ++at;
-        } else if (sp[2 * i + 1] == e) {
-            index[at] = base + i;
-            slot[2 * (base + i) + 1] = at;
             ++at;
         }
     }
@@ -764,8 +807,8 @@ __global__ void attention_heads(const float* __restrict__ q,
 // generate()'s working set, in one place so the model can hold it.
 struct PhiTinyMoEModel::Scratch {
     DeviceBuffer<float> stream_a, stream_b, norm, attn, q, k, v, ctx, router;
-    DeviceBuffer<float> expert_in, expert_out, gate, gate_up, rope, logits;
-    DeviceBuffer<int> index, pair, slot, blk, eoff, tiles, pos, anc, anc_off;
+    DeviceBuffer<float> expert_in, gate, gate_up, rope, logits;
+    DeviceBuffer<int> index, pair, blk, eoff, tiles, pos, anc, anc_off;
 };
 
 PhiTinyMoEModel::DeviceLinear::DeviceLinear(const ModelLoader& loader,
@@ -1080,22 +1123,24 @@ void PhiTinyMoEModel::generate(
     // (row, expert) pairs -- exactly TOP_K * total.
     const std::size_t packed_rows = total * apss26::TOP_K;
     float* d_expert_in = sc.expert_in.reserve(packed_rows * apss26::HIDDEN_SIZE);
-    float* d_expert_out = sc.expert_out.reserve(packed_rows * apss26::HIDDEN_SIZE);
     float* d_gate = sc.gate.reserve(packed_rows * FFDIM);
     float* d_gate_up = sc.gate_up.reserve(packed_rows * 2 * FFDIM);
     int* d_index = sc.index.reserve(packed_rows);
-    // Routing scratch: each row's two experts, each copy's packed slot, and the
-    // per-block per-expert counts the scan turns into offsets.
+    // Routing scratch: each row's two experts and the per-block per-sub-range
+    // counts the scan turns into offsets.
     const int nrb = static_cast<int>((total + ROUTE_BLOCK - 1) / ROUTE_BLOCK);
-    const int max_tiles =
+    // Three ints per row tile; a range contributes at most one partial tile.
+    // w13's list covers all the packed rows over 16 ranges, each of w2's covers
+    // `total` of them over 16 sub-ranges.
+    const int max13 =
         static_cast<int>(packed_rows / GRP_BM + apss26::NUM_EXPERTS);
+    const int half_tiles =
+        static_cast<int>(total / GRP_BM + apss26::NUM_EXPERTS);
     int* d_pair = sc.pair.reserve(packed_rows);
-    int* d_slot = sc.slot.reserve(packed_rows);
-    int* d_blk = sc.blk.reserve(static_cast<std::size_t>(nrb) * apss26::NUM_EXPERTS);
-    int* d_eoff = sc.eoff.reserve(apss26::NUM_EXPERTS);
-    // Three ints per row tile; an expert contributes at most one partial tile.
-    int* d_tiles =
-        sc.tiles.reserve(3 * (packed_rows / GRP_BM + apss26::NUM_EXPERTS + 1));
+    int* d_blk = sc.blk.reserve(static_cast<std::size_t>(nrb) * NUM_RANGES);
+    int* d_eoff = sc.eoff.reserve(NUM_RANGES);
+    int* d_tiles = sc.tiles.reserve(
+        static_cast<std::size_t>(3) * (max13 + 2 * half_tiles));
 
     // Attention runs on the device now, so it needs the batch layout there:
     // each row's position inside its sequence (for RoPE) and each sequence's
@@ -1176,29 +1221,35 @@ void PhiTinyMoEModel::generate(
         // on the device too -- the grid is launched at its worst case.
         route_count<<<nrb, ROUTE_BLOCK>>>(d_router, static_cast<int>(total),
                                           d_pair, d_blk);
-        route_scan<<<1, apss26::NUM_EXPERTS>>>(d_blk, nrb, d_eoff,
-                                               d_tiles, max_tiles);
+        route_scan<<<1, NUM_RANGES>>>(d_blk, nrb, d_eoff, d_tiles, max13,
+                                      half_tiles);
         route_place<<<nrb, ROUTE_BLOCK>>>(d_pair, static_cast<int>(total),
-                                          d_blk, d_eoff,
-                                          d_index, d_slot);
+                                          d_blk, d_eoff, d_index);
         cuda_check(cudaGetLastError(), "routing kernels");
         tick(t_d2h);
 
         gather_rows<<<static_cast<unsigned>(packed_rows), 256>>>(
             d_norm, d_index, d_expert_in, apss26::HIDDEN_SIZE);
-        gemm_grouped<<<dim3((2 * FFDIM + GRP_BN - 1) / GRP_BN, max_tiles), GEMM_THREADS>>>(
+        gemm_grouped<<<dim3((2 * FFDIM + GRP_BN - 1) / GRP_BN, max13), GEMM_THREADS>>>(
             d_expert_in, layer.moe.w13_ptrs, d_gate_up, d_tiles,
             static_cast<int>(apss26::HIDDEN_SIZE), static_cast<int>(2 * FFDIM));
         const long long activated = static_cast<long long>(packed_rows) * FFDIM;
         silu_mul<<<static_cast<unsigned>((activated + 255) / 256), 256>>>(
             d_gate_up, d_gate, static_cast<int>(FFDIM), activated);
-        gemm_grouped<<<dim3((apss26::HIDDEN_SIZE + GRP_BN - 1) / GRP_BN, max_tiles), GEMM_THREADS>>>(
-            d_gate, layer.moe.w2_ptrs, d_expert_out, d_tiles,
+        // w2 writes the residual stream directly: the lower-expert copies
+        // first, then the higher ones, which add their own half and the
+        // residual on top of what the first launch left. That deletes the
+        // 511 MB expert-output buffer and the roofline-bound pass over it.
+        const dim3 w2_grid((apss26::HIDDEN_SIZE + GRP_BN - 1) / GRP_BN,
+                           static_cast<unsigned>(half_tiles));
+        gemm_grouped_combine<1><<<w2_grid, GEMM_THREADS>>>(
+            d_gate, layer.moe.w2_ptrs, d_next, d_tiles + 3 * max13, d_index,
+            nullptr, static_cast<int>(FFDIM),
+            static_cast<int>(apss26::HIDDEN_SIZE));
+        gemm_grouped_combine<2><<<w2_grid, GEMM_THREADS>>>(
+            d_gate, layer.moe.w2_ptrs, d_next,
+            d_tiles + 3 * (max13 + half_tiles), d_index, d_attn,
             static_cast<int>(FFDIM), static_cast<int>(apss26::HIDDEN_SIZE));
-        // One pass per row instead of one launch per expert, so `d_next` is
-        // written rather than zeroed and accumulated into.
-        moe_combine<<<static_cast<unsigned>(total), 256>>>(
-            d_expert_out, d_slot, d_attn, d_next, apss26::HIDDEN_SIZE);
         cuda_check(cudaGetLastError(), "moe kernels");
         tick(t_moe);
 
