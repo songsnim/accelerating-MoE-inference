@@ -1030,3 +1030,44 @@ DMA는 3배 빨라지지만 pinned 버퍼 -> `logits` 호스트 memcpy 9 ms가 �
   - logits D2H 15 ms는 pinned가 아니라 **겹치기**로 지운다. lm_head GEMM이 0.070 s이므로
     행 청크 단위 async D2H(= pinned 필수)를 두 번째 스트림에 태우면 DMA 5.6 ms는 완전히
     숨는다. 단 pinned 버퍼는 생성자에서 잡아야 한다(107 ms).
+
+---
+
+# EXP-014: 출력 Tensor 할당을 GPU와 겹치기
+
+## 1. Hypothesis
+측정-C에서 pinned를 검토하다 `t_lm` 0.070 s를 쪼갰더니 GEMM은 0.021 s뿐이고
+**`logits = Tensor({1024, 32064})` 호스트 할당+제로필이 0.069 s**였다.
+
+| dlog cudaMalloc | lm_head GEMM | **Tensor 할당** | logits D2H |
+|---|---|---|---|
+| 0.001 | 0.021 | **0.069** | 0.015 |
+
+131 MB를 `data_.assign(n, 0.0f)`로 페이지 폴트 걸며 채우고(≈1.9 GB/s), 그 제로는
+직후 D2H가 전부 덮어쓴다. GPU에 아무것도 의존하지 않는 순수 호스트 작업이므로
+32개 레이어 옆에서 별도 스레드로 돌리면 통째로 숨는다.
+
+## 2. Change (`src/model.cu`)
+`generate()` 진입부에서 `std::thread`로 `logits = Tensor(...)`를 시작하고 D2H 직전에
+join. `cuda_check` 예외 시 `~thread`가 `std::terminate`를 부르지 않도록 `JoinGuard`
+RAII 하나 추가. 커널/연산은 한 줄도 안 바뀐다.
+
+## 3. Result (노드 b0, 한 allocation 안에서 교차 2rep)
+
+| | talloc | elapsed |
+|---|---|---|
+| base | 0.069 / 0.069 | 2.3190 / 2.3169 |
+| async | **0.000 / 0.000** | **2.2484 / 2.2530** |
+
+`gemm` 1.085/1.087 -> 1.087/1.086, `moe` 0.725 -> 0.724, `route` 0.054 그대로.
+**-0.068 s (-2.9%)**, 다른 구간 퇴행 없음. 출력 `exp013.bin`과 bitwise 동일,
+`-v` PASSED, 455.0 seq/s.
+
+## 4. Analysis
+69 ms 중 69 ms가 숨었다. 64코어 노드라 페이지 폴트 스레드가 메인 스레드의
+호스트 라우팅(0.054 s)과 커널 런치를 밀어내지 않는다.
+
+## 5. Next action
+같은 스레드에서 `cudaHostRegister`(13 ms)까지 태우면 D2H가 15 ms -> 5.6 ms.
+단 `cudaHostUnregister`(5.8 ms)를 측정 구간 안에서 갚아야 해서 실이득 ~3 ms.
+그보다 **호스트 라우팅 왕복 0.059 s**가 남은 최대 비-GEMM 항목.
