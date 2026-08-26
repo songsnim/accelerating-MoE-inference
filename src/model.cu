@@ -39,20 +39,32 @@ float* device_copy(const Tensor& host) {
     return device;
 }
 
-// Device scratch that frees itself when the batch is done.
+// Device scratch owned by the model, not by the batch: the frees used to run
+// inside the measured region (24 calls, ~1.5 GB, 20.8 ms of GPU-idle
+// teardown). The first reserve still allocates where the old constructor did.
 template <typename T>
 class DeviceBuffer {
 public:
-    explicit DeviceBuffer(std::size_t elements) {
-        cuda_check(cudaMalloc(&data_, elements * sizeof(T)), "cudaMalloc scratch");
-    }
+    DeviceBuffer() = default;
     ~DeviceBuffer() { cudaFree(data_); }
     DeviceBuffer(const DeviceBuffer&) = delete;
     DeviceBuffer& operator=(const DeviceBuffer&) = delete;
-    T* get() const { return data_; }
+    // Grows only: a batch needing more reallocates, a smaller one reuses.
+    // Every buffer is fully written before it is read, so stale contents from
+    // an earlier call are never observed.
+    T* reserve(std::size_t elements) {
+        if (elements > capacity_) {
+            cuda_check(cudaFree(data_), "cudaFree scratch");
+            cuda_check(cudaMalloc(&data_, elements * sizeof(T)),
+                       "cudaMalloc scratch");
+            capacity_ = elements;
+        }
+        return data_;
+    }
 
 private:
     T* data_ = nullptr;
+    std::size_t capacity_ = 0;
 };
 
 void to_host(Tensor& host, const float* device) {
@@ -653,6 +665,13 @@ __global__ void attention_heads(const float* __restrict__ q,
 
 }  // namespace
 
+// generate()'s working set, in one place so the model can hold it.
+struct PhiTinyMoEModel::Scratch {
+    DeviceBuffer<float> stream_a, stream_b, norm, attn, q, k, v, ctx, router;
+    DeviceBuffer<float> expert_in, expert_out, gate, gate_up, rope, logits;
+    DeviceBuffer<int> index, pair, slot, blk, eoff, tiles, pos, anc, anc_off;
+};
+
 PhiTinyMoEModel::DeviceLinear::DeviceLinear(const ModelLoader& loader,
                                             const std::string& weight_name,
                                             const std::string& bias_name) {
@@ -926,35 +945,42 @@ void PhiTinyMoEModel::generate(
     constexpr std::size_t FFDIM = apss26::EXPERT_INTERMEDIATE_SIZE;
     const std::size_t elements = total * apss26::HIDDEN_SIZE;
 
+    if (!scratch_) scratch_ = std::make_unique<Scratch>();
+    Scratch& sc = *scratch_;
+
     // The residual stream, double buffered: the MoE accumulates the next
     // layer's input while this layer's is still needed for the residual add.
-    DeviceBuffer<float> d_stream_a(elements), d_stream_b(elements);
-    float* d_hidden = d_stream_a.get();
-    float* d_next = d_stream_b.get();
+    float* d_hidden = sc.stream_a.reserve(elements);
+    float* d_next = sc.stream_b.reserve(elements);
 
-    DeviceBuffer<float> d_norm(elements), d_attn(elements);
-    DeviceBuffer<float> d_q(total * QDIM), d_k(total * KVDIM), d_v(total * KVDIM);
-    DeviceBuffer<float> d_ctx(total * QDIM);
-    DeviceBuffer<float> d_router(total * apss26::NUM_EXPERTS);
+    float* d_norm = sc.norm.reserve(elements);
+    float* d_attn = sc.attn.reserve(elements);
+    float* d_q = sc.q.reserve(total * QDIM);
+    float* d_k = sc.k.reserve(total * KVDIM);
+    float* d_v = sc.v.reserve(total * KVDIM);
+    float* d_ctx = sc.ctx.reserve(total * QDIM);
+    float* d_router = sc.router.reserve(total * apss26::NUM_EXPERTS);
     // MoE scratch. Every expert's rows are packed into one buffer so the 16
     // expert GEMMs become one launch, so the row count is the number of
     // (row, expert) pairs -- exactly TOP_K * total.
     const std::size_t packed_rows = total * apss26::TOP_K;
-    DeviceBuffer<float> d_expert_in(packed_rows * apss26::HIDDEN_SIZE),
-                        d_expert_out(packed_rows * apss26::HIDDEN_SIZE);
-    DeviceBuffer<float> d_gate(packed_rows * FFDIM),
-                        d_gate_up(packed_rows * 2 * FFDIM);
-    DeviceBuffer<int> d_index(packed_rows);
+    float* d_expert_in = sc.expert_in.reserve(packed_rows * apss26::HIDDEN_SIZE);
+    float* d_expert_out = sc.expert_out.reserve(packed_rows * apss26::HIDDEN_SIZE);
+    float* d_gate = sc.gate.reserve(packed_rows * FFDIM);
+    float* d_gate_up = sc.gate_up.reserve(packed_rows * 2 * FFDIM);
+    int* d_index = sc.index.reserve(packed_rows);
     // Routing scratch: each row's two experts, each copy's packed slot, and the
     // per-block per-expert counts the scan turns into offsets.
     const int nrb = static_cast<int>((total + ROUTE_BLOCK - 1) / ROUTE_BLOCK);
     const int max_tiles =
         static_cast<int>(packed_rows / GRP_BM + apss26::NUM_EXPERTS);
-    DeviceBuffer<int> d_pair(packed_rows), d_slot(packed_rows);
-    DeviceBuffer<int> d_blk(static_cast<std::size_t>(nrb) * apss26::NUM_EXPERTS);
-    DeviceBuffer<int> d_eoff(apss26::NUM_EXPERTS);
+    int* d_pair = sc.pair.reserve(packed_rows);
+    int* d_slot = sc.slot.reserve(packed_rows);
+    int* d_blk = sc.blk.reserve(static_cast<std::size_t>(nrb) * apss26::NUM_EXPERTS);
+    int* d_eoff = sc.eoff.reserve(apss26::NUM_EXPERTS);
     // Three ints per row tile; an expert contributes at most one partial tile.
-    DeviceBuffer<int> d_tiles(3 * (packed_rows / GRP_BM + apss26::NUM_EXPERTS + 1));
+    int* d_tiles =
+        sc.tiles.reserve(3 * (packed_rows / GRP_BM + apss26::NUM_EXPERTS + 1));
 
     // Attention runs on the device now, so it needs the batch layout there:
     // each row's position inside its sequence (for RoPE) and each sequence's
@@ -974,16 +1000,18 @@ void PhiTinyMoEModel::generate(
             rope[(si * HALF + j) * 2 + 1] = std::sin(static_cast<float>(si) * inv);
         }
     }
-    DeviceBuffer<int> d_pos(total), d_anc(anc.size()), d_anc_off(anc_off.size());
-    DeviceBuffer<float> d_rope(rope.size());
+    int* d_pos = sc.pos.reserve(total);
+    int* d_anc = sc.anc.reserve(anc.size());
+    int* d_anc_off = sc.anc_off.reserve(anc_off.size());
+    float* d_rope = sc.rope.reserve(rope.size());
     // A node's position is its depth in the trie.
-    cuda_check(cudaMemcpy(d_pos.get(), node_depth.data(), total * sizeof(int),
+    cuda_check(cudaMemcpy(d_pos, node_depth.data(), total * sizeof(int),
                           cudaMemcpyHostToDevice), "cudaMemcpy positions");
-    cuda_check(cudaMemcpy(d_anc.get(), anc.data(), anc.size() * sizeof(int),
+    cuda_check(cudaMemcpy(d_anc, anc.data(), anc.size() * sizeof(int),
                           cudaMemcpyHostToDevice), "cudaMemcpy ancestors");
-    cuda_check(cudaMemcpy(d_anc_off.get(), anc_off.data(), anc_off.size() * sizeof(int),
+    cuda_check(cudaMemcpy(d_anc_off, anc_off.data(), anc_off.size() * sizeof(int),
                           cudaMemcpyHostToDevice), "cudaMemcpy ancestor offsets");
-    cuda_check(cudaMemcpy(d_rope.get(), rope.data(), rope.size() * sizeof(float),
+    cuda_check(cudaMemcpy(d_rope, rope.data(), rope.size() * sizeof(float),
                           cudaMemcpyHostToDevice), "cudaMemcpy rope table");
     const unsigned attn_shared = static_cast<unsigned>(
         (apss26::HEAD_DIM + 1 + max_len +
@@ -993,92 +1021,92 @@ void PhiTinyMoEModel::generate(
     // The embedding lookup is a row gather out of a device-resident table:
     // one 16 KB contiguous row per node, so it is fully coalesced. It replaces
     // a single-threaded host gather of the same 255 MB plus its upload.
-    cuda_check(cudaMemcpy(d_index.get(), node_token.data(), total * sizeof(int),
+    cuda_check(cudaMemcpy(d_index, node_token.data(), total * sizeof(int),
                           cudaMemcpyHostToDevice), "cudaMemcpy node tokens");
     gather_rows<<<static_cast<unsigned>(total), 256>>>(
-        d_embeddings_, d_index.get(), d_hidden, apss26::HIDDEN_SIZE);
+        d_embeddings_, d_index, d_hidden, apss26::HIDDEN_SIZE);
     cuda_check(cudaGetLastError(), "embedding gather launch");
     tick(t_h2d);
 
     for (const Layer& layer : layers_) {
-        layer.input_norm.forward(d_hidden, d_norm.get(), total);
+        layer.input_norm.forward(d_hidden, d_norm, total);
         tick(t_norm);
-        layer.q_proj.forward(d_norm.get(), d_q.get(), total);
-        layer.k_proj.forward(d_norm.get(), d_k.get(), total);
-        layer.v_proj.forward(d_norm.get(), d_v.get(), total);
+        layer.q_proj.forward(d_norm, d_q, total);
+        layer.k_proj.forward(d_norm, d_k, total);
+        layer.v_proj.forward(d_norm, d_v, total);
         tick(t_gemm);
         rope_rows<<<static_cast<unsigned>(total), 256>>>(
-            d_q.get(), d_k.get(), d_pos.get(), d_rope.get());
+            d_q, d_k, d_pos, d_rope);
         attention_heads<<<dim3(static_cast<unsigned>(total),
                                apss26::NUM_ATTENTION_HEADS),
                           apss26::HEAD_DIM, attn_shared>>>(
-            d_q.get(), d_k.get(), d_v.get(), d_anc.get(), d_anc_off.get(),
-            d_ctx.get(), attn_scale);
+            d_q, d_k, d_v, d_anc, d_anc_off,
+            d_ctx, attn_scale);
         cuda_check(cudaGetLastError(), "attention kernels");
         tick(t_attn);
-        layer.o_proj.forward(d_ctx.get(), d_attn.get(), total);
+        layer.o_proj.forward(d_ctx, d_attn, total);
         tick(t_gemm);
-        add_inplace_device(d_attn.get(), d_hidden, static_cast<long long>(elements));
+        add_inplace_device(d_attn, d_hidden, static_cast<long long>(elements));
         tick(t_resid);
 
         // o_proj has consumed q/k/v, so d_norm is free to take the
         // post-attention norm -- which is also the expert gather source.
-        layer.post_norm.forward(d_attn.get(), d_norm.get(), total);
+        layer.post_norm.forward(d_attn, d_norm, total);
         tick(t_norm);
 
         // MoE: route on the host (16 scores per token), then run each expert
         // over its own gathered rows and scatter the halves back.
-        layer.moe.gate.forward(d_norm.get(), d_router.get(), total);
+        layer.moe.gate.forward(d_norm, d_router, total);
         tick(t_gemm);
         // Routing runs on the device: the 997 KB of scores no longer come back
         // and the packed layout is built where it is used. The tile count stays
         // on the device too -- the grid is launched at its worst case.
-        route_count<<<nrb, ROUTE_BLOCK>>>(d_router.get(), static_cast<int>(total),
-                                          d_pair.get(), d_blk.get());
-        route_scan<<<1, apss26::NUM_EXPERTS>>>(d_blk.get(), nrb, d_eoff.get(),
-                                               d_tiles.get(), max_tiles);
-        route_place<<<nrb, ROUTE_BLOCK>>>(d_pair.get(), static_cast<int>(total),
-                                          d_blk.get(), d_eoff.get(),
-                                          d_index.get(), d_slot.get());
+        route_count<<<nrb, ROUTE_BLOCK>>>(d_router, static_cast<int>(total),
+                                          d_pair, d_blk);
+        route_scan<<<1, apss26::NUM_EXPERTS>>>(d_blk, nrb, d_eoff,
+                                               d_tiles, max_tiles);
+        route_place<<<nrb, ROUTE_BLOCK>>>(d_pair, static_cast<int>(total),
+                                          d_blk, d_eoff,
+                                          d_index, d_slot);
         cuda_check(cudaGetLastError(), "routing kernels");
         tick(t_d2h);
 
         gather_rows<<<static_cast<unsigned>(packed_rows), 256>>>(
-            d_norm.get(), d_index.get(), d_expert_in.get(), apss26::HIDDEN_SIZE);
+            d_norm, d_index, d_expert_in, apss26::HIDDEN_SIZE);
         gemm_grouped<<<dim3((2 * FFDIM + GRP_BN - 1) / GRP_BN, max_tiles), GEMM_THREADS>>>(
-            d_expert_in.get(), layer.moe.w13_ptrs, d_gate_up.get(), d_tiles.get(),
+            d_expert_in, layer.moe.w13_ptrs, d_gate_up, d_tiles,
             static_cast<int>(apss26::HIDDEN_SIZE), static_cast<int>(2 * FFDIM));
         const long long activated = static_cast<long long>(packed_rows) * FFDIM;
         silu_mul<<<static_cast<unsigned>((activated + 255) / 256), 256>>>(
-            d_gate_up.get(), d_gate.get(), static_cast<int>(FFDIM), activated);
+            d_gate_up, d_gate, static_cast<int>(FFDIM), activated);
         gemm_grouped<<<dim3((apss26::HIDDEN_SIZE + GRP_BN - 1) / GRP_BN, max_tiles), GEMM_THREADS>>>(
-            d_gate.get(), layer.moe.w2_ptrs, d_expert_out.get(), d_tiles.get(),
+            d_gate, layer.moe.w2_ptrs, d_expert_out, d_tiles,
             static_cast<int>(FFDIM), static_cast<int>(apss26::HIDDEN_SIZE));
         // One pass per row instead of one launch per expert, so `d_next` is
         // written rather than zeroed and accumulated into.
         moe_combine<<<static_cast<unsigned>(total), 256>>>(
-            d_expert_out.get(), d_slot.get(), d_next, apss26::HIDDEN_SIZE);
+            d_expert_out, d_slot, d_next, apss26::HIDDEN_SIZE);
         cuda_check(cudaGetLastError(), "moe kernels");
         tick(t_moe);
 
-        add_inplace_device(d_next, d_attn.get(), static_cast<long long>(elements));
+        add_inplace_device(d_next, d_attn, static_cast<long long>(elements));
         tick(t_resid);
         std::swap(d_hidden, d_next);
     }
 
-    final_norm_.forward(d_hidden, d_norm.get(), total);
+    final_norm_.forward(d_hidden, d_norm, total);
     tick(t_norm);
 
     // Only the last row of each sequence feeds lm_head: the trie node its
     // whole token list ends on. Two identical sequences share that node.
-    cuda_check(cudaMemcpy(d_index.get(), last_node.data(), batch * sizeof(int),
+    cuda_check(cudaMemcpy(d_index, last_node.data(), batch * sizeof(int),
                           cudaMemcpyHostToDevice), "cudaMemcpy last rows");
     gather_rows<<<static_cast<unsigned>(batch), 256>>>(
-        d_norm.get(), d_index.get(), d_expert_in.get(), apss26::HIDDEN_SIZE);
-    DeviceBuffer<float> d_logits(batch * apss26::VOCAB_SIZE);
-    lm_head_.forward(d_expert_in.get(), d_logits.get(), batch);
+        d_norm, d_index, d_expert_in, apss26::HIDDEN_SIZE);
+    float* d_logits = sc.logits.reserve(batch * apss26::VOCAB_SIZE);
+    lm_head_.forward(d_expert_in, d_logits, batch);
     alloc_thread.join();
-    to_host(logits, d_logits.get());
+    to_host(logits, d_logits);
     tick(t_lm);
 
     if (profile) {

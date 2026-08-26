@@ -1821,3 +1821,55 @@ instruction schedule")가 실측으로 확인됐다. 022a가 SASS 동일성을 �
   mio(0.26)뿐이고 둘 다 022가 부수 효과로 노렸던 것이라, **FP32에서 gemm 0.94는 구조적
   바닥**이라는 019의 결론이 강화됐다. 57.4% → 80%로 가는 길은 이 코드베이스에 없다.
 - 따라서 다음은 plan 그대로 **021 → 023 → 024/025**, 즉 비-GEMM 쪽이다.
+
+---
+
+# EXP-021 — 스크래치 버퍼 수명을 모델로 (채택)
+
+## 1. Background
+측정-E: `generate()` 에필로그의 `cudaFree` 24회(~1.5 GB)가 측정 구간 안에서 **20.77 ms
+(1.10%)**, 그 동안 GPU는 idle이다. D2H 전체(0.002 s)의 1.45배. 스테이지 타이머 어디에도
+안 잡힌다 — 마지막 `tick` 이후 스코프 이탈에서 일어나기 때문이다.
+
+## 2. Hypothesis
+24개 `DeviceBuffer`를 모델 멤버로 올려 해제를 `~PhiTinyMoEModel`으로 미루면
+elapsed가 **−0.021 s** 준다. `cudaMalloc`은 구간 안에 그대로 둔다(첫 호출이 그대로 지불).
+산술 무변경 → **bitwise 동일이 판정 기준**.
+
+## 3. Design and Implementation
+- `DeviceBuffer`: 생성자 인자 제거 + **grow-only** `reserve(n)` (`n > capacity_`일 때만
+  free+malloc). 소멸자는 그대로 `cudaFree`.
+- `PhiTinyMoEModel::Scratch` (model.cu, 익명 namespace **밖**)에 24개를 모아
+  `mutable std::unique_ptr<Scratch> scratch_`로 보유. `generate()`는 `const`이므로 `mutable`,
+  불완전 타입 멤버는 소멸자가 model.cu에 있어 성립.
+- 본문은 `DeviceBuffer<T> d_x(n)` → `T* d_x = sc.x.reserve(n)`, `.get()` 63곳 소멸.
+  버퍼가 포인터가 되며 `std::swap(d_hidden, d_next)`는 그대로.
+- **재사용 안전성**: 24개 전부 매 호출에서 읽기 전에 전량 기록된다(`route_scan`은
+  `max_tiles`까지 0 패딩까지 채운다). 애초에 `cudaMalloc`도 0을 보장하지 않으므로
+  이전 호출의 잔여값에 의존하는 경로는 존재할 수 없다.
+- **워밍업 논점 없음**: `run.sh`/`submit.sh`는 `-w`를 쓰지 않아 첫 `generate()`가 곧
+  측정 구간이다. 즉 malloc은 구간 안에 남는다. (`-w`를 켜면 malloc이 워밍업으로
+  빠지지만, 이는 연산 결과 캐싱이 아니라 할당이고 아래 측정은 `-w` 없이 했다.)
+
+## 4. Result
+b0, 한 allocation 안에서 a/b 교차 3rep, `APS_PROFILE` 없음:
+
+| 빌드 | rep1 | rep2 | rep3 | 평균 | seq/s |
+|---|---|---|---|---|---|
+| a = HEAD(022a) | 1.878630 | 1.878076 | 1.875972 | **1.87756** | 545.4 |
+| b = 021 | 1.858427 | 1.856389 | 1.858780 | **1.85787** | **551.2** |
+
+**Δ = −0.0197 s (−1.05%, 1.0106×)** — 측정-E의 상한 20.77 ms와 사실상 일치(95%).
+
+프로파일 런에서 스테이지 합은 불변(gemm 0.944/0.945, moe 0.601/0.600, norm 0.117 동일,
+resid 0.058 동일)인데 elapsed만 1.882 → 1.862. **이득이 스테이지 밖 = 에필로그 해제에서
+왔다는 직접 증거**다.
+
+- n=1024 `-v`: 양쪽 `max abs diff 0.000179291` 동일, `cmp` **bitwise 동일**.
+- `-n 2 -d -v` 통과: decode는 `forward()`가 `generate()`를 프리픽스가 자라며 16회 부르므로
+  `reserve`의 **성장 경로까지 실측 검증**됐다(prefill 단독 경로에서는 안 밟힌다).
+
+## 4. Next action
+- 채택. 남은 malloc 24회는 구간 안에 있으나 측정-E에서 malloc은 free보다 훨씬 싸다
+  (가상 주소 예약뿐) — 별도 실험 가치 없음.
+- plan 그대로 **020 → 023 → 024/025**.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "layer.h"
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -90,7 +91,13 @@ private:
         DeviceMoE moe;
     };
 
+    // Every device buffer generate() needs, defined in model.cu. Owned by the
+    // model so its ~1.5 GB of cudaFree lands in the destructor instead of in
+    // the measured region; the first generate() still pays for the cudaMalloc.
+    struct Scratch;
+
     ModelLoader loader_;
+    mutable std::unique_ptr<Scratch> scratch_;
     Tensor embeddings_;
     // The same table on the device, so the per-token gather is a kernel
     // instead of 255 MB of single-threaded host memcpy plus an upload.
