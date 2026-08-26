@@ -198,6 +198,8 @@ __global__ void gemm_grouped(const float* __restrict__ a,
                              float* __restrict__ c,
                              const int* __restrict__ tiles, int k, int n) {
     const int* const t = tiles + blockIdx.y * 3;
+    // The grid is sized to the worst-case tile count, so the tail is empty.
+    if (t[2] == 0) return;
     gemm_nt_body(a, weights[t[0]], nullptr, c, t[1], t[1] + t[2], k, n);
 }
 
@@ -211,17 +213,23 @@ __global__ void gather_rows(const float* __restrict__ src,
     for (int c = threadIdx.x; c < cols; c += blockDim.x) out[c] = in[c];
 }
 
-// dst[index[i], :] += weight * src[i, :]
-// Each expert holds every row at most once and the experts are applied in
-// separate launches, so no two threads touch the same element.
-__global__ void scatter_add_rows(const float* __restrict__ src,
-                                 const int* __restrict__ index,
-                                 float* __restrict__ dst, int cols,
-                                 float weight) {
-    const int row = index[blockIdx.x];
-    const float* in = src + static_cast<long long>(blockIdx.x) * cols;
-    float* out = dst + static_cast<long long>(row) * cols;
-    for (int c = threadIdx.x; c < cols; c += blockDim.x) out[c] += weight * in[c];
+// dst[t, :] = 0.5 * src[slot_lo(t), :] + 0.5 * src[slot_hi(t), :]
+// One block per row. The two halves are added low expert index first and
+// through an accumulator that starts at zero, which is exactly what the
+// zero-fill plus one launch per expert did before.
+__global__ void moe_combine(const float* __restrict__ src,
+                            const int* __restrict__ slot,
+                            float* __restrict__ dst, int cols) {
+    const int t = blockIdx.x;
+    const float* lo = src + static_cast<long long>(slot[2 * t]) * cols;
+    const float* hi = src + static_cast<long long>(slot[2 * t + 1]) * cols;
+    float* out = dst + static_cast<long long>(t) * cols;
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) {
+        float acc = 0.0f;
+        acc += 0.5f * lo[c];
+        acc += 0.5f * hi[c];
+        out[c] = acc;
+    }
 }
 
 // PhiMLP applies silu to the w1 branch and multiplies the w3 branch into it.
@@ -307,29 +315,133 @@ __global__ void layer_norm_rows(const float* __restrict__ x,
 }
 
 // Mirrors PhiMoE::route in layer.cu: quantise the router scores, then pick the
-// best two with a tie epsilon. Left on the host -- it is 16 values per token.
-void route_row(const float* logits, int& first, int& second) {
+// best two with a tie epsilon. The scan is sequential in expert order because
+// the tie rule is: on a near tie the lower index wins.
+__device__ __forceinline__ void route_top2(const float* __restrict__ logits,
+                                           int& first, int& second) {
     float scores[apss26::NUM_EXPERTS];
-    for (std::size_t e = 0; e < apss26::NUM_EXPERTS; ++e) {
+    for (int e = 0; e < static_cast<int>(apss26::NUM_EXPERTS); ++e) {
         const float score = logits[e];
-        const float rounded = std::floor(std::fabs(score) /
+        const float rounded = floorf(fabsf(score) /
             apss26::ROUTER_SCORE_QUANTUM + 0.5f) * apss26::ROUTER_SCORE_QUANTUM;
         scores[e] = score < 0.0f ? -rounded : rounded;
     }
-    auto select = [&scores](int excluded) {
-        int best = -1;
-        float best_value = -std::numeric_limits<float>::infinity();
-        for (std::size_t e = 0; e < apss26::NUM_EXPERTS; ++e) {
-            if (static_cast<int>(e) == excluded) continue;
-            if (best < 0 || scores[e] > best_value + apss26::ROUTER_TIE_EPS) {
-                best = static_cast<int>(e);
-                best_value = scores[e];
-            }
+    first = -1;
+    float best = -INFINITY;
+    for (int e = 0; e < static_cast<int>(apss26::NUM_EXPERTS); ++e) {
+        if (first < 0 || scores[e] > best + apss26::ROUTER_TIE_EPS) {
+            first = e;
+            best = scores[e];
         }
-        return best;
-    };
-    first = select(-1);
-    second = select(first);
+    }
+    second = -1;
+    best = -INFINITY;
+    for (int e = 0; e < static_cast<int>(apss26::NUM_EXPERTS); ++e) {
+        if (e == first) continue;
+        if (second < 0 || scores[e] > best + apss26::ROUTER_TIE_EPS) {
+            second = e;
+            best = scores[e];
+        }
+    }
+}
+
+// Rows per routing block. The placement pass below walks a block's rows once
+// per expert, so this also bounds that scan.
+constexpr int ROUTE_BLOCK = 256;
+
+// Pass 1: each row's two experts, stored low index first because the per-expert
+// scatter this replaces applied them in ascending expert order. Also each
+// block's per-expert row count, the input to the scan.
+__global__ void route_count(const float* __restrict__ router, int total,
+                            int* __restrict__ pair, int* __restrict__ blk) {
+    __shared__ int cnt[apss26::NUM_EXPERTS];
+    if (threadIdx.x < apss26::NUM_EXPERTS) cnt[threadIdx.x] = 0;
+    __syncthreads();
+    const int t = blockIdx.x * ROUTE_BLOCK + threadIdx.x;
+    if (t < total) {
+        int first = 0, second = 0;
+        route_top2(router + static_cast<long long>(t) * apss26::NUM_EXPERTS,
+                   first, second);
+        const int lo = first < second ? first : second;
+        const int hi = first < second ? second : first;
+        pair[2 * t] = lo;
+        pair[2 * t + 1] = hi;
+        atomicAdd(&cnt[lo], 1);
+        atomicAdd(&cnt[hi], 1);
+    }
+    __syncthreads();
+    if (threadIdx.x < apss26::NUM_EXPERTS) {
+        blk[blockIdx.x * static_cast<int>(apss26::NUM_EXPERTS) + threadIdx.x] =
+            cnt[threadIdx.x];
+    }
+}
+
+// Pass 2: one block, one thread per expert. Turns the counts into each block's
+// base inside its expert's packed range and each expert's base inside the
+// packed buffer, then writes the tile list. The grid is launched at max_tiles
+// so the count never has to come back to the host; the surplus tiles carry
+// zero rows and return immediately.
+__global__ void route_scan(int* __restrict__ blk, int nrb,
+                           int* __restrict__ eoff, int* __restrict__ tiles,
+                           int max_tiles) {
+    __shared__ int tot[apss26::NUM_EXPERTS];
+    const int e = threadIdx.x;
+    int run = 0;
+    for (int b = 0; b < nrb; ++b) {
+        const int at = b * static_cast<int>(apss26::NUM_EXPERTS) + e;
+        const int c = blk[at];
+        blk[at] = run;
+        run += c;
+    }
+    tot[e] = run;
+    __syncthreads();
+    if (e != 0) return;
+    int off = 0, j = 0;
+    for (int x = 0; x < static_cast<int>(apss26::NUM_EXPERTS); ++x) {
+        eoff[x] = off;
+        for (int r = 0; r < tot[x]; r += BM) {
+            tiles[3 * j] = x;
+            tiles[3 * j + 1] = off + r;
+            tiles[3 * j + 2] = tot[x] - r < BM ? tot[x] - r : BM;
+            ++j;
+        }
+        off += tot[x];
+    }
+    for (; j < max_tiles; ++j) {
+        tiles[3 * j] = 0;
+        tiles[3 * j + 1] = 0;
+        tiles[3 * j + 2] = 0;
+    }
+}
+
+// Pass 3: place each row's two copies into its experts' packed ranges. Threads
+// walk their expert's rows in ascending row order, so the packed layout is the
+// one the host build produced. `slot` records where each copy landed, which is
+// what lets the combine below read the two halves back without a scatter.
+__global__ void route_place(const int* __restrict__ pair, int total,
+                            const int* __restrict__ blk,
+                            const int* __restrict__ eoff,
+                            int* __restrict__ index, int* __restrict__ slot) {
+    __shared__ int sp[2 * ROUTE_BLOCK];
+    const int base = blockIdx.x * ROUTE_BLOCK;
+    const int n = total - base < ROUTE_BLOCK ? total - base : ROUTE_BLOCK;
+    for (int i = threadIdx.x; i < 2 * n; i += ROUTE_BLOCK) sp[i] = pair[2 * base + i];
+    __syncthreads();
+    if (threadIdx.x >= apss26::NUM_EXPERTS) return;
+    const int e = threadIdx.x;
+    int at = eoff[e] + blk[blockIdx.x * static_cast<int>(apss26::NUM_EXPERTS) + e];
+    for (int i = 0; i < n; ++i) {
+        // The two experts of a row are distinct, so at most one arm fires.
+        if (sp[2 * i] == e) {
+            index[at] = base + i;
+            slot[2 * (base + i)] = at;
+            ++at;
+        } else if (sp[2 * i + 1] == e) {
+            index[at] = base + i;
+            slot[2 * (base + i) + 1] = at;
+            ++at;
+        }
+    }
 }
 
 // RoPE applied in place to the batched q and k projections. One block per row.
@@ -719,10 +831,9 @@ void PhiTinyMoEModel::generate(
 
     tick(t_embed);
 
-    // Everything except attention and the routing decision now runs on the
-    // device, and the residual stream stays there for all 32 layers: only
-    // q/k/v, the attention context and the 16 router scores per token still
-    // cross the bus.
+    // Everything now runs on the device and the residual stream stays there
+    // for all 32 layers: nothing crosses the bus between the trie upload and
+    // the logits coming back.
     constexpr std::size_t QDIM = apss26::NUM_ATTENTION_HEADS * apss26::HEAD_DIM;
     constexpr std::size_t KVDIM = apss26::NUM_KV_HEADS * apss26::HEAD_DIM;
     constexpr std::size_t FFDIM = apss26::EXPERT_INTERMEDIATE_SIZE;
@@ -747,6 +858,14 @@ void PhiTinyMoEModel::generate(
     DeviceBuffer<float> d_gate(packed_rows * FFDIM),
                         d_gate_up(packed_rows * 2 * FFDIM);
     DeviceBuffer<int> d_index(packed_rows);
+    // Routing scratch: each row's two experts, each copy's packed slot, and the
+    // per-block per-expert counts the scan turns into offsets.
+    const int nrb = static_cast<int>((total + ROUTE_BLOCK - 1) / ROUTE_BLOCK);
+    const int max_tiles =
+        static_cast<int>(packed_rows / BM + apss26::NUM_EXPERTS);
+    DeviceBuffer<int> d_pair(packed_rows), d_slot(packed_rows);
+    DeviceBuffer<int> d_blk(static_cast<std::size_t>(nrb) * apss26::NUM_EXPERTS);
+    DeviceBuffer<int> d_eoff(apss26::NUM_EXPERTS);
     // Three ints per row tile; an expert contributes at most one partial tile.
     DeviceBuffer<int> d_tiles(3 * (packed_rows / BM + apss26::NUM_EXPERTS + 1));
 
@@ -793,13 +912,6 @@ void PhiTinyMoEModel::generate(
     cuda_check(cudaGetLastError(), "embedding gather launch");
     tick(t_h2d);
 
-    Tensor router({total, apss26::NUM_EXPERTS});
-    std::vector<std::vector<int>> assignment(apss26::NUM_EXPERTS);
-    std::vector<int> index_all, tiles;
-    std::vector<std::size_t> expert_off(apss26::NUM_EXPERTS);
-    index_all.reserve(packed_rows);
-    tiles.reserve(3 * (packed_rows / BM + apss26::NUM_EXPERTS + 1));
-
     for (const Layer& layer : layers_) {
         layer.input_norm.forward(d_hidden, d_norm.get(), total);
         tick(t_norm);
@@ -830,60 +942,34 @@ void PhiTinyMoEModel::generate(
         // over its own gathered rows and scatter the halves back.
         layer.moe.gate.forward(d_norm.get(), d_router.get(), total);
         tick(t_gemm);
-        to_host(router, d_router.get());
+        // Routing runs on the device: the 997 KB of scores no longer come back
+        // and the packed layout is built where it is used. The tile count stays
+        // on the device too -- the grid is launched at its worst case.
+        route_count<<<nrb, ROUTE_BLOCK>>>(d_router.get(), static_cast<int>(total),
+                                          d_pair.get(), d_blk.get());
+        route_scan<<<1, apss26::NUM_EXPERTS>>>(d_blk.get(), nrb, d_eoff.get(),
+                                               d_tiles.get(), max_tiles);
+        route_place<<<nrb, ROUTE_BLOCK>>>(d_pair.get(), static_cast<int>(total),
+                                          d_blk.get(), d_eoff.get(),
+                                          d_index.get(), d_slot.get());
+        cuda_check(cudaGetLastError(), "routing kernels");
         tick(t_d2h);
 
-        for (auto& rows : assignment) rows.clear();
-        for (std::size_t t = 0; t < total; ++t) {
-            int first = 0, second = 0;
-            route_row(router.data() + t * apss26::NUM_EXPERTS, first, second);
-            assignment[first].push_back(static_cast<int>(t));
-            assignment[second].push_back(static_cast<int>(t));
-        }
-        cuda_check(cudaMemset(d_next, 0, elements * sizeof(float)), "cudaMemset stream");
-
-        // Lay the 16 experts' rows end to end and cut them into BM-row tiles,
-        // so both expert GEMMs run as one launch over all of them.
-        index_all.clear();
-        tiles.clear();
-        for (std::size_t e = 0; e < apss26::NUM_EXPERTS; ++e) {
-            const std::vector<int>& rows = assignment[e];
-            expert_off[e] = index_all.size();
-            for (std::size_t r = 0; r < rows.size(); r += BM) {
-                tiles.push_back(static_cast<int>(e));
-                tiles.push_back(static_cast<int>(expert_off[e] + r));
-                tiles.push_back(static_cast<int>(
-                    rows.size() - r < BM ? rows.size() - r : BM));
-            }
-            index_all.insert(index_all.end(), rows.begin(), rows.end());
-        }
-        const unsigned ntiles = static_cast<unsigned>(tiles.size() / 3);
-        cuda_check(cudaMemcpy(d_index.get(), index_all.data(),
-                              index_all.size() * sizeof(int),
-                              cudaMemcpyHostToDevice), "cudaMemcpy expert index");
-        cuda_check(cudaMemcpy(d_tiles.get(), tiles.data(), tiles.size() * sizeof(int),
-                              cudaMemcpyHostToDevice), "cudaMemcpy expert tiles");
-
-        gather_rows<<<static_cast<unsigned>(index_all.size()), 256>>>(
+        gather_rows<<<static_cast<unsigned>(packed_rows), 256>>>(
             d_norm.get(), d_index.get(), d_expert_in.get(), apss26::HIDDEN_SIZE);
-        gemm_grouped<<<dim3((2 * FFDIM + BN - 1) / BN, ntiles), GEMM_THREADS>>>(
+        gemm_grouped<<<dim3((2 * FFDIM + BN - 1) / BN, max_tiles), GEMM_THREADS>>>(
             d_expert_in.get(), layer.moe.w13_ptrs, d_gate_up.get(), d_tiles.get(),
             static_cast<int>(apss26::HIDDEN_SIZE), static_cast<int>(2 * FFDIM));
-        const long long activated = static_cast<long long>(index_all.size()) * FFDIM;
+        const long long activated = static_cast<long long>(packed_rows) * FFDIM;
         silu_mul<<<static_cast<unsigned>((activated + 255) / 256), 256>>>(
             d_gate_up.get(), d_gate.get(), static_cast<int>(FFDIM), activated);
-        gemm_grouped<<<dim3((apss26::HIDDEN_SIZE + BN - 1) / BN, ntiles), GEMM_THREADS>>>(
+        gemm_grouped<<<dim3((apss26::HIDDEN_SIZE + BN - 1) / BN, max_tiles), GEMM_THREADS>>>(
             d_gate.get(), layer.moe.w2_ptrs, d_expert_out.get(), d_tiles.get(),
             static_cast<int>(FFDIM), static_cast<int>(apss26::HIDDEN_SIZE));
-        // Scatter stays per expert: a row belongs to two of them, and separate
-        // launches are what keep the two adds from racing.
-        for (std::size_t e = 0; e < apss26::NUM_EXPERTS; ++e) {
-            const std::size_t rows = assignment[e].size();
-            if (rows == 0) continue;
-            scatter_add_rows<<<static_cast<unsigned>(rows), 256>>>(
-                d_expert_out.get() + expert_off[e] * apss26::HIDDEN_SIZE,
-                d_index.get() + expert_off[e], d_next, apss26::HIDDEN_SIZE, 0.5f);
-        }
+        // One pass per row instead of one launch per expert, so `d_next` is
+        // written rather than zeroed and accumulated into.
+        moe_combine<<<static_cast<unsigned>(total), 256>>>(
+            d_expert_out.get(), d_slot.get(), d_next, apss26::HIDDEN_SIZE);
         cuda_check(cudaGetLastError(), "moe kernels");
         tick(t_moe);
 

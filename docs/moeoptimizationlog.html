@@ -1,0 +1,1046 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  * { margin: 0; }
+  img, picture, video, canvas, svg { display: block; max-width: 100%; }
+  input, button, textarea, select { font: inherit; }
+  p, h1, h2, h3, h4, h5, h6 { overflow-wrap: break-word; }
+</style>
+<title>Phi-tiny-MoE 커널 최적화 일지</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@300;400;500;600;700&family=IBM+Plex+Serif:wght@500;600&display=swap">
+
+<style>
+:root {
+  --ground:      #E9EBEF;
+  --panel:       #FDFDFE;
+  --panel-2:     #F1F3F6;
+  --code-bg:     #F5F6F9;
+  --ink:         #14171D;
+  --ink-2:       #3C424D;
+  --muted:       #666E7C;
+  --line:        rgba(20, 23, 29, 0.11);
+  --line-2:      rgba(20, 23, 29, 0.06);
+  --accent:      #B32D63;
+  --accent-soft: rgba(179, 45, 99, 0.09);
+  --gain:        #1F7A5E;
+  --loss:        #A94A34;
+  --bar-track:   rgba(20, 23, 29, 0.08);
+  --shadow:      0 1px 2px rgba(20,23,29,.05), 0 8px 24px -14px rgba(20,23,29,.22);
+
+  --sans: 'IBM Plex Sans KR', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --serif: 'IBM Plex Serif', Georgia, 'Times New Roman', serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #0D1015;
+    --panel:       #151A21;
+    --panel-2:     #1B212A;
+    --code-bg:     #10151C;
+    --ink:         #DFE4EB;
+    --ink-2:       #B6BEC9;
+    --muted:       #838D9B;
+    --line:        rgba(223, 228, 235, 0.13);
+    --line-2:      rgba(223, 228, 235, 0.07);
+    --accent:      #EF7CA9;
+    --accent-soft: rgba(239, 124, 169, 0.11);
+    --gain:        #56C3A0;
+    --loss:        #E08A6E;
+    --bar-track:   rgba(223, 228, 235, 0.10);
+    --shadow:      0 1px 2px rgba(0,0,0,.4), 0 10px 30px -16px rgba(0,0,0,.7);
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground:      #0D1015;
+  --panel:       #151A21;
+  --panel-2:     #1B212A;
+  --code-bg:     #10151C;
+  --ink:         #DFE4EB;
+  --ink-2:       #B6BEC9;
+  --muted:       #838D9B;
+  --line:        rgba(223, 228, 235, 0.13);
+  --line-2:      rgba(223, 228, 235, 0.07);
+  --accent:      #EF7CA9;
+  --accent-soft: rgba(239, 124, 169, 0.11);
+  --gain:        #56C3A0;
+  --loss:        #E08A6E;
+  --bar-track:   rgba(223, 228, 235, 0.10);
+  --shadow:      0 1px 2px rgba(0,0,0,.4), 0 10px 30px -16px rgba(0,0,0,.7);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-weight: 400;
+  font-size: 16px;
+  line-height: 1.72;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1020px; margin: 0 auto; padding: 0 28px 96px; }
+
+/* ── masthead ─────────────────────────────────────────── */
+
+.masthead { padding: 76px 0 40px; border-bottom: 1px solid var(--line); }
+
+.eyebrow {
+  font-family: var(--mono); font-size: 11.5px; font-weight: 500;
+  letter-spacing: 0.13em; text-transform: uppercase;
+  color: var(--accent); margin: 0 0 20px;
+}
+
+h1 {
+  font-weight: 700; font-size: clamp(30px, 4.6vw, 46px);
+  line-height: 1.18; letter-spacing: -0.022em;
+  text-wrap: balance; margin: 0 0 18px;
+}
+
+.standfirst {
+  font-size: 17.5px; line-height: 1.68; color: var(--ink-2);
+  max-width: 62ch; margin: 0; font-weight: 300;
+}
+
+.headline-figures { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 38px; }
+
+.figure {
+  flex: 1 1 168px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 3px; padding: 16px 18px 15px;
+}
+
+.figure dt {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--muted); margin: 0 0 7px;
+}
+
+.figure dd {
+  margin: 0; font-family: var(--serif); font-weight: 600; font-size: 27px;
+  line-height: 1.1; letter-spacing: -0.01em; font-variant-numeric: tabular-nums;
+}
+
+.figure dd small {
+  font-family: var(--mono); font-size: 12px; font-weight: 400;
+  color: var(--muted); letter-spacing: 0; margin-left: 3px;
+}
+
+/* ── legend ───────────────────────────────────────────── */
+
+.legend { margin: 56px 0 12px; }
+
+h2 {
+  font-weight: 600; font-size: 22px; letter-spacing: -0.014em;
+  margin: 0 0 8px; text-wrap: balance;
+}
+
+.section-note {
+  color: var(--muted); font-size: 14.5px; line-height: 1.66;
+  max-width: 64ch; margin: 0 0 26px; font-weight: 300;
+}
+
+.legend-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(238px, 1fr));
+  gap: 1px; background: var(--line); border: 1px solid var(--line);
+  border-radius: 3px; overflow: hidden;
+}
+
+.legend-item { background: var(--panel); padding: 15px 17px 16px; }
+.legend-item h3 { font-size: 14px; font-weight: 600; margin: 0 0 5px; letter-spacing: -0.005em; }
+.legend-item p { margin: 0; font-size: 13.5px; line-height: 1.6; color: var(--muted); font-weight: 300; }
+
+/* ── phases ───────────────────────────────────────────── */
+
+.phase { margin-top: 62px; }
+
+.phase-head {
+  display: flex; align-items: baseline; gap: 14px;
+  padding-bottom: 12px; border-bottom: 2px solid var(--ink); margin-bottom: 4px;
+}
+
+.phase-num {
+  font-family: var(--mono); font-size: 11.5px; font-weight: 600;
+  letter-spacing: 0.1em; color: var(--accent); white-space: nowrap;
+}
+
+.phase-head h2 { margin: 0; flex: 1; }
+
+.phase-range {
+  font-family: var(--mono); font-size: 12px; color: var(--muted);
+  white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+
+.phase-intro {
+  color: var(--ink-2); font-size: 15px; line-height: 1.7;
+  max-width: 66ch; margin: 18px 0 26px; font-weight: 300;
+}
+
+/* ── version rows ─────────────────────────────────────── */
+
+.versions { display: flex; flex-direction: column; gap: 10px; }
+
+.v {
+  display: grid; grid-template-columns: 176px 1fr; gap: 0;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 3px; overflow: hidden; box-shadow: var(--shadow);
+}
+
+.v.keystone { border-color: var(--accent); }
+
+.v-rail {
+  padding: 18px 16px 18px 18px; border-right: 1px solid var(--line-2);
+  background: var(--panel-2); display: flex; flex-direction: column; gap: 9px;
+}
+
+.v-tag { font-family: var(--serif); font-weight: 600; font-size: 21px; line-height: 1; letter-spacing: -0.01em; }
+.v.keystone .v-tag { color: var(--accent); }
+
+.v-perf {
+  font-family: var(--serif); font-weight: 600; font-size: 25px; line-height: 1;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.015em;
+}
+
+.v-unit { font-family: var(--mono); font-size: 10.5px; color: var(--muted); letter-spacing: 0.04em; margin-top: -4px; }
+
+.bar { height: 4px; background: var(--bar-track); border-radius: 2px; overflow: hidden; margin-top: 2px; }
+.bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+
+.v-delta { font-family: var(--mono); font-size: 11.5px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.up   { color: var(--gain); }
+.down { color: var(--loss); }
+
+.v-body { padding: 18px 20px 19px; min-width: 0; }
+
+.v-what { font-size: 15.5px; font-weight: 500; line-height: 1.55; margin: 0 0 11px; letter-spacing: -0.008em; }
+.v-detail { font-size: 14.5px; line-height: 1.7; color: var(--ink-2); margin: 0; font-weight: 300; }
+.v-detail + .concept { margin-top: 14px; }
+
+.concept {
+  border-left: 2px solid var(--accent); background: var(--accent-soft);
+  padding: 13px 15px 14px; border-radius: 0 3px 3px 0;
+}
+.concept + .concept { margin-top: 12px; }
+
+.concept-label {
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent);
+  display: block; margin-bottom: 6px;
+}
+
+.concept-name { font-weight: 600; font-size: 14.5px; display: block; margin-bottom: 6px; letter-spacing: -0.005em; }
+.concept p { margin: 0; font-size: 14px; line-height: 1.68; color: var(--ink-2); font-weight: 300; }
+.concept p + p { margin-top: 8px; }
+
+/* ── before / after code ──────────────────────────────── */
+
+.cmp { display: flex; flex-direction: column; gap: 7px; margin: 11px 0 0; }
+.cmp + p { margin-top: 11px; }
+
+.cmp-row { border-left: 2px solid var(--line); padding-left: 11px; }
+.cmp-row.before { border-left-color: var(--loss); }
+.cmp-row.after  { border-left-color: var(--gain); }
+
+.cmp-tag {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 600;
+  letter-spacing: 0.11em; text-transform: uppercase;
+  display: block; margin-bottom: 4px;
+}
+.cmp-row.before .cmp-tag { color: var(--loss); }
+.cmp-row.after  .cmp-tag { color: var(--gain); }
+
+pre {
+  margin: 0; font-family: var(--mono); font-size: 12.5px; line-height: 1.62;
+  color: var(--ink-2); background: var(--code-bg); border: 1px solid var(--line-2);
+  border-radius: 2px; padding: 9px 11px; overflow-x: auto; white-space: pre;
+  font-variant-numeric: tabular-nums;
+}
+pre b { color: var(--accent); font-weight: 600; }
+pre i { color: var(--muted); font-style: normal; }
+
+.cmp-delta {
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.6;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 2px; padding: 8px 12px; margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.cmp-delta b { color: var(--accent); font-weight: 600; }
+
+code {
+  font-family: var(--mono); font-size: 0.885em; background: var(--panel-2);
+  border: 1px solid var(--line-2); border-radius: 2px;
+  padding: 0.1em 0.36em; font-variant-numeric: tabular-nums;
+}
+.concept code { background: var(--panel); }
+
+strong { font-weight: 600; }
+.num { font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 0.92em; }
+
+/* ── tables ───────────────────────────────────────────── */
+
+.table-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 3px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; min-width: 540px; font-size: 14px; }
+
+th, td {
+  text-align: left; padding: 11px 15px;
+  border-bottom: 1px solid var(--line-2); vertical-align: top; line-height: 1.6;
+}
+
+th {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.09em;
+  text-transform: uppercase; color: var(--muted); font-weight: 500;
+  background: var(--panel-2); white-space: nowrap;
+}
+
+tbody tr:last-child td { border-bottom: none; }
+td.verdict { font-family: var(--mono); font-weight: 500; font-size: 13px; white-space: nowrap; }
+
+/* ── callout ──────────────────────────────────────────── */
+
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: var(--panel); border-radius: 0 3px 3px 0;
+  padding: 20px 22px; margin: 26px 0 0;
+}
+.callout h3 { font-size: 16px; font-weight: 600; margin: 0 0 9px; letter-spacing: -0.008em; }
+.callout p { margin: 0; font-size: 14.5px; line-height: 1.72; color: var(--ink-2); font-weight: 300; }
+.callout p + p { margin-top: 10px; }
+
+footer {
+  margin-top: 72px; padding-top: 22px; border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+  line-height: 1.9; letter-spacing: 0.01em;
+}
+
+@media (max-width: 700px) {
+  .wrap { padding: 0 18px 72px; }
+  .masthead { padding: 48px 0 32px; }
+  .v { grid-template-columns: 1fr; }
+  .v-rail {
+    flex-direction: row; align-items: baseline; flex-wrap: wrap; gap: 12px;
+    border-right: none; border-bottom: 1px solid var(--line-2); padding: 13px 16px;
+  }
+  .bar { flex: 1 1 90px; margin-top: 0; align-self: center; }
+  .v-unit { display: none; }
+  pre { font-size: 11.5px; }
+}
+
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">APSS26 · RTX 3090 · 손수 작성한 CUDA 커널만</p>
+  <h1>Phi-tiny-MoE 커널 최적화 일지</h1>
+  <p class="standfirst">
+    CPU 레퍼런스 추론 엔진을 단일 RTX 3090용 CUDA로 옮기고, 19번에 걸쳐 다듬은 기록입니다.
+    각 버전이 <strong>코드에서 무엇이 어떻게 바뀌었고</strong> 그래서 연산량·트래픽이 얼마나 줄었는지,
+    그리고 <em>측정해서 틀렸던 것들</em>까지 함께 적었습니다. 출력은 전 구간에서 레퍼런스와 비트 단위로 동일합니다.
+  </p>
+
+  <dl class="headline-figures">
+    <div class="figure"><dt>시작</dt><dd>0.012<small>seq/s</small></dd></div>
+    <div class="figure"><dt>현재</dt><dd>487<small>seq/s</small></dd></div>
+    <div class="figure"><dt>전체 배율</dt><dd>약 40,000<small>×</small></dd></div>
+    <div class="figure"><dt>검증 오차</dt><dd>1.87<small>e-4, 불변</small></dd></div>
+  </dl>
+</header>
+
+<section class="legend">
+  <h2>먼저, 이 글에 나오는 개념 8가지</h2>
+  <p class="section-note">
+    버전마다 새로운 기법이 하나씩 등장합니다. 미리 한 줄로 정리해두면 뒤를 읽기가 훨씬 수월합니다.
+  </p>
+  <div class="legend-grid">
+    <div class="legend-item"><h3>타일링 (Tiling)</h3><p>큰 행렬을 GPU가 한 번에 다룰 조각으로 쪼개서, 조각 하나를 빠른 메모리에 올려두고 재사용하는 것.</p></div>
+    <div class="legend-item"><h3>공유메모리</h3><p>블록 안의 스레드들이 함께 쓰는 작은 고속 메모리(SM당 100&nbsp;KB). DRAM보다 수십 배 빠릅니다.</p></div>
+    <div class="legend-item"><h3>병합 접근 (Coalescing)</h3><p>워프의 32개 스레드가 <em>연속된</em> 주소를 읽으면 한 번의 전송으로 끝납니다. 흩어져 있으면 32번 갑니다.</p></div>
+    <div class="legend-item"><h3>점유율 (Occupancy)</h3><p>SM 하나에 동시에 올라가는 워프의 수. 레지스터·공유메모리·스레드 수 중 먼저 걸리는 것이 상한입니다.</p></div>
+    <div class="legend-item"><h3>커널 융합 (Fusion)</h3><p>이어지는 커널 둘을 하나로 합쳐, 중간 결과가 DRAM에 나갔다 오지 않게 하는 것.</p></div>
+    <div class="legend-item"><h3>산술 강도</h3><p>바이트 하나를 읽어서 연산을 몇 번 하느냐. 낮으면 메모리가, 높으면 연산기가 병목입니다.</p></div>
+    <div class="legend-item"><h3>메모리 병렬성 (MLP)</h3><p>동시에 <em>비행 중인</em> 메모리 요청의 양. 적으면 대역폭이 남아돌아도 못 씁니다.</p></div>
+    <div class="legend-item"><h3>부동소수점 순서</h3><p>FP32 덧셈은 결합법칙이 성립하지 않습니다. 더하는 순서를 바꾸면 결과의 마지막 비트가 달라집니다.</p></div>
+  </div>
+</section>
+
+<!-- ── PHASE 1 ─────────────────────────────────────────── -->
+<section class="phase">
+  <div class="phase-head">
+    <span class="phase-num">1단계</span>
+    <h2>일단 GPU 위로 올리기</h2>
+    <span class="phase-range">v0 → v5</span>
+  </div>
+  <p class="phase-intro">
+    이 구간의 측정치는 <code>n</code>이 서로 달라 직접 비교되지 않습니다(막대를 그리지 않은 이유).
+    여기서 얻은 배수는 커널 품질이 아니라 <strong>구조</strong>에서 나왔습니다 — 데이터를 어디에 두느냐,
+    한 번에 얼마나 많은 일을 주느냐.
+  </p>
+
+  <div class="versions">
+
+    <article class="v">
+      <div class="v-rail"><div class="v-tag">v0</div><div class="v-perf">0.012</div><div class="v-unit">seq/s · n=1</div></div>
+      <div class="v-body">
+        <p class="v-what">출발점 — CPU/OpenMP 레퍼런스</p>
+        <p class="v-detail">
+          파일 확장자는 <code>.cu</code>이고 <code>nvcc</code>로 컴파일되지만, 실제 커널은 하나도 없었습니다.
+          모든 연산이 <code>#pragma omp parallel for</code>로 호스트에서 돌고 있었습니다.
+        </p>
+      </div>
+    </article>
+
+    <article class="v">
+      <div class="v-rail"><div class="v-tag">v1</div><div class="v-perf">~2.0</div><div class="v-unit">seq/s · n=16</div><div class="v-delta up">약 170×</div></div>
+      <div class="v-body">
+        <p class="v-what">커널 이식 + 가중치를 GPU에 상주시킴</p>
+        <div class="concept">
+          <span class="concept-label">개념</span>
+          <span class="concept-name">호스트–디바이스 메모리 분리</span>
+          <p>
+            CPU와 GPU의 메모리는 별개이고 그 사이는 PCIe라는 좁은 통로입니다.
+            <strong>매번 옮기면 계산보다 옮기는 시간이 큽니다.</strong> 가중치처럼 변하지 않는 데이터는
+            처음 한 번만 올려둡니다.
+          </p>
+          <div class="cmp">
+            <div class="cmp-row before"><span class="cmp-tag">이전 — 호출마다 왕복</span><pre>void matmul(x, w, y) {
+    cudaMemcpy(d_w, w, <b>117 MB</b>, H2D);  <i>// 호출할 때마다</i>
+    kernel&lt;&lt;&lt;...&gt;&gt;&gt;(d_x, d_w, d_y);
+    cudaMemcpy(y, d_y, ..., D2H);
+}</pre></div>
+            <div class="cmp-row after"><span class="cmp-tag">이후 — 생성자에서 한 번</span><pre>Linear::Linear(...) : weight_(loader.load(w)) {
+    weight_.to_device();   <i>// 타이머 시작 전, 1회</i>
+}</pre></div>
+            <div class="cmp-delta">PCIe 전송 <b>레이어당 117 MB × 32 × 매 호출 → 0</b></div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <article class="v">
+      <div class="v-rail"><div class="v-tag">v2</div><div class="v-perf">~2.7</div><div class="v-unit">seq/s · n=16</div><div class="v-delta up">+35%</div></div>
+      <div class="v-body">
+        <p class="v-what">MoE 파이프라인 전체를 디바이스에 상주</p>
+        <p class="v-detail">
+          gather → 전문가 FFN → scatter가 호스트를 거치지 않고 GPU에서 이어지도록 했습니다.
+          호스트 데이터 이동이 전체의 21.7%에서 1.6%로 떨어졌습니다.
+        </p>
+      </div>
+    </article>
+
+    <article class="v keystone">
+      <div class="v-rail"><div class="v-tag">v3</div><div class="v-perf">13.9</div><div class="v-unit">seq/s · n=16</div><div class="v-delta up">+415%</div></div>
+      <div class="v-body">
+        <p class="v-what">시퀀스 배칭 — 여러 문장을 한 덩어리로</p>
+        <div class="concept">
+          <span class="concept-label">개념</span>
+          <span class="concept-name">병렬성을 굶기지 않기</span>
+          <p>
+            GPU는 한 워프가 메모리를 기다리는 동안 다른 워프를 실행해서 <strong>지연을 숨깁니다.</strong>
+            일감이 작으면 숨길 것도 없이 그냥 기다립니다.
+          </p>
+          <div class="cmp">
+            <div class="cmp-row before"><span class="cmp-tag">이전 — 문장 하나씩</span><pre>for (seq : sequences)
+    forward(seq);       <i>// matmul 의 M ≈ 19 (문장 길이)</i>
+
+<i>// 블록 수 = ceil(19/128) x ceil(N/128) = <b>1</b> x 16</i></pre></div>
+            <div class="cmp-row after"><span class="cmp-tag">이후 — 청크로 묶어서</span><pre>forward_chunk(all_sequences);   <i>// M = 19,803</i>
+
+<i>// 블록 수 = ceil(19803/128) x 16 = <b>155</b> x 16</i></pre></div>
+            <div class="cmp-delta">동시 블록 <b>16 → 2,480</b> · 커널을 한 줄도 안 고치고 4배</div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <article class="v">
+      <div class="v-rail"><div class="v-tag">v4</div><div class="v-perf">13.0</div><div class="v-unit">seq/s · n=512</div></div>
+      <div class="v-body">
+        <p class="v-what">아무 일도 안 하는 162 MB 복사 제거</p>
+        <div class="concept">
+          <span class="concept-label">진단 습관</span>
+          <span class="concept-name">부모 구간이 자식들의 합보다 크면 그 틈을 쫓아라</span>
+          <p>
+            <code>Linear::forward</code>가 모양만 바꾸는 <code>reshape</code> 때문에 레이어당 4번,
+            162&nbsp;MB씩 복사하고 있었습니다 — 전체의 33%. 프로파일러에서 상위 구간이 하위 구간들의
+            합보다 크면 그만큼 어딘가에서 시간이 새고 있다는 뜻입니다.
+          </p>
+          <div class="cmp">
+            <div class="cmp-row before"><span class="cmp-tag">이전</span><pre>Tensor flat = x;        <i>// <b>162 MB 복사</b></i>
+flat.reshape({rows, cols});   <i>// 실은 no-op</i>
+matmul_transposed(flat, weight_, y);</pre></div>
+            <div class="cmp-row after"><span class="cmp-tag">이후</span><pre>if (x.ndim() == 2)      <i>// 이미 [rows, cols] 면 그대로</i>
+    matmul_transposed(x, weight_, y);</pre></div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <article class="v">
+      <div class="v-rail"><div class="v-tag">v5</div><div class="v-perf">45.0</div><div class="v-unit">seq/s · n=512</div><div class="v-delta up">+246%</div></div>
+      <div class="v-body">
+        <p class="v-what">32개 디코더 레이어 전체를 디바이스 포인터로</p>
+        <p class="v-detail">
+          이제 버스를 건너는 건 임베딩 업로드와 로짓 다운로드뿐입니다. 중간 결과는 32개 레이어를
+          지나는 동안 한 번도 GPU를 떠나지 않습니다.
+        </p>
+      </div>
+    </article>
+
+  </div>
+</section>
+
+<!-- ── PHASE 2 ─────────────────────────────────────────── -->
+<section class="phase">
+  <div class="phase-head">
+    <span class="phase-num">2단계</span>
+    <h2>가장 오래 걸린 것 — 정확도</h2>
+    <span class="phase-range">v6</span>
+  </div>
+  <p class="phase-intro">
+    v3부터 <code>n=1024</code> 검증이 깨져 있었습니다. 검증 실패는 부분 감점이 아니라 <strong>0점</strong>이라,
+    여기를 넘기 전엔 나머지가 전부 무의미했습니다.
+  </p>
+
+  <div class="versions">
+    <article class="v keystone">
+      <div class="v-rail"><div class="v-tag">v6</div><div class="v-perf">48.42</div><div class="v-unit">seq/s · n=1024</div><div class="bar"><i style="width:9.7%"></i></div><div class="v-delta up">검증 통과 ✓</div></div>
+      <div class="v-body">
+        <p class="v-what">더 정확하게가 아니라, <em>똑같이 틀리게</em> 맞추기</p>
+        <div class="concept">
+          <span class="concept-label">개념</span>
+          <span class="concept-name">FP32 덧셈은 결합법칙이 성립하지 않는다</span>
+          <p>
+            유효숫자가 24비트뿐이라 매 덧셈마다 반올림이 일어납니다. <strong>순서를 바꾸면 마지막 비트가
+            달라집니다.</strong> 병렬 리덕션(트리 방식)은 본질적으로 순서를 바꾸는 최적화라, GPU에서 가장
+            자연스러운 기법이 여기서는 금지됩니다.
+          </p>
+          <div class="cmp">
+            <div class="cmp-row before"><span class="cmp-tag">이전 — 트리 리덕션</span><pre>for (s = blockDim.x/2; s &gt; 0; s &gt;&gt;= 1) {
+    if (tid &lt; s) sm[tid] += sm[tid + s];  <i>// <b>순서가 바뀜</b></i>
+    __syncthreads();
+}</pre></div>
+            <div class="cmp-row after"><span class="cmp-tag">이후 — 레퍼런스와 같은 순차</span><pre>for (int j = 0; j &lt; h; ++j) mean += xr[j];</pre></div>
+            <div class="cmp-delta">연산량은 <b>그대로</b> · 오차 <b>0.0423 → 0.00019</b></div>
+          </div>
+          <p>
+            RoPE도 같은 이유로 고쳤습니다. CUDA의 <code>powf/cosf/sinf</code>는 약 2&nbsp;ulp 오차가 있어
+            glibc와 다릅니다 — double로 계산 후 <strong>1회만</strong> 반올림하도록 바꿨습니다.
+          </p>
+          <p>
+            MoE 라우터가 게이트 점수를 1e-3 격자에 스냅시키기 때문에
+            <strong>마지막 비트 하나가 토큰을 다른 전문가로 보냅니다.</strong>
+            <em>진단법</em>: 정밀도를 올렸을 때 값이 <em>안 변하면</em> 라우팅이 뒤집힌 것, 조금씩 움직이면 드리프트.
+          </p>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>
+
+<!-- ── PHASE 3 ─────────────────────────────────────────── -->
+<section class="phase">
+  <div class="phase-head">
+    <span class="phase-num">3단계</span>
+    <h2>행렬곱 커널 다듬기</h2>
+    <span class="phase-range">v7 → v11</span>
+  </div>
+  <p class="phase-intro">
+    이 시점에 matmul이 전체의 87.6%였고, 모든 형상이 똑같이 peak의 6.2%를 냈습니다.
+    형상과 무관하게 같은 숫자가 나온다는 건 <strong>형상이 아니라 커널 구조가 문제</strong>라는 뜻입니다.
+  </p>
+
+  <div class="versions">
+
+    <article class="v keystone">
+      <div class="v-rail"><div class="v-tag">v7</div><div class="v-perf">130.8</div><div class="v-unit">seq/s</div><div class="bar"><i style="width:26.2%"></i></div><div class="v-delta up">+170%</div></div>
+      <div class="v-body">
+        <p class="v-what">레지스터 블로킹 — 스레드 하나가 출력 1개 대신 4×4를 담당</p>
+        <div class="concept">
+          <span class="concept-label">개념</span>
+          <span class="concept-name">레지스터 타일링 — 메모리 계층의 한 칸 더 아래</span>
+          <p>
+            RTX 3090은 SM당 공유메모리에서 <strong>사이클당 128바이트</strong>를 꺼낼 수 있는데
+            FP32 연산기는 <strong>128개 레인</strong>입니다. 값 하나 읽어 곱셈 한 번만 하면 연산기가 놉니다.
+            그래서 값을 <strong>레지스터</strong>에 붙잡아두고 여러 번 씁니다.
+          </p>
+          <div class="cmp">
+            <div class="cmp-row before"><span class="cmp-tag">이전 — 스레드 1개 = 출력 1개</span><pre>float acc = 0;
+for (p) acc += As[ty][p] * Bs[p][tx];
+<i>// p 마다: 공유 읽기 <b>2</b>회, FMA <b>1</b>회</i></pre></div>
+            <div class="cmp-row after"><span class="cmp-tag">이후 — 스레드 1개 = 출력 4×4</span><pre>float a[4], b[4], acc[4][4] = {};
+for (p) {
+    for (i) a[i] = As[p][ty*4 + i];   <i>// 4회</i>
+    for (j) b[j] = Bs[p][tx*4 + j];   <i>// 4회</i>
+    for (i) for (j) acc[i][j] += a[i] * b[j];   <i>// <b>16</b>회</i>
+}</pre></div>
+            <div class="cmp-delta">공유 로드 1회당 FMA <b>0.5 → 2</b> · peak 상한 <b>12.5% → 50%</b></div>
+          </div>
+          <p>
+            핵심은 <code>acc[i][j]</code>가 여전히 <code>p = 0..K-1</code> 순서로 누적된다는 것 —
+            스레드와 출력의 <em>대응</em>만 바뀌었으므로 결과는 비트 단위로 같습니다.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <article class="v">
+      <div class="v-rail"><div class="v-tag">v8</div><div class="v-perf">150.1</div><div class="v-unit">seq/s</div><div class="bar"><i style="width:30.0%"></i></div><div class="v-delta up">+15%</div></div>
+      <div class="v-body">
+        <p class="v-what">임베딩을 GPU에서 직접 뽑기</p>
+        <div class="cmp">
+          <div class="cmp-row before"><span class="cmp-tag">이전</span><pre><i>// 호스트에서 조립해서 통째로 업로드</i>
+for (t : tokens) memcpy(&amp;host[t*4096], &amp;table[id[t]*4096], 16 KB);
+cudaMemcpy(d_x, host, <b>324 MB</b>, H2D);</pre></div>
+          <div class="cmp-row after"><span class="cmp-tag">이후</span><pre>cudaMemcpy(d_ids, token_ids, <b>80 KB</b>, H2D);
+gather_rows(d_table, d_x, d_ids, T, 4096);  <i>// 기존 커널 재사용</i></pre></div>
+          <div class="cmp-delta">H2D 전송 <b>324 MB → 80 KB</b> (약 4,000분의 1)</div>
+        </div>
+      </div>
+    </article>
+
+    <article class="v">
+      <div class="v-rail"><div class="v-tag">v9</div><div class="v-perf">174.7</div><div class="v-unit">seq/s</div><div class="bar"><i style="width:34.9%"></i></div><div class="v-delta up">+16%</div></div>
+      <div class="v-body">
+        <p class="v-what">형상마다 타일 크기를 다르게</p>
+        <div class="concept">
+          <span class="concept-label">개념</span>
+          <span class="concept-name">타일을 키우면 트래픽은 줄지만 블록 수도 준다</span>
+          <p>
+            타일이 크면 한 블록이 넓은 출력을 맡아 같은 데이터를 덜 반복해 읽습니다.
+            <strong>대신 블록 개수가 줄어듭니다.</strong> 트래픽만 보고 예측하면 부호가 틀립니다.
+          </p>
+          <div class="cmp">
+            <div class="cmp-row after"><span class="cmp-tag">호출마다 형상을 보고 고름</span><pre>blocks = ceil(N/BN) * ceil(M/BM);
+
+<i>// 투영   N=2048, M=15583 → 128타일: <b>1,952</b> 블록  (SM 82개, 충분)</i>
+<i>// 전문가 N= 448, M= 1238 → 128타일:    <b>40</b> 블록  (SM 절반이 논다)</i>
+<i>//                        →  64타일:   <b>140</b> 블록</i>
+
+if (blocks_for(128,128) &gt;= 2*82) kernel&lt;128,128,8,8&gt;&lt;&lt;&lt;...&gt;&gt;&gt;;
+else                             kernel&lt; 64, 64,4,4&gt;&lt;&lt;&lt;...&gt;&gt;&gt;;</pre></div>
+            <div class="cmp-delta">128타일은 투영에 <b>1.4배 이득</b>, 전문가엔 <b>0.77배 손해</b></div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <article class="v">
+      <div class="v-rail"><div class="v-tag">v10</div><div class="v-perf">190.4</div><div class="v-unit">seq/s</div><div class="bar"><i style="width:38.1%"></i></div><div class="v-delta up">+9%</div></div>
+      <div class="v-body">
+        <p class="v-what">호스트 쪽 정리</p>
+        <p class="v-detail">
+          로짓을 되돌려 쓰는 <span class="num">3,300만</span> 번의 <code>at()</code> 호출과,
+          토큰마다 힙에 <code>Tensor</code>를 할당하던 코드를 없앴습니다.
+        </p>
+      </div>
+    </article>
+
+    <article class="v keystone">
+      <div class="v-rail"><div class="v-tag">v11</div><div class="v-perf">251.8</div><div class="v-unit">seq/s</div><div class="bar"><i style="width:50.4%"></i></div><div class="v-delta up">+32%</div></div>
+      <div class="v-body">
+        <p class="v-what"><code>float4</code> 벡터 로드 + 뱅크 충돌 제거</p>
+        <div class="concept">
+          <span class="concept-label">개념</span>
+          <span class="concept-name">공유메모리 뱅크 충돌</span>
+          <p>
+            공유메모리는 <strong>32개 뱅크</strong>로 나뉘고 각 뱅크는 사이클당 한 번만 응답합니다.
+            워프의 스레드들이 같은 뱅크의 <em>다른</em> 주소를 건드리면 순서대로 처리됩니다.
+          </p>
+          <div class="cmp">
+            <div class="cmp-row before"><span class="cmp-tag">이전 — 연속 8칸 (stride 8)</span><pre>float4 lo = *(float4*)&amp;Bs[p][tx*8    ];
+float4 hi = *(float4*)&amp;Bs[p][tx*8 + 4];
+
+<i>// tx = 0, 4, 8, 12 가 같은 뱅크에 몰림 → <b>4중 충돌</b></i>
+<i>// 그것도 커널에서 가장 자주 실행되는 명령어에서</i></pre></div>
+            <div class="cmp-row after"><span class="cmp-tag">이후 — 4칸 + 4칸을 BN/2 만큼 떨어뜨림</span><pre>float4 lo = *(float4*)&amp;Bs[p][tx*4      ];
+float4 hi = *(float4*)&amp;Bs[p][tx*4 + 64];
+
+<i>// 쿼터워프의 8번 읽기가 32개 뱅크를 정확히 한 번씩 덮음</i></pre></div>
+            <div class="cmp-delta">뱅크 충돌 <b>4중 → 없음</b> (줄어든 게 아니라 사라짐)</div>
+          </div>
+          <p>
+            반사적으로 떠올린 해법(패딩 추가)은 <em>저장부</em>만 고치고 정작 뜨거운 <em>읽기</em> 루프는
+            못 고쳤습니다. 어느 쪽이 뜨거운지 먼저 봐야 했습니다.
+          </p>
+        </div>
+      </div>
+    </article>
+
+  </div>
+</section>
+
+<!-- ── PHASE 4 ─────────────────────────────────────────── -->
+<section class="phase">
+  <div class="phase-head">
+    <span class="phase-num">4단계</span>
+    <h2>순서가 필요한 것과 아닌 것을 분리</h2>
+    <span class="phase-range">v12 → v14</span>
+  </div>
+  <p class="phase-intro">
+    같은 패턴이 세 번 반복됩니다. CPU 레퍼런스의 구조를 그대로 옮겨오다 보니,
+    <strong>순서 의존적인 코드 블록 안에 순서와 무관한 작업이 갇혀 있었습니다.</strong>
+  </p>
+
+  <div class="versions">
+
+    <article class="v keystone">
+      <div class="v-rail"><div class="v-tag">v12</div><div class="v-perf">280.2</div><div class="v-unit">seq/s</div><div class="bar"><i style="width:56.0%"></i></div><div class="v-delta up">+11%</div></div>
+      <div class="v-body">
+        <p class="v-what">RoPE 조회 테이블 — 8억 1,100만 회 → 2,048회</p>
+        <div class="concept">
+          <span class="concept-label">개념</span>
+          <span class="concept-name">메모이제이션 — 근사가 아니라 재사용</span>
+          <p>
+            회전 각도는 <code>(위치, 차원쌍)</code>에만 의존합니다. 데이터에도 헤드에도 레이어에도
+            의존하지 않습니다. 입력이 최대 32토큰이니 <strong>서로 다른 쌍은 32 × 64 = 2,048개뿐.</strong>
+          </p>
+          <div class="cmp">
+            <div class="cmp-row before"><span class="cmp-tag">이전 — 원소마다 초월함수</span><pre>float inv = powf(theta, -2.0f*j/d);
+float c = cosf(pos*inv), s = sinf(pos*inv);
+
+<i>// 32 레이어 x 15,583 행 x 16 헤드 x 64 쌍 = <b>8.11억 회</b></i></pre></div>
+            <div class="cmp-row after"><span class="cmp-tag">이후 — 청크당 1회 만들고 조회</span><pre>float2 cs = table[pos * (d/2) + j];   <i>// 16 KB 테이블</i>
+float c = cs.x, sn = cs.y;</pre></div>
+            <div class="cmp-delta">초월함수 호출 <b>811,000,000 → 2,048</b> · 비트 동일</div>
+          </div>
+          <p>
+            같은 질문을 어텐션의 <code>exp()</code>에 던지면 답이 반대입니다 — 그 인자는 데이터에 의존하는
+            점수라서 <strong>유한한 테이블이 존재하지 않습니다.</strong> 판별 기준은 "입력 공간이 유한한가".
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <article class="v keystone">
+      <div class="v-rail"><div class="v-tag">v13</div><div class="v-perf">312.6</div><div class="v-unit">seq/s</div><div class="bar"><i style="width:62.5%"></i></div><div class="v-delta up">+12%</div></div>
+      <div class="v-body">
+        <p class="v-what">전문가 16명의 행렬곱을 한 번의 실행으로 융합</p>
+        <div class="concept">
+          <span class="concept-label">개념</span>
+          <span class="concept-name">타일을 보기 전에 블록 수를 세라</span>
+          <p>
+            전문가 FFN이 연산량의 34%인데 시간은 46%였습니다. <code>k_proj</code>는 <em>같은 타일</em>로
+            peak의 53%를 내는데 <code>w1</code>은 29% — <strong>형상도 타일도 같은데 성능이 다르면
+            원인은 다른 데 있습니다.</strong>
+          </p>
+          <div class="cmp">
+            <div class="cmp-row before"><span class="cmp-tag">이전 — 전문가마다 실행 (기본 스트림 = 순차)</span><pre>for (e = 0; e &lt; 16; ++e)
+    matmul&lt;&lt;&lt;<b>224</b> 블록&gt;&gt;&gt;(in + off[e], w1[e], out + off[e]);
+
+<i>// RTX 3090 은 약 490 블록을 동시 수용 → 절반도 못 채움</i></pre></div>
+            <div class="cmp-row after"><span class="cmp-tag">이후 — 블록이 자기 담당을 표에서 읽음</span><pre>struct GroupTile { int row0, row_end, weight_index; };
+
+<i>// 커널 진입 시 1회, K 루프 <b>밖</b>이라 비용 0</i>
+GroupTile g = tiles[blockIdx.y];
+B += g.weight_index * weight_stride;
+
+matmul&lt;&lt;&lt;<b>3,584</b> 블록&gt;&gt;&gt;(in, w1_all, out, tiles);</pre></div>
+            <div class="cmp-delta">커널 실행 <b>16 → 1</b> · 동시 블록 <b>224 → 3,584</b> · peak <b>29% → 45%</b></div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <article class="v">
+      <div class="v-rail"><div class="v-tag">v14</div><div class="v-perf">325.7</div><div class="v-unit">seq/s</div><div class="bar"><i style="width:65.1%"></i></div><div class="v-delta up">+4%</div></div>
+      <div class="v-body">
+        <p class="v-what">softmax의 <code>exp</code>를 직렬 구간 밖으로</p>
+        <div class="concept">
+          <span class="concept-label">개념 + 진단</span>
+          <span class="concept-name">순서가 꼭 필요한 부분만 남기기</span>
+          <p>
+            softmax에서 <strong>순서가 반드시 필요한 건 분모의 덧셈뿐</strong>입니다.
+            <code>exp(s - max)</code>는 그 원소 하나에만 의존하므로 어느 스레드가 계산해도 같은 값입니다.
+          </p>
+          <div class="cmp">
+            <div class="cmp-row before"><span class="cmp-tag">이전 — 스레드 0이 전부</span><pre>if (tid == 0)
+    for (i) { e[i] = exp(s[i]-max); denom += e[i]; }
+<i>// 직렬 구간: exp <b>128회</b> + 덧셈 128회 (127개 스레드는 대기)</i></pre></div>
+            <div class="cmp-row after"><span class="cmp-tag">이후 — exp 만 나누고 합은 순차 유지</span><pre>for (i = tid; i &lt; len; i += blockDim.x)
+    e[i] = exp(s[i] - max);        <i>// 128 스레드 병렬</i>
+__syncthreads();
+if (tid == 0) for (i) denom += e[i];   <i>// 순서 그대로</i></pre></div>
+            <div class="cmp-delta">직렬 구간에서 <b>가장 비싼 연산이 빠짐</b> (double exp 가 44%였음)</div>
+          </div>
+          <p>
+            구현 전에 프로브로 상한을 먼저 쟀습니다. "128개 중 96개 스레드가 논다"는 <em>보기에</em> 명백한
+            문제는 <strong>2.8%</strong>였고, double <code>exp</code>가 <strong>44%</strong>였습니다.
+          </p>
+        </div>
+      </div>
+    </article>
+
+  </div>
+</section>
+
+<!-- ── PHASE 5 ─────────────────────────────────────────── -->
+<section class="phase">
+  <div class="phase-head">
+    <span class="phase-num">5단계</span>
+    <h2>연산 자체를 줄이기</h2>
+    <span class="phase-range">v15</span>
+  </div>
+  <p class="phase-intro">
+    지금까지는 같은 연산을 더 빨리 하는 이야기였습니다. 이번엔 <strong>연산을 아예 안 하는</strong> 이야기입니다.
+  </p>
+
+  <div class="versions">
+    <article class="v keystone">
+      <div class="v-rail"><div class="v-tag">v15</div><div class="v-perf">421</div><div class="v-unit">seq/s</div><div class="bar"><i style="width:84.2%"></i></div><div class="v-delta up">+29%</div></div>
+      <div class="v-body">
+        <p class="v-what">접두사가 같으면 한 번만 계산 — 19,803행 → 15,583행</p>
+        <div class="concept">
+          <span class="concept-label">개념</span>
+          <span class="concept-name">계산 재사용 — 커널이 아니라 작업 목록을 바꾸기</span>
+          <p>
+            두 문장이 앞부분 <code>p</code>개 토큰을 공유하면 그 위치들의 은닉 상태는
+            <strong>32개 레이어 전부에서 비트 단위로 같습니다.</strong> 어텐션이 인과적이고, RoPE는 위치에만
+            의존하며, MoE 라우팅은 은닉 상태에만 의존하기 때문입니다.
+          </p>
+          <div class="cmp">
+            <div class="cmp-row after"><span class="cmp-tag">작업 목록을 접두사 트라이로</span><pre><i>// (부모행+1, 토큰) → 행번호. 같은 접두사는 같은 행으로 합쳐짐</i>
+key = ((cur + 1) &lt;&lt; 20) | token;
+if (edge.count(key)) cur = edge[key];        <i>// 재사용</i>
+else { cur = new_row(token, si, cur); }      <i>// 새 행</i>
+
+<i>//  "안녕 세상"  ┐</i>
+<i>//  "안녕 친구"  ┘  →  "안녕" 은 한 행만</i></pre></div>
+            <div class="cmp-delta">행 수 <b>19,803 → 15,583</b> (−21.3%) · matmul·MoE·LayerNorm·잔차에 <b>동시 적용</b></div>
+          </div>
+          <p>
+            커널은 <strong>한 줄도 안 고쳤습니다.</strong> 행 단위로 도는 모든 연산이 그냥 21.3% 줄어듭니다.
+          </p>
+          <p>
+            <em>여기서 두 번 틀렸습니다.</em> 처음엔 "공유가 깊이 4에서 1.4배로 빠르게 붕괴한다"며 기각했는데,
+            <strong>붕괴 속도와 총 절감량은 다른 질문</strong>이었습니다(깊이 0~3만으로 3,158행 제거).
+            그리고 과제 힌트를 글자 그대로 따르면 5.2%지만, 원리를 일반화하면 21.3%였습니다.
+          </p>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>
+
+<!-- ── PHASE 6 ─────────────────────────────────────────── -->
+<section class="phase">
+  <div class="phase-head">
+    <span class="phase-num">6단계</span>
+    <h2>파이프라이닝, 그리고 방향 전환</h2>
+    <span class="phase-range">v16 → v18</span>
+  </div>
+  <p class="phase-intro">
+    v18에서 처음으로 커널 단위 전체 타임라인(<code>nsys</code>)을 떴고,
+    <strong>그동안 잘못된 곳을 파고 있었다는 게 드러났습니다.</strong>
+  </p>
+
+  <div class="versions">
+
+    <article class="v">
+      <div class="v-rail"><div class="v-tag">v16</div><div class="v-perf">435</div><div class="v-unit">seq/s</div><div class="bar"><i style="width:87.0%"></i></div><div class="v-delta up">+3%</div></div>
+      <div class="v-body">
+        <p class="v-what">LayerNorm을 리덕션과 맵으로 분리</p>
+        <p class="v-detail">
+          정규화를 적용하는 부분(<code>y = (x-mean)·inv·w + b</code>)은 순서와 무관한 순수 맵이고,
+          트래픽의 절반을 차지합니다. 이걸 원소당 스레드로 분리했습니다. 점유율 12%였던 원인은
+          <strong>CPU 레퍼런스의 병렬화 축(행 단위)을 그대로 복사한 것</strong>이었습니다.
+        </p>
+      </div>
+    </article>
+
+    <article class="v keystone">
+      <div class="v-rail"><div class="v-tag">v17</div><div class="v-perf">451</div><div class="v-unit">seq/s</div><div class="bar"><i style="width:90.2%"></i></div><div class="v-delta up">+4%</div></div>
+      <div class="v-body">
+        <p class="v-what">더블 버퍼링 — 레지스터 <em>하나</em>가 결정한 결과</p>
+        <div class="concept">
+          <span class="concept-label">개념</span>
+          <span class="concept-name">지연 은닉과 레지스터 예산은 한 몸이다</span>
+          <div class="cmp">
+            <div class="cmp-row after"><span class="cmp-tag">다음 타일을 미리 읽어 지연을 계산 뒤에 숨김</span><pre>__launch_bounds__(256, <b>2</b>)      <i>// SM당 2블록 = 스레드당 128 레지스터</i>
+__shared__ float As[<b>2</b>][16][132];   <i>// 2단 버퍼</i>
+
+ISSUE(0); PARK(0); __syncthreads();
+for (k0 = 0; k0 &lt; K; k0 += 16) {
+    if (k0+16 &lt; K) ISSUE(k0+16);   <i>// 다음 타일 로드 <b>미리 발사</b></i>
+    for (p) { ... FMA 64회 ... }    <i>// 로드가 비행하는 동안 계산</i>
+    if (k0+16 &lt; K) PARK(1-cur);
+    __syncthreads(); cur ^= 1;
+}</pre></div>
+            <div class="cmp-delta">레지스터 <b>129 → 128</b> · SM당 블록 <b>1 → 2</b> · <b>−7% → +8%</b></div>
+          </div>
+          <p>
+            SM 하나에 레지스터가 65,536개입니다. 256스레드 블록 2개를 올리려면 스레드당
+            <code>65536 ÷ 512 = 128개</code>가 상한인데, 컴파일러가 알아서 하게 두니
+            <strong>129개</strong>를 썼습니다. 딱 하나 넘겨서 성능이 −7%였고,
+            <code>__launch_bounds__</code>로 128에 맞추자 같은 코드가 +8%가 됐습니다.
+          </p>
+          <p>
+            직사각 타일(128×256)도 같은 벽이었습니다 — 트래픽은 예측대로 1.34배 줄었는데
+            512스레드 블록이라 SM당 1개가 되면서 실효 대역폭이 692 → 489&nbsp;GB/s로 떨어졌습니다.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <article class="v keystone">
+      <div class="v-rail"><div class="v-tag">v18</div><div class="v-perf">487</div><div class="v-unit">seq/s</div><div class="bar"><i style="width:97.4%"></i></div><div class="v-delta up">+6.6%</div></div>
+      <div class="v-body">
+        <p class="v-what">비-GEMM 커널들을 DRAM에서 떼어내기</p>
+        <p class="v-detail">
+          커널마다 <strong>측정 시간 ÷ 반드시 옮겨야 하는 트래픽</strong>을 계산하니 깔끔하게 둘로 갈렸습니다.
+          일곱 개는 이미 DRAM peak의 76~91%로 돌고 있었고(다시 짜봐야 소용없음),
+          세 개는 12~23%로 망가져 있었습니다.
+        </p>
+
+        <div class="concept">
+          <span class="concept-label">개념 ①</span>
+          <span class="concept-name">메모리 병렬성 — 대역폭이 남아도 못 쓰는 경우</span>
+          <p>
+            <strong>Little의 법칙</strong>: 대역폭을 채우려면
+            <code>936 GB/s × 600 ns ≈ 562 KB</code>가 동시에 비행 중이어야 합니다.
+            실제로는 약 <strong>63&nbsp;KB</strong>였습니다.
+          </p>
+          <div class="cmp">
+            <div class="cmp-row before"><span class="cmp-tag">이전 — 스레드 1개 = 행 1개, DRAM 4패스</span><pre>const float* xr = x + row*4096;      <i>// 이웃 스레드와 <b>16 KB</b> 떨어짐</i>
+for (j) mean += xr[j];               <i>// 패스 1</i>
+for (j) var += (xr[j]-mean)*(...);   <i>// 패스 2</i>
+<i>// 별도 커널이 x 를 세 번째로 읽고 y 를 씀  → 패스 3, 4</i></pre></div>
+            <div class="cmp-row after"><span class="cmp-tag">이후 — 블록 1개 = 행 1개, 공유메모리에 한 번</span><pre>__shared__ float s[4096];            <i>// 16 KB, 행 하나가 딱 들어감</i>
+for (i = tid; i &lt; 1024; i += 256)
+    s4[i] = xr4[i];                  <i>// 256 스레드가 float4 로 협력</i>
+__syncthreads();
+if (tid == 0) { for (j) mean += s[j]; ... }   <i>// 순서 그대로</i>
+for (j = tid; j &lt; 4096; j += 256)
+    y[base+j] = (s[j]-mean)*inv*w[j] + b[j];</pre></div>
+            <div class="cmp-delta">DRAM 패스 <b>4 → 2</b> · 비행 중 요청 <b>63 KB → 98 KB/SM</b> · <b>198.6 → 109.6 ms</b></div>
+          </div>
+        </div>
+
+        <div class="concept">
+          <span class="concept-label">개념 ②</span>
+          <span class="concept-name">에필로그 융합 — 그리고 실패했다가 뒤집힌 이야기</span>
+          <p>
+            bias를 더하려고 별도 커널이 결과를 다시 읽고 다시 썼습니다.
+            <strong>8&nbsp;KB 벡터를 더하려고 레이어당 765&nbsp;MB를 움직이고 있었던 겁니다.</strong>
+          </p>
+          <div class="cmp">
+            <div class="cmp-row before"><span class="cmp-tag">이전 — 커널 2개</span><pre>matmul(...);                <i>// C 를 씀          255 MB</i>
+add_bias_inplace(C, bias);  <i>// C 읽고 다시 씀   510 MB</i></pre></div>
+            <div class="cmp-row after"><span class="cmp-tag">이후 — 저장하는 그 자리에서</span><pre>float bv[8];
+for (g,jj) bv[..] = bias[gc];       <i>// 행 루프 <b>밖에서 8회</b></i>
+
+for (f,ii) for (g,jj)
+    C[gr*N+gc] = acc[..] + bv[..];  <i>// 추가 트래픽 <b>0</b></i></pre></div>
+            <div class="cmp-delta">레이어당 <b>765 MB → 0</b> · bias 로드 스레드당 <b>64회 → 8회</b></div>
+          </div>
+          <p>
+            첫 시도는 <code>bias[gc]</code>를 저장할 때마다 읽었고, 그래서 스레드마다 8개 값을
+            <strong>64번씩</strong> 중복해 가져와 <strong>−1.7%</strong>였습니다. 행 루프 밖으로 빼내자
+            <strong>+1.53%</strong>로 뒤집혔습니다.
+          </p>
+        </div>
+
+        <div class="concept">
+          <span class="concept-label">개념 ③</span>
+          <span class="concept-name">형상에 맞는 커널 — tall-skinny GEMM</span>
+          <p>
+            MoE 게이트는 <code>[15583, 4096] × [16, 4096]</code>입니다. 출력이 1&nbsp;MB인데 입력 A가 255&nbsp;MB —
+            <strong>재사용할 게 없으니 타일링할 이유도 없습니다.</strong>
+          </p>
+          <div class="cmp">
+            <div class="cmp-row after"><span class="cmp-tag">블록 = 16행 × 16전문가, K를 64씩 잘라 공유메모리로</span><pre>__shared__ float As[16][<b>65</b>], Bs[16][<b>65</b>];  <i>// +1 = 뱅크 충돌 회피</i>
+
+for (k0 = 0; k0 &lt; K; k0 += 64) {
+    협력 로드 (coalesced);            <i>// A 를 한 번만, 연속으로</i>
+    __syncthreads();
+    for (p = 0; p &lt; 64; ++p)
+        acc += As[r][p] * Bs[e][p];   <i>// K 순서 유지</i>
+}</pre></div>
+            <div class="cmp-delta">실효 대역폭 <b>147 → 약 700 GB/s</b> · <b>55.4 → 35.3 ms</b></div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+  </div>
+</section>
+
+<!-- ── NEGATIVE RESULTS ────────────────────────────────── -->
+<section class="phase">
+  <div class="phase-head">
+    <span class="phase-num">부록</span>
+    <h2>측정해서 기각한 것들</h2>
+    <span class="phase-range">전부 실측</span>
+  </div>
+  <p class="phase-intro">
+    그럴듯했지만 실제로는 손해였던 것들입니다. <strong>기록해두는 이유는 다시 시도하지 않기 위해서</strong>입니다.
+  </p>
+
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>시도</th><th>왜 좋아 보였나</th><th>실측</th></tr></thead>
+      <tbody>
+        <tr><td>직사각 타일 128×256</td><td>산술 강도 32 → 42.7, 트래픽 −34% (둘 다 예측대로 맞음)</td><td class="verdict down">+7%</td></tr>
+        <tr><td>공유메모리 뱅크 충돌 제거</td><td>프로파일러가 <span class="num">−7.07%</span> 이득을 예측</td><td class="verdict down">+1.2%</td></tr>
+        <tr><td>L2 스레드블록 스위즐</td><td>CUTLASS의 표준 기법</td><td class="verdict">0%</td></tr>
+        <tr><td>QKV 융합</td><td>A를 3번이 아니라 1번만 스트리밍</td><td class="verdict">0%</td></tr>
+        <tr><td>경계 검사 제거</td><td>뜨거운 루프의 술어 명령 감소</td><td class="verdict down">+3.9%</td></tr>
+        <tr><td>256×64 타일 (16×4 마이크로타일)</td><td>448이 64로 나눠떨어져 패딩 0</td><td class="verdict down">+93%</td></tr>
+        <tr><td><code>cudaMallocHost</code> (고정 메모리)</td><td>전송이 6.1 → 26.4&nbsp;GB/s</td><td class="verdict down">−88&nbsp;ms</td></tr>
+        <tr><td>MoE gather 제거 (레지스터에 행 맵)</td><td>커널 하나(46&nbsp;ms)가 통째로 사라짐</td><td class="verdict down">−4.3%</td></tr>
+        <tr><td>MoE gather 제거 (공유메모리에 행 맵)</td><td>스필 없음, 레지스터 128개 유지</td><td class="verdict down">−2.5%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <h3>이 표에서 나온 규칙</h3>
+    <p>
+      행렬곱 커널은 <code>__launch_bounds__(256, 2)</code> 아래 <strong>정확히 128 레지스터</strong>에 붙어 있고,
+      공유메모리 대역폭이 FFMA 처리량과 <strong>1:1로 묶여</strong> 있습니다.
+      k-step 하나당 <code>4 × LDS.128 = 2048 B ÷ 128 B/clk = 16 사이클</code>이고
+      <code>FFMA 64회 ÷ 4/clk = 16 사이클</code>입니다. 그래서:
+    </p>
+    <p>
+      <strong>에필로그는 일을 받을 수 있지만(출력당 한 번만 실행), K 루프는 아무것도 못 받습니다.</strong>
+      bias 융합이 성공한 건 에필로그에 들어가기 때문이고, gather 제거가 실패한 건 행 맵이
+      K 루프에 들어가기 때문입니다. 앞으로 무언가를 행렬곱에 융합하려 할 때 이게 판정 기준입니다.
+    </p>
+  </div>
+
+  <div class="callout" style="margin-top:14px">
+    <h3>그리고 두 번 같은 실수를 했습니다</h3>
+    <p>
+      "대역폭 바닥 1.443초"와 "명령어 발사 상한의 91.3%" — 둘 다 여러 버전에 걸쳐 판단을 이끌었고,
+      둘 다 틀렸습니다. 앞의 것은 L2 재사용을 0으로 놓고 계산했는데 실제 L2 적중률은 <strong>72%</strong>였고,
+      뒤의 것은 프로파일러가 측정 중 고정하는 <em>기본 클럭</em>(1.36&nbsp;GHz)을 <em>프로파일링하지 않은</em>
+      실행 시간에 적용한 것이었습니다. 정답은 같은 리포트 안에 있었습니다 —
+      <code>Compute (SM) Throughput 76.06%</code>.
+    </p>
+    <p>
+      <strong>가정한 상수에서 유도한 값보다, 프로파일러가 직접 보고하는 값을 쓰세요.</strong>
+    </p>
+  </div>
+</section>
+
+<footer>
+  Phi-tiny-MoE-instruct 프리필 추론 · 단일 RTX 3090 (sm_86) · CUDA 라이브러리 미사용, 텐서코어 미사용<br>
+  코드는 이해를 돕기 위해 요지만 남기고 줄인 것으로, 실제 소스와 한 줄씩 대응하지는 않습니다<br>
+  모든 수치는 하나의 Slurm 할당 안에서 A/B/A/B 교차 측정 — 별도 할당 간 편차는 최대 15.7%로 이 규모의 차이를 덮습니다<br>
+  검증: max abs diff 0.00018692, v6 이후 모든 버전에서 불변
+</footer>
+
+</div>
+</body>
+</html>

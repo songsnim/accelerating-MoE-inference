@@ -1084,3 +1084,51 @@ B가 원리적으로 맞지만 `cudaHostAlloc`이 **0.83 ms/MB**(16 MB에 13.6 m
 ## 6. Next action
 **호스트 라우팅 왕복 0.059 s**(router D2H 0.005 + 호스트 top-2/타일 빌드 0.054)가
 남은 최대 비-GEMM 항목 -> EXP-015.
+
+---
+
+# EXP-015: 라우팅을 디바이스로
+
+## 1. Hypothesis
+측정-C: MoE 라우팅이 레이어마다 호스트를 왕복한다. router 점수 997 KB D2H(0.005 s)
++ 호스트 top-2/타일 빌드(**0.054 s**) + index/tiles H2D(0.001 s) = **0.060 s (2.6%)**.
+전부 디바이스로 옮기면 사라진다.
+
+## 2. Change (`src/model.cu`)
+`route_row`(호스트)를 `route_top2`(`__device__`)로 옮기고 counting sort 3-pass:
+
+- `route_count` — 행당 top-2를 **낮은 expert 인덱스 먼저**로 저장(기존 per-expert
+  scatter가 오름차순으로 더했으므로), 블록별 expert 카운트 집계
+- `route_scan` — 1블록 16스레드. 블록 오프셋 + expert 오프셋 스캔, 타일 리스트 생성
+- `route_place` — 각 행의 두 사본을 expert 구간에 **행 오름차순**으로 배치.
+  호스트 빌드와 **같은 packed 레이아웃**이 나온다. 각 사본의 slot을 기록
+
+**타일 개수를 호스트로 되돌리지 않으려고** grid를 최악치 `packed_rows/BM + 16`(=259,
+실제 ≈256)로 고정하고 `gemm_grouped`에 `if (t[2] == 0) return;`을 넣었다.
+낭비 타일 3개.
+
+동반 변경(불가피): 호스트가 expert별 행 수를 모르므로 per-expert `scatter_add_rows`
+16 launch를 행 단위 `moe_combine` 1 launch로 융합. `acc = 0; acc += 0.5f*lo;
+acc += 0.5f*hi;` — memset + 두 번의 `+=`와 문자 그대로 같은 식이라 라운딩 동일.
+덕분에 레이어당 255 MB(총 8.2 GB) `cudaMemset`도 사라진다.
+
+## 3. Result (노드 b0, 한 allocation 안에서 교차 2rep)
+
+| | d2h | moe | gemm | elapsed |
+|---|---|---|---|---|
+| 014 | 0.005 / 0.005 | 0.779 / 0.780 | 1.082 / 1.085 | 2.2452 / 2.2450 |
+| 015 | **0.002 / 0.002** | **0.696 / 0.700** | 1.099 / 1.093 | **2.1759 / 2.1728** |
+
+**-0.071 s (-3.2%)**. 출력 `exp014.bin`과 bitwise 동일, `-v` PASSED, 472.2 seq/s.
+
+## 4. Analysis
+moe -0.082(호스트 라우팅 0.054 + memset 0.010 + idxcopy 0.001 + 나머지),
+d2h -0.003. 예측 0.060~0.070과 일치.
+
+`gemm` **+0.012 퇴행**은 측정-B의 boost 클럭 현상 재현이다. 호스트 대기가 사라져
+GPU가 더 촘촘히 돌면 fast 노드에서 SM 클럭이 내려간다. 코드로 고칠 수 있는 항목이
+아니고, 그래도 순이득이 -0.071이다.
+
+## 5. Next action
+호스트는 이제 측정 구간 안에서 커널 런치 외에 하는 일이 없다. 남은 것은 전부 GPU:
+**gemm 1.09 (50%)** > moe 0.70 > attn 0.144 > norm 0.113. GEMM 타일 재설계.
