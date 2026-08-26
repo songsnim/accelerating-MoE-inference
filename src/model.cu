@@ -964,17 +964,21 @@ __global__ void attention_heads(const float* __restrict__ q,
     }
     __syncthreads();
 
+    // Every thread used to divide every score by its head's denominator, all
+    // 128 of them computing the same GROUP * nk quotients. Dividing once here
+    // is the same IEEE division on the same operands, so the weights are
+    // bit-identical -- only nk times fewer of them are issued per thread.
+    for (int i = tid; i < nw; i += D) sw[i] = sw[i] / sdenom[i % GROUP];
+    __syncthreads();
+
     // One v element per thread per key, reused by all GROUP heads out of a
     // register instead of re-read GROUP times.
     float acc[GROUP];
-    float denom[GROUP];
-    for (int g = 0; g < GROUP; ++g) { acc[g] = 0.0f; denom[g] = sdenom[g]; }
+    for (int g = 0; g < GROUP; ++g) acc[g] = 0.0f;
     for (int i = 0; i < nk; ++i) {
         const float vv = v[static_cast<long long>(chain[i]) * KVH * D + kh * D + tid];
-        for (int g = 0; g < GROUP; ++g) {
-            const float w = sw[i * GROUP + g] / denom[g];
-            acc[g] = __fadd_rn(acc[g], __fmul_rn(w, vv));
-        }
+        for (int g = 0; g < GROUP; ++g)
+            acc[g] = __fadd_rn(acc[g], __fmul_rn(sw[i * GROUP + g], vv));
     }
     for (int g = 0; g < GROUP; ++g)
         out[static_cast<long long>(node) * QH * D + (kh * GROUP + g) * D + tid] = acc[g];
