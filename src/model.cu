@@ -95,14 +95,49 @@ void to_host(Tensor& host, const float* device) {
 constexpr int BK = 16;
 constexpr int GEMM_THREADS = 256;
 constexpr int PROJ_BM = 128, PROJ_BN = 128, PROJ_TM = 8, PROJ_TN = 8;
+constexpr bool PROJ_SWIZ = true;
 constexpr int GRP_BM = 128, GRP_BN = 128, GRP_TM = 8, GRP_TN = 8;
+constexpr bool GRP_SWIZ = false;
 static_assert((PROJ_BM / PROJ_TM) * (PROJ_BN / PROJ_TN) == GEMM_THREADS,
               "projection tile does not fill the block");
 static_assert((GRP_BM / GRP_TM) * (GRP_BN / GRP_TN) == GEMM_THREADS,
               "grouped tile does not fill the block");
-// The +4 keeps the shared rows 16B-aligned while breaking the bank-conflict
-// pattern of a bare [BK][BM] layout.
-constexpr int SPAD = 4;
+// Shared tile padding, and the k-group column shift that goes with it.
+//
+// EXP-017 put the shared *loads* at their floor (4 wavefronts per `bs` LDS.128,
+// 2 for the broadcast `as`). The stores were never looked at, and they were
+// costing exactly double. Each thread stages a float4 at k = lc..lc+3 for
+// lc in {0, 4, 8, 12}, column lr in 0..7, so with the bare `[BK][BM + 4]` stride
+// an STS lands on bank `(lc * 4 + lr) % 32`: lc = 0/8 collide, lc = 4/12
+// collide, and banks 8-15 and 24-31 are never touched. Measured on
+// `gemm_nt_bias`: 32 store wavefronts per warp per k-tile against an ideal 16,
+// and stores are 16 of the 224 shared wavefronts the k loop spends.
+//
+// No stride fixes it -- conflict-free stores want `4 * stride = 8 (mod 32)`,
+// i.e. stride = 2 (mod 8), while the float4 loads want stride = 0 (mod 4). So
+// the shift goes in the column: element (k, m) sits at column
+// `m + (k >> 2) * 8`, which spreads the four staging groups over four disjoint
+// bank octets and covers all 32 banks exactly once. `SPAD` widens the row to
+// hold the shifted columns and is a multiple of 32, so the row stride itself
+// adds no bank offset and the load pattern EXP-017 measured is unchanged.
+//
+// Neither side costs an instruction: `p` is a compile-time constant in the
+// unrolled inner loop so the load shift folds into the literal displacement,
+// and `lc` is a multiple of 4 so the store shift keeps the single multiply-add
+// `lc * stride + lr` the address already was.
+//
+// `SWIZ` is off for the grouped kernels. They sit at 125 registers against the
+// 128 that `__launch_bounds__(_, 2)` allows, and the shift -- in any of the four
+// formulations tried, including this one -- pushes them to 128 with 24 B of
+// spill *inside* the k loop. Measured cost of that spill (moe +0.031 s) is
+// larger than the win it pays for (gemm -0.022 s), so the grouped instantiation
+// keeps the exact layout and SASS it had. The projections have the headroom.
+__device__ __forceinline__ constexpr int gemm_spad(bool swiz) {
+    return swiz ? 32 : 4;
+}
+__device__ __forceinline__ int gemm_kshift(bool swiz, int k) {
+    return swiz ? (k >> 2) * 8 : 0;
+}
 
 // Column that lane tx owns at slot j. The natural `tx * TN + j` gives a warp's
 // quarter (8 lanes) word-stride 8, so those 8 lanes touch banks
@@ -128,7 +163,7 @@ __device__ __forceinline__ int gemm_col_slot(int tx, int j) {
 // past its last; everything else is the tile kernel unchanged, down to the
 // bound expressions -- writing them any other way moves ptxas off the
 // instruction schedule the projections were measured on.
-template <int BM, int BN, int TM, int TN, bool FUSE_RESID = false,
+template <int BM, int BN, int TM, int TN, bool SWIZ, bool FUSE_RESID = false,
           int COMBINE = 0>
 __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
                                              const float* __restrict__ b,
@@ -142,6 +177,7 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
     static_assert(BM / 2 * (BK / 4) == GEMM_THREADS, "A staging misses rows");
     static_assert(BN / 2 * (BK / 4) == GEMM_THREADS, "B staging misses rows");
 
+    constexpr int SPAD = gemm_spad(SWIZ);
     __shared__ __align__(16) float as[2][BK][BM + SPAD];
     __shared__ __align__(16) float bs[2][BK][BN + SPAD];
 
@@ -153,6 +189,9 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
     const int lr = tid / (BK / 4);          // 0..63, row inside the tile
     const int lc = (tid % (BK / 4)) * 4;    // 0, 4, 8, 12 inside the k window
     const int lr2 = lr + BM / 2;            // the second row this thread stages
+    // Staging columns, shifted by the k group. `lc` is a multiple of 4, so
+    // the shift is the same for all four k rows a thread writes.
+    const int sc = lr + gemm_kshift(SWIZ, lc), sc2 = sc + BM / 2;
     const int ty = tid / (BN / TN);         // 0..15
     const int tx = tid % (BN / TN);         // 0..15
 
@@ -174,14 +213,14 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
     if (a_ok2) av2 = *reinterpret_cast<const float4*>(ab2);
     if (b_ok) bv = *reinterpret_cast<const float4*>(bb);
     if (b_ok2) bv2 = *reinterpret_cast<const float4*>(bb2);
-    as[0][lc + 0][lr] = av.x; as[0][lc + 1][lr] = av.y;
-    as[0][lc + 2][lr] = av.z; as[0][lc + 3][lr] = av.w;
-    as[0][lc + 0][lr2] = av2.x; as[0][lc + 1][lr2] = av2.y;
-    as[0][lc + 2][lr2] = av2.z; as[0][lc + 3][lr2] = av2.w;
-    bs[0][lc + 0][lr] = bv.x; bs[0][lc + 1][lr] = bv.y;
-    bs[0][lc + 2][lr] = bv.z; bs[0][lc + 3][lr] = bv.w;
-    bs[0][lc + 0][lr2] = bv2.x; bs[0][lc + 1][lr2] = bv2.y;
-    bs[0][lc + 2][lr2] = bv2.z; bs[0][lc + 3][lr2] = bv2.w;
+    as[0][lc + 0][sc] = av.x; as[0][lc + 1][sc] = av.y;
+    as[0][lc + 2][sc] = av.z; as[0][lc + 3][sc] = av.w;
+    as[0][lc + 0][sc2] = av2.x; as[0][lc + 1][sc2] = av2.y;
+    as[0][lc + 2][sc2] = av2.z; as[0][lc + 3][sc2] = av2.w;
+    bs[0][lc + 0][sc] = bv.x; bs[0][lc + 1][sc] = bv.y;
+    bs[0][lc + 2][sc] = bv.z; bs[0][lc + 3][sc] = bv.w;
+    bs[0][lc + 0][sc2] = bv2.x; bs[0][lc + 1][sc2] = bv2.y;
+    bs[0][lc + 2][sc2] = bv2.z; bs[0][lc + 3][sc2] = bv2.w;
     __syncthreads();
 
     int cur = 0;
@@ -201,13 +240,13 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
             float av4[TM], bv4[TN];
 #pragma unroll
             for (int i = 0; i < TM; i += 4) {
-                const float4 t = *reinterpret_cast<const float4*>(&ac[p][ty * TM + i]);
+                const float4 t = *reinterpret_cast<const float4*>(&ac[p][ty * TM + i + gemm_kshift(SWIZ, p)]);
                 av4[i] = t.x; av4[i + 1] = t.y; av4[i + 2] = t.z; av4[i + 3] = t.w;
             }
 #pragma unroll
             for (int j = 0; j < TN; j += 4) {
                 const float4 t =
-                    *reinterpret_cast<const float4*>(&bc[p][gemm_col_slot<BN>(tx, j)]);
+                    *reinterpret_cast<const float4*>(&bc[p][gemm_col_slot<BN>(tx, j) + gemm_kshift(SWIZ, p)]);
                 bv4[j] = t.x; bv4[j + 1] = t.y; bv4[j + 2] = t.z; bv4[j + 3] = t.w;
             }
 #pragma unroll
@@ -220,14 +259,14 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
             // Writing the other buffer: every thread finished reading it before
             // the __syncthreads() that closed the previous iteration.
             const int nxt = cur ^ 1;
-            as[nxt][lc + 0][lr] = av.x; as[nxt][lc + 1][lr] = av.y;
-            as[nxt][lc + 2][lr] = av.z; as[nxt][lc + 3][lr] = av.w;
-            as[nxt][lc + 0][lr2] = av2.x; as[nxt][lc + 1][lr2] = av2.y;
-            as[nxt][lc + 2][lr2] = av2.z; as[nxt][lc + 3][lr2] = av2.w;
-            bs[nxt][lc + 0][lr] = bv.x; bs[nxt][lc + 1][lr] = bv.y;
-            bs[nxt][lc + 2][lr] = bv.z; bs[nxt][lc + 3][lr] = bv.w;
-            bs[nxt][lc + 0][lr2] = bv2.x; bs[nxt][lc + 1][lr2] = bv2.y;
-            bs[nxt][lc + 2][lr2] = bv2.z; bs[nxt][lc + 3][lr2] = bv2.w;
+            as[nxt][lc + 0][sc] = av.x; as[nxt][lc + 1][sc] = av.y;
+            as[nxt][lc + 2][sc] = av.z; as[nxt][lc + 3][sc] = av.w;
+            as[nxt][lc + 0][sc2] = av2.x; as[nxt][lc + 1][sc2] = av2.y;
+            as[nxt][lc + 2][sc2] = av2.z; as[nxt][lc + 3][sc2] = av2.w;
+            bs[nxt][lc + 0][sc] = bv.x; bs[nxt][lc + 1][sc] = bv.y;
+            bs[nxt][lc + 2][sc] = bv.z; bs[nxt][lc + 3][sc] = bv.w;
+            bs[nxt][lc + 0][sc2] = bv2.x; bs[nxt][lc + 1][sc2] = bv2.y;
+            bs[nxt][lc + 2][sc2] = bv2.z; bs[nxt][lc + 3][sc2] = bv2.w;
             __syncthreads();
             cur = nxt;
         }
@@ -274,7 +313,7 @@ void gemm_nt_bias(const float* __restrict__ a,
                   const float* __restrict__ bias,
                   float* __restrict__ c,
                   int m, int k, int n) {
-    gemm_nt_body<PROJ_BM, PROJ_BN, PROJ_TM, PROJ_TN>(
+    gemm_nt_body<PROJ_BM, PROJ_BN, PROJ_TM, PROJ_TN, PROJ_SWIZ>(
         a, b, bias, c, nullptr, nullptr, blockIdx.y * PROJ_BM, m, k, n);
 }
 
@@ -292,7 +331,7 @@ void gemm_nt_bias_resid(const float* __restrict__ a,
                         float* __restrict__ c,
                         const float* __restrict__ resid,
                         int m, int k, int n) {
-    gemm_nt_body<PROJ_BM, PROJ_BN, PROJ_TM, PROJ_TN, true>(
+    gemm_nt_body<PROJ_BM, PROJ_BN, PROJ_TM, PROJ_TN, PROJ_SWIZ, true>(
         a, b, bias, c, resid, nullptr, blockIdx.y * PROJ_BM, m, k, n);
 }
 
@@ -311,7 +350,7 @@ void gemm_grouped(const float* __restrict__ a,
     const int* const t = tiles + blockIdx.y * 3;
     // The grid is sized to the worst-case tile count, so the tail is empty.
     if (t[2] == 0) return;
-    gemm_nt_body<GRP_BM, GRP_BN, GRP_TM, GRP_TN>(
+    gemm_nt_body<GRP_BM, GRP_BN, GRP_TM, GRP_TN, GRP_SWIZ>(
         a, weights[t[0]], nullptr, c, nullptr, nullptr, t[1], t[1] + t[2], k, n);
 }
 
@@ -335,7 +374,7 @@ void gemm_grouped_combine(const float* __restrict__ a,
                           const float* __restrict__ resid, int k, int n) {
     const int* const t = tiles + blockIdx.y * 3;
     if (t[2] == 0) return;
-    gemm_nt_body<GRP_BM, GRP_BN, GRP_TM, GRP_TN, false, COMBINE>(
+    gemm_nt_body<GRP_BM, GRP_BN, GRP_TM, GRP_TN, GRP_SWIZ, false, COMBINE>(
         a, weights[t[0]], nullptr, c, resid, rowmap, t[1], t[1] + t[2], k, n);
 }
 
