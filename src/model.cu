@@ -68,7 +68,15 @@ void to_host(Tensor& host, const float* device) {
 // The K loop still walks k in ascending order and each output still accumulates
 // into one register with the same `acc += a * b` expression, so every output
 // sees the same sequence of FMAs as the tile kernel it replaces.
-constexpr int BM = 128, BN = 128, BK = 8, TM = 8, TN = 8;
+// BK is 16, the widest k window that still fits two blocks per SM: the two
+// double-buffered tiles are 33,792 B, so BK = 32 would need 135 KB per SM
+// against the 100 KB limit. Widening it does not change the FFMA-per-shared-load
+// ratio -- it halves the barriers and the global load instructions, which is
+// where the K loop was losing issue slots. The `__launch_bounds__(_, 2)` on the
+// two kernels below holds that 2-block residency: without it ptxas gives
+// `gemm_grouped` 141 registers and residency drops to one block. It spills
+// nothing at 128.
+constexpr int BM = 128, BN = 128, BK = 16, TM = 8, TN = 8;
 constexpr int GEMM_THREADS = (BM / TM) * (BN / TN);  // 256
 // The +4 keeps the shared rows 16B-aligned while breaking the bank-conflict
 // pattern of a bare [BK][BM] layout.
@@ -108,29 +116,40 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
     const int tid = threadIdx.x;
     const int m0 = row0;
     const int n0 = blockIdx.x * BN;
-    const int lr = tid / (BK / 4);          // 0..127, row inside the tile
-    const int lc = (tid % (BK / 4)) * 4;    // 0, 4 inside the k window
+    // BK = 16 needs 2 float4 per thread per matrix, so each thread stages two
+    // rows half a tile apart instead of one.
+    const int lr = tid / (BK / 4);          // 0..63, row inside the tile
+    const int lc = (tid % (BK / 4)) * 4;    // 0, 4, 8, 12 inside the k window
+    const int lr2 = lr + BM / 2;            // the second row this thread stages
     const int ty = tid / (BN / TN);         // 0..15
     const int tx = tid % (BN / TN);         // 0..15
 
-    const int a_row = m0 + lr;
-    const int b_row = n0 + lr;
-    const bool a_ok = a_row < m;
-    const bool b_ok = b_row < n;
+    const int a_row = m0 + lr, a_row2 = m0 + lr2;
+    const int b_row = n0 + lr, b_row2 = n0 + lr2;
+    const bool a_ok = a_row < m, a_ok2 = a_row2 < m;
+    const bool b_ok = b_row < n, b_ok2 = b_row2 < n;
     const float* const ab = a + static_cast<long long>(a_row) * k + lc;
+    const float* const ab2 = a + static_cast<long long>(a_row2) * k + lc;
     const float* const bb = b + static_cast<long long>(b_row) * k + lc;
+    const float* const bb2 = b + static_cast<long long>(b_row2) * k + lc;
 
     float acc[TM][TN] = {};
 
     // Stage the first tile. Rows past the edge stay zero for the whole loop.
     float4 av = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-    float4 bv = av;
+    float4 av2 = av, bv = av, bv2 = av;
     if (a_ok) av = *reinterpret_cast<const float4*>(ab);
+    if (a_ok2) av2 = *reinterpret_cast<const float4*>(ab2);
     if (b_ok) bv = *reinterpret_cast<const float4*>(bb);
+    if (b_ok2) bv2 = *reinterpret_cast<const float4*>(bb2);
     as[0][lc + 0][lr] = av.x; as[0][lc + 1][lr] = av.y;
     as[0][lc + 2][lr] = av.z; as[0][lc + 3][lr] = av.w;
+    as[0][lc + 0][lr2] = av2.x; as[0][lc + 1][lr2] = av2.y;
+    as[0][lc + 2][lr2] = av2.z; as[0][lc + 3][lr2] = av2.w;
     bs[0][lc + 0][lr] = bv.x; bs[0][lc + 1][lr] = bv.y;
     bs[0][lc + 2][lr] = bv.z; bs[0][lc + 3][lr] = bv.w;
+    bs[0][lc + 0][lr2] = bv2.x; bs[0][lc + 1][lr2] = bv2.y;
+    bs[0][lc + 2][lr2] = bv2.z; bs[0][lc + 3][lr2] = bv2.w;
     __syncthreads();
 
     int cur = 0;
@@ -138,7 +157,9 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
         const bool more = kt + BK < k;
         if (more) {
             if (a_ok) av = *reinterpret_cast<const float4*>(ab + kt + BK);
+            if (a_ok2) av2 = *reinterpret_cast<const float4*>(ab2 + kt + BK);
             if (b_ok) bv = *reinterpret_cast<const float4*>(bb + kt + BK);
+            if (b_ok2) bv2 = *reinterpret_cast<const float4*>(bb2 + kt + BK);
         }
 
         const float (*ac)[BM + SPAD] = as[cur];
@@ -169,8 +190,12 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
             const int nxt = cur ^ 1;
             as[nxt][lc + 0][lr] = av.x; as[nxt][lc + 1][lr] = av.y;
             as[nxt][lc + 2][lr] = av.z; as[nxt][lc + 3][lr] = av.w;
+            as[nxt][lc + 0][lr2] = av2.x; as[nxt][lc + 1][lr2] = av2.y;
+            as[nxt][lc + 2][lr2] = av2.z; as[nxt][lc + 3][lr2] = av2.w;
             bs[nxt][lc + 0][lr] = bv.x; bs[nxt][lc + 1][lr] = bv.y;
             bs[nxt][lc + 2][lr] = bv.z; bs[nxt][lc + 3][lr] = bv.w;
+            bs[nxt][lc + 0][lr2] = bv2.x; bs[nxt][lc + 1][lr2] = bv2.y;
+            bs[nxt][lc + 2][lr2] = bv2.z; bs[nxt][lc + 3][lr2] = bv2.w;
             __syncthreads();
             cur = nxt;
         }
@@ -191,11 +216,12 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
     }
 }
 
-__global__ void gemm_nt_bias(const float* __restrict__ a,
-                             const float* __restrict__ b,
-                             const float* __restrict__ bias,
-                             float* __restrict__ c,
-                             int m, int k, int n) {
+__global__ __launch_bounds__(GEMM_THREADS, 2)
+void gemm_nt_bias(const float* __restrict__ a,
+                  const float* __restrict__ b,
+                  const float* __restrict__ bias,
+                  float* __restrict__ c,
+                  int m, int k, int n) {
     gemm_nt_body(a, b, bias, c, blockIdx.y * BM, m, k, n);
 }
 
@@ -206,7 +232,8 @@ __global__ void gemm_nt_bias(const float* __restrict__ a,
 // 66% time-weighted wave fill on w13, 53% of its time in sub-one-wave
 // launches). Nothing about a row's arithmetic changes: the tile it lands in
 // does not enter the accumulation.
-__global__ void gemm_grouped(const float* __restrict__ a,
+__global__ __launch_bounds__(GEMM_THREADS, 2)
+void gemm_grouped(const float* __restrict__ a,
                              const float* const* __restrict__ weights,
                              float* __restrict__ c,
                              const int* __restrict__ tiles, int k, int n) {
