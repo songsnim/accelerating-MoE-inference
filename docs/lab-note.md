@@ -1412,3 +1412,76 @@ __device__ __forceinline__ int gemm_col_slot(int tx, int j) {
 - **018 bias 호이스팅**은 이제 새 매핑(`gemm_col_slot`)을 따라 넣는다.
 - **GEMM 타일 재설계 재판단**의 전제가 성립했다. 로그의 균형식대로라면 이제
   공유 대역폭과 FFMA가 1:1이므로, K 루프에 더 넣을 여지가 생겼는지 다시 봐야 한다.
+
+---
+
+# EXP-018 — bias 에필로그 호이스팅 (기각)
+
+## 1. Background
+SASS 실측으로 미적용이 확정돼 있었다: `gemm_nt_bias` LDG **68** vs `gemm_grouped`
+**8**. 차 60은 스레드당 `bias[col]` 64회다. `col`은 `j`에만 의존해 행 루프 불변인데
+`if (row >= m) continue;` 때문에 ptxas가 못 뺀다. 대조 로그가 같은 형태에서
+행 루프 밖으로 빼 **+1.53%**를 기록했다.
+
+## 2. Hypothesis
+`float biasv[TN]` 8개를 행 루프 앞에서 한 번 읽으면 LDG 64회가 사라져 gemm이 줄어든다.
+산술 무변경(같은 피가산수, 같은 순서)이라 bitwise 동일해야 한다.
+
+## 3. Design and Implementation
+017의 새 매핑을 따라 `col = n0 + gemm_col_slot(tx, j)`로 8개를 선행 로드.
+두 형태를 만들었다.
+
+- **hoist**: `if (bias != nullptr)`를 호이스팅 블록에만 씌우고 저장 루프의
+  `if (bias != nullptr) v += biasv[j];`는 그대로.
+- **hoist2**: null 검사를 `biasv[j] = (bias && col < n) ? bias[col] : 0.0f`로 접고
+  저장 루프를 `acc[i][j] + biasv[j]` 단일 경로로. (`acc`는 +0.0f에서 시작해 FFMA로만
+  자라므로 −0.0f가 될 수 없고, `+0.0f`는 항등이다.)
+
+`gemm_nt_bias` 정적 SASS (레지스터 127 · smem 16,896 B 세 빌드 모두 불변):
+
+| 빌드 | 총 명령 | LDG | STG |
+|---|---|---|---|
+| base | 1968 | 68 | 128 (bias/non-bias 이중 에필로그) |
+| hoist | 1896 | 12 | 128 |
+| hoist2 | **1136** | **12** | **64** |
+
+## 4. Result
+
+**A/B 1 (b5, 한 allocation 교차 3rep) — base vs hoist**
+
+| 빌드 | gemm | elapsed | seq/s |
+|---|---|---|---|
+| base | 0.978 / 0.984 / 0.984 | 1.925 / 1.932 / 1.930 | 530.8 |
+| hoist | 0.997 / 0.999 / 0.997 | 1.950 / 1.947 / 1.949 | 525.5 |
+
+**gemm +0.016, elapsed +0.019 s로 오히려 퇴행**, 3rep 겹침 없음. ncu로 원인 확인:
+정적 명령은 72개 줄었는데 `smsp__inst_executed`는 638.9M → 642.2M(**+0.51%**)로 늘었다.
+저장 루프에 남은 per-element `if (bias != nullptr)`가 이중 에필로그(STG 128)를
+그대로 유지시키고 주소 계산만 늘린 형태(IADD3 +7, ISETP +9).
+
+**A/B 2 (b7, 교차 3rep) — base vs hoist2**
+
+| 빌드 | gemm | moe | elapsed |
+|---|---|---|---|
+| base | 0.985 / 0.986 / 0.991 | 0.617 / 0.622 / 0.613 | 1.940 / 1.947 / 1.946 |
+| hoist2 | 0.989 / 0.987 / 0.988 | 0.616 / 0.614 / 0.616 | 1.945 / 1.940 / 1.944 |
+
+**차이 없음**(gemm 0.988 vs 0.987, elapsed 1.943 vs 1.944 — 노이즈 안).
+퇴행은 없앴지만 이득도 없다.
+
+**결론: 기각. `bias[col]` 64회는 비용이 0이다.** bias는 최대 128 KB(lm_head)이고
+타일 하나가 읽는 건 128 float뿐이라 전량 L1 상주 + 블록 내 전 스레드 재사용이다.
+그리고 에필로그는 K 타일 512회 루프 뒤에 **출력당 1회**만 돈다 — LDG 64회를 12회로
+줄여도 커널 시간에 나타나지 않는다. 대조 로그의 +1.53%는 우리와 K 반복 수가
+다른 형상에서 나온 값으로 봐야 한다.
+
+부수 확인: hoist2는 `gemm_grouped`(bias=nullptr)에 `+0.0f` FADD 64개를 새로 넣는다.
+컴파일러가 IEEE상 `x+0.0f`를 접을 수 없기 때문이다. moe 시간에는 나타나지 않았다.
+
+`src/model.cu`는 **변경 없음**. 두 변형은 `$CLAUDE_JOB_DIR/tmp/exp018/`에만 있다.
+
+## 5. Next action
+- 에필로그 최적화 계열은 닫는다. **019 gate tall-skinny도 같은 이유로 상한을
+  낮게 잡아야 한다** — 그쪽 이득은 에필로그가 아니라 낭비되는 타일 87.5%에서 오므로
+  별개지만, "GEMM 주변부를 다듬어 얻는다"는 기대는 이 실험이 한 번 반증했다.
+- 남은 gemm 0.98의 레버는 K 루프 안에 있다. **GEMM 타일 재설계 재판단**이 다음 순번.
