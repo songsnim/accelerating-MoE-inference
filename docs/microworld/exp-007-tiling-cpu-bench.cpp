@@ -59,6 +59,23 @@ static void tiled(const float* A, const float* B, float* C, int n, int bs) {
             }
 }
 
+// What a real CPU GEMM does: block i and k so a k-slab of B is reused, but
+// leave j running the whole row so the vectorized inner loop stays long.
+static void blk_ik(const float* A, const float* B, float* C, int n, int bs) {
+    for (int i0 = 0; i0 < n; i0 += bs)
+        for (int k0 = 0; k0 < n; k0 += bs) {
+            const int iM = std::min(i0 + bs, n);
+            const int kM = std::min(k0 + bs, n);
+            for (int i = i0; i < iM; ++i)
+                for (int k = k0; k < kM; ++k) {
+                    const float a = A[i * n + k];
+                    const float* b = B + k * n;
+                    float* c = C + i * n;
+                    for (int j = 0; j < n; ++j) c[j] += a * b[j];
+                }
+        }
+}
+
 static double checksum(const std::vector<float>& v) {
     double s = 0.0;
     for (std::size_t i = 0; i < v.size(); ++i) s += v[i] * (1.0 + (i & 7));
@@ -121,6 +138,12 @@ int main(int argc, char** argv) {
                 char nm[32];
                 std::snprintf(nm, sizeof nm, "tiled-%d", bs);
                 run(nm, [&] { tiled(A.data(), B.data(), C.data(), n, bs); }, &base);
+            }
+        for (int bs : blocks)
+            if (bs <= n) {
+                char nm[32];
+                std::snprintf(nm, sizeof nm, "blk-ik-%d", bs);
+                run(nm, [&] { blk_ik(A.data(), B.data(), C.data(), n, bs); }, &base);
             }
         std::printf("%6d checksum %.6e\n\n", n, checksum(ref));
     }
