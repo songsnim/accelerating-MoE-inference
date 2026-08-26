@@ -983,3 +983,97 @@ global->shared 연속 복사만 된다. 전치를 버리면 내부 루프의 sha
   long_scoreboard 14.8% + short_scoreboard 10.6%. `cp.async`가 막혔으므로 남은 길은
   타일 재설계(register tile 확대 또는 k-major 레이아웃 + mma 스타일 인덱싱)다. 큰 작업.
 - 측정-B에 따라 **컴퓨트 밀도를 올리는 최적화의 기대값은 이론치의 97~98%**로 잡는다.
+
+---
+
+# 측정-C: memory coalescing에 남은 여유가 있는가 (EXP-013 코드)
+
+EXP-008 §4-1의 "feature-major 불필요" 판정은 expert GEMM만 본 것이고, 그 뒤
+trie(011)·grouping(012)·device embedding(013)으로 접근 패턴이 바뀌었다.
+전 커널을 다시 쟀다.
+
+## 1. ncu 전수 (n=128, b6, `--clock-control none --cache-control none`)
+
+| 커널 | ld bytes/sector | sec/req | dram% | sm% | l1% |
+|---|---|---|---|---|---|
+| **attention_heads** | **22.60** | 8.11 | 9.75 | 31.97 | **87.57** |
+| rope_rows | 66.22 | 5.76 | 86.42 | 13.09 | 18.87 |
+| gemm_nt_bias | 95.02 | 15.53 | 9.85 | 39.36 | 55.18 |
+| gemm_grouped | 99.89 | 14.22 | 24.62 | 52.96 | 74.00 |
+| gather_rows | 98.65 | 3.82 | 88.81 | 8.76 | 19.97 |
+| scatter_add_rows | 99.32 | 3.91 | 75.63 | 7.61 | 14.25 |
+| layer_norm_rows | 100.00 | 4.00 | 28.73 | 32.28 | 29.63 |
+| silu_mul | 100.00 | 4.00 | 85.64 | 25.90 | 15.04 |
+| add_inplace_kernel | 100.00 | 4.00 | 90.79 | 11.10 | 14.28 |
+
+- **여유가 있는 커널은 `attention_heads` 하나뿐이다.** 나머지는 전부 95% 이상이라
+  EXP-008의 판정이 이후 추가된 커널에도 그대로 유효하다.
+- 원인은 q·k 내적이다. `for (i = tid; i < nk; i += D)`에서 워프의 32개 레인이
+  **서로 다른 key 행**을 동시에 치므로 32 B 섹터마다 4 B만 쓴다(12.5%). value 누적은
+  128 스레드가 한 행의 연속 원소를 읽어 100%다. 레이어당 섹터로 가중하면
+  score dot 441.8 M(88.9%) + value 55.2 M → 예상 22.2%, 실측 22.60%로 일치한다.
+- 그리고 이 커널은 **L1 처리량 87.6%로 포화**(dram 9.75%)다. 낭비하는 자원이 곧
+  병목 자원이므로 고칠 가치가 있는 형태다.
+- rope_rows의 66.22%는 8 KB짜리 cos/sin 테이블의 stride-2 접근이고, 이 커널은
+  dram 86.42%로 대역폭 바운드다. 섹터를 고쳐도 DRAM 트래픽이 줄지 않는다.
+
+## 2. 천장과 실현치 (n=1024, b0, 한 allocation 안에서 교차 2rep)
+
+| 빌드 | attn | elapsed | 비고 |
+|---|---|---|---|
+| main (EXP-013) | 0.143 / 0.143 | 2.300 / 2.302 | |
+| **D1 진단 하한** | **0.069 / 0.069** | 2.231 / 2.229 | score dot의 global k 로드 삭제, 결과 오답 |
+| D2 행 통째 스테이징 | 0.154 / 0.154 | 2.307 / 2.316 | bitwise 동일, **역행** |
+| **D3 청크 스테이징** | **0.096 / 0.096** | **2.260 / 2.260** | bitwise 동일, 채택 가능 |
+
+- **천장은 0.074 s**(attn 0.143 → 0.069). k 로드를 공짜로 만들어도 그 이상은 없다.
+  전체로는 2.301 → 2.230 = **1.031×**가 상한이다.
+- **D2는 반증됐다.** key 행을 통째로 shared에 올리면(32 × 129 float = 16.5 KB/block)
+  occupancy가 12 → 5 blocks/SM으로 떨어져 코얼레싱 이득을 통째로 삼킨다.
+  **여유가 있다는 것과 먹을 수 있다는 것은 다르다.**
+- **D3가 답이다.** d를 32열씩 끊어 스테이징하면 shared가 4.2 KB로 내려가
+  occupancy가 유지된다. 천장 0.074 중 **0.047 s(64%)를 회수**했다.
+  elapsed −0.041 s = **1.018×**, throughput 445.0 → 453.1.
+- 셋 다 `cmp` 기준 main과 **bitwise 동일**(D1은 설계상 제외). 스테이징은 값도 순서도
+  바꾸지 않는다 — 스레드 i는 여전히 d 오름차순으로 같은 값을 `__fadd_rn`한다.
+- D3에서 moe가 0.780 → 0.789로 +0.009 올랐다. attn이 빨라져 전력 밀도가 오른 결과로,
+  **측정-B의 "컴퓨트 밀도를 올리면 빠른 노드에서 이론치의 97~98%"**와 일관된다.
+  attn 이득 0.047 중 0.006이 여기서 상쇄되어 순 elapsed 이득이 0.041이다.
+
+## 3. D3의 코드 형태
+
+```cuda
+constexpr int CH = 32;                       // shared = max_len * 33 float
+float score = 0.0f;
+for (int d0 = 0; d0 < D; d0 += CH) {
+    for (int base = 0; base < nk; base += D / CH) {   // 워프가 한 행의 32열을 연속으로
+        const int ki = base + tid / CH, col = tid % CH;
+        if (ki < nk)
+            sk[ki * (CH + 1) + col] = k[chain[ki] * KVH * D + kh * D + d0 + col];
+    }
+    __syncthreads();
+    if (tid < nk) {                          // nk <= max_seq_len(32) <= blockDim
+        const float* kr = sk + tid * (CH + 1);
+        for (int d = 0; d < CH; ++d)
+            score = __fadd_rn(score, __fmul_rn(sq[d0 + d], kr[d]));
+    }
+    __syncthreads();
+}
+if (tid < nk) sw[tid] = score / scale;
+```
+
+`+1` 패딩은 shared 뱅크 충돌 회피용이다(스트라이드 33이면 레인 i의 뱅크가 `(i+d)%32`로
+전부 다르다). `nk <= blockDim` 가정이 새로 들어간다 — max_seq_len이 32라 성립하지만
+코드에 명시할 것.
+
+## 4. 결론
+
+**coalescing에 남은 이론적 여유는 1.031×, 실현 가능한 것은 1.018×이고 전부
+`attention_heads` 한 곳에 있다.** 다른 8개 커널에는 없다.
+
+남은 gemm 1.09 + moe 0.78(전체의 81%)은 coalescing 문제가 아니다 — 각각
+bytes/sector 95.0 / 99.9에 dram 9.9 / 24.6%로 컴퓨트 바운드다. 그쪽은 여전히
+타일 재설계 문제다.
+
+D3를 EXP-014로 채택할지는 별도 판단. 이득 1.018×는 작지만 bitwise 동일하고
+변경 범위가 커널 하나의 20줄이다.
