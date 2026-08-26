@@ -1283,10 +1283,15 @@ void PhiTinyMoEModel::generate(
     // expert GEMMs become one launch, so the row count is the number of
     // (row, expert) pairs -- exactly TOP_K * total.
     const std::size_t packed_rows = total * apss26::TOP_K;
-    float* d_expert_in = sc.expert_in.reserve(packed_rows * apss26::HIDDEN_SIZE);
+    // Both are reused by the lm_head gather at the end, which addresses `batch`
+    // rows. Nothing bounds `total` below `batch`: a batch of duplicate short
+    // sequences collapses to fewer than batch/2 nodes, and packed_rows alone
+    // would then be short of what that gather writes.
+    const std::size_t gather_rows_max = std::max(packed_rows, batch);
+    float* d_expert_in = sc.expert_in.reserve(gather_rows_max * apss26::HIDDEN_SIZE);
     float* d_gate = sc.gate.reserve(packed_rows * FFDIM);
     float* d_gate_up = sc.gate_up.reserve(packed_rows * 2 * FFDIM);
-    int* d_index = sc.index.reserve(packed_rows);
+    int* d_index = sc.index.reserve(gather_rows_max);
     // Routing scratch: each row's two experts and the per-block per-sub-range
     // counts the scan turns into offsets.
     const int nrb = static_cast<int>((total + ROUTE_BLOCK - 1) / ROUTE_BLOCK);
