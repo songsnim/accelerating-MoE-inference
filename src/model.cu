@@ -368,9 +368,17 @@ constexpr int GATE_SPAD = 32;  // multiple of 32: the row stride adds no bank of
 static_assert(GATE_THREADS == 256, "gate block is not 256 threads");
 static_assert(GATE_BM * BK / 4 == GATE_THREADS, "A staging is not one float4");
 
+// NORM folds the same layer norm epilogue into the A staging. This kernel is
+// the one consumer that can afford it: `out` is 16, so a row tile is staged
+// exactly once and each element is normalised exactly once.
+template <bool NORM = false>
 __global__ __launch_bounds__(GATE_THREADS)
 void gemm_gate(const float* __restrict__ a, const float* __restrict__ b,
-               float* __restrict__ c, int m, int k, int n) {
+               float* __restrict__ c, int m, int k, int n,
+               const float* __restrict__ nmean = nullptr,
+               const float* __restrict__ ninv = nullptr,
+               const float* __restrict__ nw = nullptr,
+               const float* __restrict__ nb = nullptr) {
     // `as` carries the same k-group column shift as gemm_nt_body -- see SPAD.
     __shared__ __align__(16) float as[2][BK][GATE_BM + GATE_SPAD];
     // 16 experts x BK is small enough that `bs[p][tx]` is one broadcast
@@ -394,11 +402,26 @@ void gemm_gate(const float* __restrict__ a, const float* __restrict__ b,
     const int be = b_ok ? lr : 0;           // 0..15, this thread's expert row
     const float* const bb = b + static_cast<long long>(be) * k + lc;
 
+    // A row past the edge stages zeros and its accumulator is thrown away, so
+    // it must not be normalised -- nmean[a_row] would be off the end.
+    const float nm = (NORM && a_ok) ? nmean[a_row] : 0.0f;
+    const float niv = (NORM && a_ok) ? ninv[a_row] : 0.0f;
+    auto apply = [&](float4& v, int col0) {
+        if (!NORM || !a_ok) return;
+        const float4 wv = *reinterpret_cast<const float4*>(nw + col0);
+        const float4 bvv = *reinterpret_cast<const float4*>(nb + col0);
+        v.x = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(v.x, nm), niv), wv.x), bvv.x);
+        v.y = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(v.y, nm), niv), wv.y), bvv.y);
+        v.z = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(v.z, nm), niv), wv.z), bvv.z);
+        v.w = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(v.w, nm), niv), wv.w), bvv.w);
+    };
+
     float acc[GATE_TM] = {};
 
     float4 av = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
     float4 bv = av;
     if (a_ok) av = *reinterpret_cast<const float4*>(ab);
+    apply(av, lc);
     if (b_ok) bv = *reinterpret_cast<const float4*>(bb);
     as[0][lc + 0][sc] = av.x; as[0][lc + 1][sc] = av.y;
     as[0][lc + 2][sc] = av.z; as[0][lc + 3][sc] = av.w;
@@ -413,6 +436,7 @@ void gemm_gate(const float* __restrict__ a, const float* __restrict__ b,
         const bool more = kt + BK < k;
         if (more) {
             if (a_ok) av = *reinterpret_cast<const float4*>(ab + kt + BK);
+            apply(av, kt + BK + lc);
             if (b_ok) bv = *reinterpret_cast<const float4*>(bb + kt + BK);
         }
 
@@ -492,14 +516,30 @@ void gemm_grouped_combine(const float* __restrict__ a,
         a, weights[t[0]], nullptr, c, resid, rowmap, t[1], t[1] + t[2], k, n);
 }
 
-// dst[i, :] = src[index[i], :]
+// dst[i, :] = src[index[i], :], with NORM folding a layer norm's epilogue in.
+// The four ops are the ones layer_norm_rows' third pass ran, in that order, on
+// a value that pass had just computed and stored: storing an fp32 and reading
+// it back is the identity, so the gathered row is bit-identical.
+template <bool NORM = false>
 __global__ void gather_rows(const float* __restrict__ src,
                             const int* __restrict__ index,
-                            float* __restrict__ dst, int cols) {
+                            float* __restrict__ dst, int cols,
+                            const float* __restrict__ nmean = nullptr,
+                            const float* __restrict__ ninv = nullptr,
+                            const float* __restrict__ nw = nullptr,
+                            const float* __restrict__ nb = nullptr) {
     const int row = index[blockIdx.x];
     const float* in = src + static_cast<long long>(row) * cols;
     float* out = dst + static_cast<long long>(blockIdx.x) * cols;
-    for (int c = threadIdx.x; c < cols; c += blockDim.x) out[c] = in[c];
+    if (NORM) {
+        const float m = nmean[row], iv = ninv[row];
+        for (int c = threadIdx.x; c < cols; c += blockDim.x) {
+            out[c] = __fadd_rn(
+                __fmul_rn(__fmul_rn(__fsub_rn(in[c], m), iv), nw[c]), nb[c]);
+        }
+    } else {
+        for (int c = threadIdx.x; c < cols; c += blockDim.x) out[c] = in[c];
+    }
 }
 
 // PhiMLP applies silu to the w1 branch and multiplies the w3 branch into it.
@@ -556,11 +596,14 @@ constexpr int NORM_STRIDE = NORM_ROWS + 1;
 // replaces; what changes is that every row's chain now runs at once instead of
 // five per SM (16 KB of staged row was what capped it). The price is reading x
 // three times: a row cannot stay resident across mean, variance and output.
+template <bool STATS_ONLY = false>
 __global__ void layer_norm_rows(const float* __restrict__ x,
                                 const float* __restrict__ weight,
                                 const float* __restrict__ bias,
                                 float* __restrict__ y, int rows, int cols,
-                                float eps) {
+                                float eps,
+                                float* __restrict__ rmean = nullptr,
+                                float* __restrict__ rinv = nullptr) {
     __shared__ float s[NORM_CHUNK * NORM_STRIDE];
     const int lane = static_cast<int>(threadIdx.x);
     const int row0 = static_cast<int>(blockIdx.x) * NORM_ROWS;
@@ -625,6 +668,19 @@ __global__ void layer_norm_rows(const float* __restrict__ x,
         }
     }
     const float inv = 1.0f / sqrtf(var / static_cast<float>(cols) + eps);
+
+    // STATS_ONLY hands the two per-row scalars to whoever reads this norm's
+    // output instead of writing the output itself. That deletes the third
+    // pass -- one read of x and one write of y, half this kernel's DRAM
+    // traffic -- and the consumer pays nothing for it: see gather_rows<true>
+    // and gemm_gate<true>.
+    if (STATS_ONLY) {
+        if (mine) {
+            rmean[row0 + lane] = mean;
+            rinv[row0 + lane] = inv;
+        }
+        return;
+    }
 
     // The epilogue needs no chain, so it goes back to one row at a time with
     // the whole warp on it: coalesced in and out.
@@ -1001,7 +1057,7 @@ __global__ void attention_heads(const float* __restrict__ q,
 // generate()'s working set, in one place so the model can hold it.
 struct PhiTinyMoEModel::Scratch {
     DeviceBuffer<float> stream_a, stream_b, norm, attn, q, k, v, ctx, router;
-    DeviceBuffer<float> expert_in, gate, gate_up, rope, logits;
+    DeviceBuffer<float> expert_in, gate, gate_up, rope, logits, nstat;
     DeviceBuffer<int> index, pair, blk, eoff, tiles, pos, anc, anc_off;
 };
 
@@ -1069,6 +1125,21 @@ void PhiTinyMoEModel::DeviceLinear::forward(const float* x, float* y,
     cuda_check(cudaGetLastError(), "gemm_nt_bias launch");
 }
 
+// The router gate over a source that still needs `norm`'s epilogue applied.
+void PhiTinyMoEModel::DeviceLinear::forward_gate_norm(
+        const float* x, float* y, std::size_t rows, const float* nmean,
+        const float* ninv, const DeviceNorm& norm) const {
+    if (out != GATE_N || bias != nullptr || in % 4 != 0) {
+        throw std::runtime_error("forward_gate_norm: not the router gate shape");
+    }
+    gemm_gate<true><<<static_cast<unsigned>((rows + GATE_BM - 1) / GATE_BM),
+                      GATE_THREADS>>>(x, weight, y, static_cast<int>(rows),
+                                      static_cast<int>(in),
+                                      static_cast<int>(out),
+                                      nmean, ninv, norm.weight, norm.bias);
+    cuda_check(cudaGetLastError(), "gemm_gate(norm) launch");
+}
+
 void PhiTinyMoEModel::DeviceLinear::forward_resid(const float* x, float* y,
                                                   const float* resid,
                                                   std::size_t rows) const {
@@ -1116,6 +1187,21 @@ void PhiTinyMoEModel::DeviceNorm::forward(const float* x, float* y,
                                            static_cast<int>(cols),
                                            apss26::NORM_EPS);
     cuda_check(cudaGetLastError(), "layer_norm_rows launch");
+}
+
+void PhiTinyMoEModel::DeviceNorm::forward_stats(const float* x, float* rmean,
+                                                float* rinv,
+                                                std::size_t rows) const {
+    if (cols % NORM_CHUNK != 0) {
+        throw std::runtime_error("layer norm width is not a multiple of the staging chunk");
+    }
+    const unsigned blocks =
+        static_cast<unsigned>((rows + NORM_ROWS - 1) / NORM_ROWS);
+    layer_norm_rows<true><<<blocks, NORM_ROWS>>>(x, weight, bias, nullptr,
+                                                 static_cast<int>(rows),
+                                                 static_cast<int>(cols),
+                                                 apss26::NORM_EPS, rmean, rinv);
+    cuda_check(cudaGetLastError(), "layer_norm_rows(stats) launch");
 }
 
 PhiTinyMoEModel::DeviceMoE::DeviceMoE(const ModelLoader& loader, std::size_t layer_idx)
@@ -1385,6 +1471,10 @@ void PhiTinyMoEModel::generate(
     int* d_anc = sc.anc.reserve(anc.size());
     int* d_anc_off = sc.anc_off.reserve(anc_off.size());
     float* d_rope = sc.rope.reserve(rope.size());
+    // The post-attention norm's per-row mean and 1/sigma, handed to whichever
+    // kernel applies its epilogue.
+    float* d_nmean = sc.nstat.reserve(2 * total);
+    float* d_ninv = d_nmean + total;
     // A node's position is its depth in the trie.
     cuda_check(cudaMemcpy(d_pos, node_depth.data(), total * sizeof(int),
                           cudaMemcpyHostToDevice), "cudaMemcpy positions");
@@ -1442,7 +1532,7 @@ void PhiTinyMoEModel::generate(
     // a single-threaded host gather of the same 255 MB plus its upload.
     cuda_check(cudaMemcpy(d_index, node_token.data(), total * sizeof(int),
                           cudaMemcpyHostToDevice), "cudaMemcpy node tokens");
-    gather_rows<<<static_cast<unsigned>(total), 256>>>(
+    gather_rows<><<<static_cast<unsigned>(total), 256>>>(
         d_embeddings_, d_index, d_hidden, apss26::HIDDEN_SIZE);
     cuda_check(cudaGetLastError(), "embedding gather launch");
     tick(t_h2d);
@@ -1466,14 +1556,17 @@ void PhiTinyMoEModel::generate(
         layer.o_proj.forward_resid(d_ctx, d_attn, d_hidden, total);
         tick(t_gemm);
 
-        // o_proj has consumed q/k/v, so d_norm is free to take the
-        // post-attention norm -- which is also the expert gather source.
-        layer.post_norm.forward(d_attn, d_norm, total);
+        // The post-attention norm hands over its two per-row scalars and
+        // stops there: both its consumers below read d_attn and apply the
+        // epilogue themselves, so the norm's third pass -- 255 MB read plus
+        // 255 MB written -- never runs. d_norm is not written at all here.
+        layer.post_norm.forward_stats(d_attn, d_nmean, d_ninv, total);
         tick(t_norm);
 
         // MoE: route on the host (16 scores per token), then run each expert
         // over its own gathered rows and scatter the halves back.
-        layer.moe.gate.forward(d_norm, d_router, total);
+        layer.moe.gate.forward_gate_norm(d_attn, d_router, total,
+                                         d_nmean, d_ninv, layer.post_norm);
         tick(t_gemm);
         // Routing runs on the device: the 997 KB of scores no longer come back
         // and the packed layout is built where it is used. The tile count stays
@@ -1487,8 +1580,9 @@ void PhiTinyMoEModel::generate(
         cuda_check(cudaGetLastError(), "routing kernels");
         tick(t_d2h);
 
-        gather_rows<<<static_cast<unsigned>(packed_rows), 256>>>(
-            d_norm, d_index, d_expert_in, apss26::HIDDEN_SIZE);
+        gather_rows<true><<<static_cast<unsigned>(packed_rows), 256>>>(
+            d_attn, d_index, d_expert_in, apss26::HIDDEN_SIZE,
+            d_nmean, d_ninv, layer.post_norm.weight, layer.post_norm.bias);
         gemm_grouped<<<dim3((2 * FFDIM + GRP_BN - 1) / GRP_BN, max13), GEMM_THREADS>>>(
             d_expert_in, layer.moe.w13_ptrs, d_gate_up, d_tiles,
             static_cast<int>(apss26::HIDDEN_SIZE), static_cast<int>(2 * FFDIM));

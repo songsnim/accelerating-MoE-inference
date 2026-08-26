@@ -24,6 +24,8 @@ public:
                          std::vector<std::vector<int>>& generated_ids) const;
 
 private:
+    struct DeviceNorm;
+
     // A Linear whose weight lives in device memory. The host copy is dropped
     // right after the upload, which happens during model construction.
     struct DeviceLinear {
@@ -40,6 +42,10 @@ private:
         void free();
         // y[rows, out] = x[rows, in] * weight[out, in]^T + bias
         void forward(const float* x, float* y, std::size_t rows) const;
+        // The router gate, with `norm`'s epilogue applied to x on the way in.
+        void forward_gate_norm(const float* x, float* y, std::size_t rows,
+                               const float* nmean, const float* ninv,
+                               const DeviceNorm& norm) const;
         // The same, plus `resid[rows, out]` added in the epilogue.
         void forward_resid(const float* x, float* y, const float* resid,
                            std::size_t rows) const;
@@ -60,6 +66,10 @@ private:
         void free();
         // y[rows, cols] = normalise(x[rows, cols]) * weight + bias
         void forward(const float* x, float* y, std::size_t rows) const;
+        // Only the per-row mean and 1/sigma; the epilogue is left to the
+        // consumer, which saves this norm a read of x and a write of y.
+        void forward_stats(const float* x, float* rmean, float* rinv,
+                           std::size_t rows) const;
 
         float* weight = nullptr;
         float* bias = nullptr;
