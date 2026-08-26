@@ -4,6 +4,8 @@
 제출 기록은 EXP-017 시점 **523.4 seq/s (1위/12)**.
 남은 시간 분해(b0): **gemm 0.947 (50.3%)** · moe 0.602 (31.9%) · norm 0.117 · attn 0.103 · resid 0.058 · lm_head 0.029.
 근거: `exploration-003.md`(2위 라인 대조) + EXP-008 ncu 실측 + `moeoptimizationlog.html` 대조.
+이론 상한과 남은 레버의 크기 순서는 **`upper-bound.md`** (절대 상한 1,130 seq/s,
+확인된 레버를 다 먹으면 630, 그 사이는 미지).
 
 ## 순서
 
