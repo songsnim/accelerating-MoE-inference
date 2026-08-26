@@ -335,6 +335,120 @@ void gemm_nt_bias_resid(const float* __restrict__ a,
         a, b, bias, c, resid, nullptr, blockIdx.y * PROJ_BM, m, k, n);
 }
 
+// Router gate only: `out` is 16, against a 128-wide output tile. 112 of every
+// 128 columns are computed and thrown away -- measured 1.11 ms per layer at
+// `sm__pipe_fma_cycles_active` 70.2%, the highest FFMA rate of any kernel in
+// the model, spending 87.5% of it on columns nothing reads. 32 layers of that
+// is ~35 ms of base-clock time.
+//
+// Each x element feeds only 16 MACs -- 8 flop per byte -- so this shape is DRAM
+// bound, not issue bound: 255 MB of activations per layer at ~800 GB/s is
+// 0.32 ms, under a third of what the tiled kernel spends. The tile just has to
+// be the right shape, 64 rows x 16 experts instead of 128 x 128.
+//
+// Staging is not optional here, and measuring the version without it is what
+// showed why. A register-only kernel (thread = 4 rows x 1 expert, x and w read
+// straight from global) hit exactly the ideal DRAM traffic, 255.7 MB, at 23% of
+// DRAM peak and 6.8% FFMA -- and was still no faster than the wasteful tile,
+// because `l1tex` sat at 70%. With one expert per lane, 16 of a warp's 32 lanes
+// ask for the same address, so a load instruction moves 32 B of distinct data
+// and the kernel runs out of L1 *requests* long before bandwidth. Staging turns
+// those into one coalesced global load per thread plus a broadcast out of
+// shared.
+//
+// Each output still accumulates k-ascending into one register with
+// `acc += a * b`, the same sequence gemm_nt_bias produced. That matters more
+// here than anywhere else: these scores feed a top-2 argmax, so any drift at
+// all reroutes a borderline token and changes the answer wholesale.
+constexpr int GATE_N = 16;    // experts; also the output width this kernel takes
+constexpr int GATE_BM = 64;   // rows per block
+constexpr int GATE_TM = 4;    // rows per thread
+constexpr int GATE_THREADS = (GATE_BM / GATE_TM) * GATE_N;
+constexpr int GATE_SPAD = 32;  // multiple of 32: the row stride adds no bank offset
+static_assert(GATE_THREADS == 256, "gate block is not 256 threads");
+static_assert(GATE_BM * BK / 4 == GATE_THREADS, "A staging is not one float4");
+
+__global__ __launch_bounds__(GATE_THREADS)
+void gemm_gate(const float* __restrict__ a, const float* __restrict__ b,
+               float* __restrict__ c, int m, int k, int n) {
+    // `as` carries the same k-group column shift as gemm_nt_body -- see SPAD.
+    __shared__ __align__(16) float as[2][BK][GATE_BM + GATE_SPAD];
+    // 16 experts x BK is small enough that `bs[p][tx]` is one broadcast
+    // wavefront per warp with no padding at all.
+    __shared__ __align__(16) float bs[2][BK][GATE_N];
+
+    const int tid = threadIdx.x;
+    const int m0 = blockIdx.x * GATE_BM;
+    const int ty = tid / GATE_N;            // 0..15 -> rows ty*GATE_TM ..
+    const int tx = tid % GATE_N;            // 0..15 -> this thread's expert
+
+    // A: GATE_BM rows x BK is exactly one float4 per thread.
+    const int lr = tid / (BK / 4);          // 0..63, row inside the tile
+    const int lc = (tid % (BK / 4)) * 4;    // 0, 4, 8, 12 inside the k window
+    const int sc = lr + lc * 2;             // shifted staging column
+    const int a_row = m0 + lr;
+    const bool a_ok = a_row < m;
+    const float* const ab = a + static_cast<long long>(a_row) * k + lc;
+    // B: 16 experts x BK is one float4 for each of the first 64 threads.
+    const bool b_ok = tid < GATE_N * (BK / 4);
+    const int be = b_ok ? lr : 0;           // 0..15, this thread's expert row
+    const float* const bb = b + static_cast<long long>(be) * k + lc;
+
+    float acc[GATE_TM] = {};
+
+    float4 av = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    float4 bv = av;
+    if (a_ok) av = *reinterpret_cast<const float4*>(ab);
+    if (b_ok) bv = *reinterpret_cast<const float4*>(bb);
+    as[0][lc + 0][sc] = av.x; as[0][lc + 1][sc] = av.y;
+    as[0][lc + 2][sc] = av.z; as[0][lc + 3][sc] = av.w;
+    if (b_ok) {
+        bs[0][lc + 0][be] = bv.x; bs[0][lc + 1][be] = bv.y;
+        bs[0][lc + 2][be] = bv.z; bs[0][lc + 3][be] = bv.w;
+    }
+    __syncthreads();
+
+    int cur = 0;
+    for (int kt = 0; kt < k; kt += BK) {
+        const bool more = kt + BK < k;
+        if (more) {
+            if (a_ok) av = *reinterpret_cast<const float4*>(ab + kt + BK);
+            if (b_ok) bv = *reinterpret_cast<const float4*>(bb + kt + BK);
+        }
+
+        const float (*ac)[GATE_BM + GATE_SPAD] = as[cur];
+        const float (*wc)[GATE_N] = bs[cur];
+#pragma unroll
+        for (int p = 0; p < BK; ++p) {
+            const float4 t = *reinterpret_cast<const float4*>(
+                &ac[p][ty * GATE_TM + gemm_kshift(true, p)]);
+            const float w = wc[p][tx];
+            acc[0] += t.x * w;
+            acc[1] += t.y * w;
+            acc[2] += t.z * w;
+            acc[3] += t.w * w;
+        }
+
+        if (more) {
+            const int nxt = cur ^ 1;
+            as[nxt][lc + 0][sc] = av.x; as[nxt][lc + 1][sc] = av.y;
+            as[nxt][lc + 2][sc] = av.z; as[nxt][lc + 3][sc] = av.w;
+            if (b_ok) {
+                bs[nxt][lc + 0][be] = bv.x; bs[nxt][lc + 1][be] = bv.y;
+                bs[nxt][lc + 2][be] = bv.z; bs[nxt][lc + 3][be] = bv.w;
+            }
+            __syncthreads();
+            cur = nxt;
+        }
+    }
+
+#pragma unroll
+    for (int i = 0; i < GATE_TM; ++i) {
+        const int row = m0 + ty * GATE_TM + i;
+        if (row < m) c[static_cast<long long>(row) * n + tx] = acc[i];
+    }
+}
+
 // One launch for all 16 experts of a layer. `tiles` holds three ints per row
 // tile -- expert, first row inside the packed activation buffer, rows left --
 // so blocks from different experts share one grid and one wave. Per expert the
@@ -897,6 +1011,14 @@ void PhiTinyMoEModel::DeviceLinear::forward(const float* x, float* y,
     // The kernel loads the K window as float4 without a k bound check; every
     // shape in this model has K divisible by BK.
     if (in % BK != 0) throw std::runtime_error("DeviceLinear: K not a multiple of BK");
+    // The router gate is the one projection narrower than an output tile.
+    if (out == GATE_N && bias == nullptr && in % 4 == 0) {
+        gemm_gate<<<static_cast<unsigned>((rows + GATE_BM - 1) / GATE_BM),
+                    GATE_THREADS>>>(x, weight, y, static_cast<int>(rows),
+                                    static_cast<int>(in), static_cast<int>(out));
+        cuda_check(cudaGetLastError(), "gemm_gate launch");
+        return;
+    }
     const dim3 grid(static_cast<unsigned>((out + PROJ_BN - 1) / PROJ_BN),
                     static_cast<unsigned>((rows + PROJ_BM - 1) / PROJ_BM));
     gemm_nt_bias<<<grid, GEMM_THREADS>>>(x, weight, bias, y,
