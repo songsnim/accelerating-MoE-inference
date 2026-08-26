@@ -40,6 +40,9 @@ private:
         void free();
         // y[rows, out] = x[rows, in] * weight[out, in]^T + bias
         void forward(const float* x, float* y, std::size_t rows) const;
+        // The same, plus `resid[rows, out]` added in the epilogue.
+        void forward_resid(const float* x, float* y, const float* resid,
+                           std::size_t rows) const;
 
         float* weight = nullptr;
         float* bias = nullptr;

@@ -128,11 +128,12 @@ __device__ __forceinline__ int gemm_col_slot(int tx, int j) {
 // past its last; everything else is the tile kernel unchanged, down to the
 // bound expressions -- writing them any other way moves ptxas off the
 // instruction schedule the projections were measured on.
-template <int BM, int BN, int TM, int TN>
+template <int BM, int BN, int TM, int TN, bool FUSE_RESID = false>
 __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
                                              const float* __restrict__ b,
                                              const float* __restrict__ bias,
                                              float* __restrict__ c,
+                                             const float* __restrict__ resid,
                                              int row0, int m, int k, int n) {
     // Each thread stages two float4 per matrix; that is what makes `lr`/`lr2`
     // cover the tile exactly once. A wider tile has to change the staging.
@@ -238,9 +239,15 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
         for (int j = 0; j < TN; ++j) {
             const int col = n0 + gemm_col_slot<BN>(tx, j);
             if (col >= n) continue;
+            const long long o = static_cast<long long>(row) * n + col;
             float v = acc[i][j];
             if (bias != nullptr) v += bias[col];
-            c[static_cast<long long>(row) * n + col] = v;
+            // The residual add, folded in where the value is already in a
+            // register: `v` here is the bit pattern the separate add_inplace
+            // pass used to read back, so adding the residual now gives the
+            // same float it did.
+            if (FUSE_RESID) v += resid[o];
+            c[o] = v;
         }
     }
 }
@@ -252,7 +259,25 @@ void gemm_nt_bias(const float* __restrict__ a,
                   float* __restrict__ c,
                   int m, int k, int n) {
     gemm_nt_body<PROJ_BM, PROJ_BN, PROJ_TM, PROJ_TN>(
-        a, b, bias, c, blockIdx.y * PROJ_BM, m, k, n);
+        a, b, bias, c, nullptr, blockIdx.y * PROJ_BM, m, k, n);
+}
+
+// o_proj only: `c = a * b^T + bias + resid`, the attention residual add folded
+// into the epilogue. The separate add_inplace pass over `c` cost three DRAM
+// trips per element (read c, read resid, write c) at 92.7% of peak -- it was at
+// the roofline, so the only way to make it cheaper was to delete it. Here the
+// residual read is one trip, into a kernel whose DRAM is ~4% busy.
+// A separate instantiation so the five unfused projections keep the exact SASS
+// they were measured on.
+__global__ __launch_bounds__(GEMM_THREADS, 2)
+void gemm_nt_bias_resid(const float* __restrict__ a,
+                        const float* __restrict__ b,
+                        const float* __restrict__ bias,
+                        float* __restrict__ c,
+                        const float* __restrict__ resid,
+                        int m, int k, int n) {
+    gemm_nt_body<PROJ_BM, PROJ_BN, PROJ_TM, PROJ_TN, true>(
+        a, b, bias, c, resid, blockIdx.y * PROJ_BM, m, k, n);
 }
 
 // One launch for all 16 experts of a layer. `tiles` holds three ints per row
@@ -271,7 +296,7 @@ void gemm_grouped(const float* __restrict__ a,
     // The grid is sized to the worst-case tile count, so the tail is empty.
     if (t[2] == 0) return;
     gemm_nt_body<GRP_BM, GRP_BN, GRP_TM, GRP_TN>(
-        a, weights[t[0]], nullptr, c, t[1], t[1] + t[2], k, n);
+        a, weights[t[0]], nullptr, c, nullptr, t[1], t[1] + t[2], k, n);
 }
 
 // dst[i, :] = src[index[i], :]
@@ -284,22 +309,27 @@ __global__ void gather_rows(const float* __restrict__ src,
     for (int c = threadIdx.x; c < cols; c += blockDim.x) out[c] = in[c];
 }
 
-// dst[t, :] = 0.5 * src[slot_lo(t), :] + 0.5 * src[slot_hi(t), :]
+// dst[t, :] = 0.5 * src[slot_lo(t), :] + 0.5 * src[slot_hi(t), :] + resid[t, :]
 // One block per row. The two halves are added low expert index first and
 // through an accumulator that starts at zero, which is exactly what the
-// zero-fill plus one launch per expert did before.
+// zero-fill plus one launch per expert did before. The MoE residual add is
+// folded in on the store for the same reason as the o_proj one -- `acc` holds
+// the value the separate pass read back -- except that this kernel is itself at
+// the roofline (91.9%), so it pays one extra DRAM trip to delete three.
 __global__ void moe_combine(const float* __restrict__ src,
                             const int* __restrict__ slot,
+                            const float* __restrict__ resid,
                             float* __restrict__ dst, int cols) {
     const int t = blockIdx.x;
     const float* lo = src + static_cast<long long>(slot[2 * t]) * cols;
     const float* hi = src + static_cast<long long>(slot[2 * t + 1]) * cols;
+    const float* res = resid + static_cast<long long>(t) * cols;
     float* out = dst + static_cast<long long>(t) * cols;
     for (int c = threadIdx.x; c < cols; c += blockDim.x) {
         float acc = 0.0f;
         acc += 0.5f * lo[c];
         acc += 0.5f * hi[c];
-        out[c] = acc;
+        out[c] = acc + res[c];
     }
 }
 
@@ -317,18 +347,6 @@ __global__ void silu_mul(const float* __restrict__ gate_up,
         const float x = gu[c];
         out[i] = (x / (1.0f + expf(-x))) * gu[f + c];
     }
-}
-
-// a[i] += b[i]
-__global__ void add_inplace_kernel(float* __restrict__ a,
-                                   const float* __restrict__ b, long long n) {
-    const long long i = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i < n) a[i] += b[i];
-}
-
-void add_inplace_device(float* a, const float* b, long long n) {
-    add_inplace_kernel<<<static_cast<unsigned>((n + 255) / 256), 256>>>(a, b, n);
-    cuda_check(cudaGetLastError(), "add_inplace_kernel launch");
 }
 
 // One block per row. The row is staged in shared memory, then a single thread
@@ -806,6 +824,19 @@ void PhiTinyMoEModel::DeviceLinear::forward(const float* x, float* y,
     cuda_check(cudaGetLastError(), "gemm_nt_bias launch");
 }
 
+void PhiTinyMoEModel::DeviceLinear::forward_resid(const float* x, float* y,
+                                                  const float* resid,
+                                                  std::size_t rows) const {
+    if (in % BK != 0) throw std::runtime_error("DeviceLinear: K not a multiple of BK");
+    const dim3 grid(static_cast<unsigned>((out + PROJ_BN - 1) / PROJ_BN),
+                    static_cast<unsigned>((rows + PROJ_BM - 1) / PROJ_BM));
+    gemm_nt_bias_resid<<<grid, GEMM_THREADS>>>(x, weight, bias, y, resid,
+                                               static_cast<int>(rows),
+                                               static_cast<int>(in),
+                                               static_cast<int>(out));
+    cuda_check(cudaGetLastError(), "gemm_nt_bias_resid launch");
+}
+
 PhiTinyMoEModel::DeviceNorm::DeviceNorm(const ModelLoader& loader,
                                         const std::string& weight_name,
                                         const std::string& bias_name) {
@@ -939,7 +970,7 @@ void PhiTinyMoEModel::generate(
     // itself is a device kernel and lands in t_h2d with the other uploads.
     const bool profile = std::getenv("APS_PROFILE") != nullptr;
     double t_embed = 0, t_norm = 0, t_h2d = 0, t_gemm = 0, t_d2h = 0,
-           t_attn = 0, t_moe = 0, t_resid = 0, t_lm = 0;
+           t_attn = 0, t_moe = 0, t_lm = 0;
     // `Tensor`'s constructor zero-fills the 131 MB output page by page: 69 ms
     // of host faulting that the D2H at the end overwrites in full. It needs
     // nothing from the GPU, so it runs alongside the 32 layers instead of
@@ -1128,10 +1159,8 @@ void PhiTinyMoEModel::generate(
             d_ctx, attn_scale);
         cuda_check(cudaGetLastError(), "attention kernels");
         tick(t_attn);
-        layer.o_proj.forward(d_ctx, d_attn, total);
+        layer.o_proj.forward_resid(d_ctx, d_attn, d_hidden, total);
         tick(t_gemm);
-        add_inplace_device(d_attn, d_hidden, static_cast<long long>(elements));
-        tick(t_resid);
 
         // o_proj has consumed q/k/v, so d_norm is free to take the
         // post-attention norm -- which is also the expert gather source.
@@ -1169,12 +1198,10 @@ void PhiTinyMoEModel::generate(
         // One pass per row instead of one launch per expert, so `d_next` is
         // written rather than zeroed and accumulated into.
         moe_combine<<<static_cast<unsigned>(total), 256>>>(
-            d_expert_out, d_slot, d_next, apss26::HIDDEN_SIZE);
+            d_expert_out, d_slot, d_attn, d_next, apss26::HIDDEN_SIZE);
         cuda_check(cudaGetLastError(), "moe kernels");
         tick(t_moe);
 
-        add_inplace_device(d_next, d_attn, static_cast<long long>(elements));
-        tick(t_resid);
         std::swap(d_hidden, d_next);
     }
 
@@ -1196,9 +1223,9 @@ void PhiTinyMoEModel::generate(
     if (profile) {
         std::fprintf(stderr,
                      "[profile] T=%zu  embed %.3f  norm %.3f  h2d %.3f  gemm %.3f  "
-                     "d2h %.3f  attn %.3f  moe %.3f  resid %.3f  lm_head %.3f\n",
+                     "d2h %.3f  attn %.3f  moe %.3f  lm_head %.3f\n",
                      total, t_embed, t_norm, t_h2d, t_gemm, t_d2h, t_attn, t_moe,
-                     t_resid, t_lm);
+                     t_lm);
     }
 }
 
