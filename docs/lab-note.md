@@ -1067,7 +1067,20 @@ RAII 하나 추가. 커널/연산은 한 줄도 안 바뀐다.
 69 ms 중 69 ms가 숨었다. 64코어 노드라 페이지 폴트 스레드가 메인 스레드의
 호스트 라우팅(0.054 s)과 커널 런치를 밀어내지 않는다.
 
-## 5. Next action
-같은 스레드에서 `cudaHostRegister`(13 ms)까지 태우면 D2H가 15 ms -> 5.6 ms.
-단 `cudaHostUnregister`(5.8 ms)를 측정 구간 안에서 갚아야 해서 실이득 ~3 ms.
-그보다 **호스트 라우팅 왕복 0.059 s**가 남은 최대 비-GEMM 항목.
+## 5. 남은 logits D2H 15 ms: 설계 2개 다 재보고 둘 다 기각
+"memcpy가 이득을 먹는다"에 대한 답은 "없앤다"가 아니라 "GPU 뒤로 숨긴다"인데,
+숨길 값이 작다.
+
+| 설계 | 방법 | 실이득 |
+|---|---|---|
+| A. register 겹치기 | 헬퍼 스레드에서 `cudaHostRegister`(13 ms, 숨김) -> D2H를 `logits`에 직행 5.6 ms, **memcpy 0** | 15 - 5.6 - **5.8**(unregister는 측정 구간 안) = **~3.6 ms** |
+| B. 청크 파이프라인 | lm_head를 행 청크로 쪼개 non-blocking 스트림 async D2H + pinned ring, memcpy를 다음 청크 GEMM 뒤로 숨김 | 마이크로벤치 46.3 -> 39.4 ms (33.5 ms 커널 기준). 실 GEMM 21 ms 환산 **~10~12 ms** |
+
+B가 원리적으로 맞지만 `cudaHostAlloc`이 **0.83 ms/MB**(16 MB에 13.6 ms, 이것도 숨겨야
+함) + 청크 GEMM + 이벤트 + 비블로킹 스트림 + memcpy 스레드. 0.5%에 과하다.
+근본 제약은 `Tensor`가 `std::vector<float>`이고 `tensor.h`가 수정 금지라 할당기를
+못 바꾸는 것. **plan의 "하지 않는 것"으로 이동.**
+
+## 6. Next action
+**호스트 라우팅 왕복 0.059 s**(router D2H 0.005 + 호스트 top-2/타일 빌드 0.054)가
+남은 최대 비-GEMM 항목 -> EXP-015.
