@@ -1271,7 +1271,10 @@ function bytes(b){
 function press(el,on){if(el)el.setAttribute('aria-pressed',on?'true':'false');}
 function dpr(cv){
   var d=Math.min(2,window.devicePixelRatio||1);
-  if(cv._logw===undefined){cv._logw=cv.width; cv._logh=cv.height;}
+  // Independent guards: resize() may have set _logw already, and a combined
+  // guard would then leave _logh undefined -> NaN height -> nothing paints.
+  if(cv._logw===undefined)cv._logw=cv.width;
+  if(cv._logh===undefined)cv._logh=cv.height;
   var w=cv._logw, h=cv._logh;
   if(cv._d!==d||cv.width!==Math.round(w*d)||cv.height!==Math.round(h*d)){
     if(cv.getAttribute('data-wide')){cv.style.width=w+'px'; cv.style.maxWidth='none';}
@@ -1281,7 +1284,12 @@ function dpr(cv){
   }
   var g=cv.getContext('2d'); g.setTransform(d,0,0,d,0,0); g.clearRect(0,0,w,h); return g;
 }
-function resize(cv,w){ if(cv._logw!==w){cv._logw=w; cv._d=null;} }
+// Safe in either call order: latches the logical height from the attribute
+// before dpr() ever runs, so a resize-first canvas still has a real height.
+function resize(cv,w){
+  if(cv._logh===undefined)cv._logh=cv.height;
+  if(cv._logw!==w){cv._logw=w; cv._d=null;}
+}
 function pos(cv,e){
   var r=cv.getBoundingClientRect();
   return {x:(e.clientX-r.left)*(cv._logw/r.width), y:(e.clientY-r.top)*(cv._logh/r.height)};
