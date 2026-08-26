@@ -99,6 +99,15 @@ private:
     // the measured region; the first generate() still pays for the cudaMalloc.
     struct Scratch;
 
+    // Host output buffer, page-locked so the 131 MB logits D2H runs at
+    // 26 GB/s instead of 8.8. cudaHostAlloc costs ~110 ms per 131 MB and the
+    // driver serialises it against in-flight kernels, so it is paid here, at
+    // construction, and generate() only hands the buffer over. The size is a
+    // fixed byte budget, not the benchmark's batch: a batch too large for it
+    // falls back to ordinary pageable memory.
+    static constexpr std::size_t PINNED_OUT_BYTES = 256ull << 20;
+    mutable Tensor pinned_out_;
+
     ModelLoader loader_;
     mutable std::unique_ptr<Scratch> scratch_;
     Tensor embeddings_;

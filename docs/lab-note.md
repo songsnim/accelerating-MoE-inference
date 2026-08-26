@@ -2707,3 +2707,96 @@ pinned D2H의 값이 **−9 ms**(b7 1.723 s의 0.52%)로 실측 확정됐다. �
 - `anc`는 `sum(depth+1)`이라 길이에 quadratic이다. 길이 2048짜리 비공유 시퀀스 1024개면
   `anc_off`의 int32가 넘친다.
 - 활성화 ≈ 127 KB/node. 15 GB 가중치 옆이라 대략 6만 노드가 상한(현재의 약 4배).
+
+---
+
+# 탐색 — 새로 열린 4개 파일(`tensor.*`/`layer.*`)에 남은 레버
+
+## 1. `layer.h`/`layer.cu`는 레버가 **아니다** (dead code)
+
+`Linear`/`PhiMLP`/`PhiMoE`/`PhiAttention`/`PhiDecoderLayer`를 참조하는 코드가
+저장소에 **하나도 없다**. `tensor_ops::*`를 부르는 곳도 `layer.cu` 자신뿐이다.
+model.cu가 `Device*` 구조체로 전부 다시 구현했기 때문이다. 링크는 되지만 측정 구간에서
+한 줄도 실행되지 않는다. **기대 speedup 0.**
+
+## 2. `tensor.h`/`tensor.cu`의 접점은 정확히 2곳
+
+| 지점 | 내용 |
+|---|---|
+| `logits = Tensor({batch, VOCAB})` (alloc 스레드) | 131 MB 할당 + 제로필. 이미 레이어 뒤에 숨겨져 있다 |
+| `to_host(logits, d_logits)` | 131 MB pageable D2H — **여기가 전부다** |
+
+`at()`/`reshape()`/`fill()`은 prefill 경로에 없다. 즉 이 두 파일이 새로 여는 것은
+**logits D2H 하나**이고, 그 크기는 측정 구간 총 버스 트래픽(측정-G: 16.6 ms)과 같다.
+
+## 3. D2H를 줄이는 4가지 설계 실측 (`docs/microworld/meas-h-d2h-parallel-bench.cu`, b5)
+
+131.3 MB, 목적지는 P를 뺀 전부가 평범한 pageable 호스트 메모리:
+
+| 설계 | 시간 | 필요한 것 |
+|---|---|---|
+| **A** pageable `cudaMemcpy` 1회 (현재) | **14.96 ~ 15.66 ms** (8.8 GB/s) | — |
+| B pageable를 호스트 스레드 2/4/8/16개로 분할 | 16.59 ~ 27.50 ms (**전부 악화**) | 없음 |
+| S 고정 pinned staging(16/32/64 MB×2) + 스레드 memcpy | 12.77 ~ 17.99 ms (노이즈, 최선 −2 ms) | 구간 밖 staging |
+| **P** 목적지 자체를 pinned | **5.03 ms** (26.1 GB/s) | **tensor.h** |
+
+- **B 기각**: 드라이버의 pageable 경로를 스레드로 쪼개면 오히려 느려진다. staging
+  bounce 버퍼 경합이지 호스트 memcpy 대역폭 문제가 아니다.
+- **S 기각**: 측정-G §4의 단일 스레드 결론이 멀티스레드에서도 유지된다. pageable
+  목적지에 쓰는 비용(write-allocate)이 벽이라 DMA를 아무리 겹쳐도 8~10 GB/s다.
+- **P만 유효**: 3배. **호스트 memcpy를 아예 없애는 것**이 유일한 길이고, 그건
+  `Tensor`의 저장소를 바꿔야만 된다 = 정확히 이번에 열린 파일.
+
+`cudaHostAlloc` 131 MB = 110.9 ms이고, EXP-030이 이걸 구간 안에서 치르면 **+114 ms**
+(다른 스레드에 얹어도 컨텍스트 락으로 메인 스레드의 launch를 막는다)임을 실측했다.
+⇒ **구간 밖 할당이 유일한 경로.**
+
+---
+
+# EXP-033 — pinned 출력 버퍼를 생성자에서 예약 (채택)
+
+## 1. Hypothesis
+모델이 생성자에서 고정 크기 pinned 버퍼를 잡아두고 `generate()`가 그것을 `logits`로
+넘기면, 구간 안 할당은 0이고 D2H만 15.0 → 5.0 ms가 된다. **−10 ms.**
+
+## 2. Design and Implementation
+- `tensor.h`/`tensor.cu`: 저장소를 `std::vector<float>` → `float* + size_ + capacity_ +
+  alloc_`. `Alloc::{Host,Pinned}`, rule-of-5, `reshape_within_capacity()`(예약 하나가
+  임의의 작은 batch를 담도록). 복사는 항상 Host(pinning은 소유자만 요청한다).
+- `model.h`: `PINNED_OUT_BYTES = 256 MB`(= 2093행)를 **바이트 예산**으로 고정.
+  벤치마크 batch(1024)가 아니라 메모리 예산이고, 넘치면 pageable로 폴백한다.
+- `model.cu`: 생성자가 `pinned_out_`을 잡고, `generate()`는 (i) `logits`가 이미 pinned면
+  재사용 (ii) 아니면 예약을 `std::move` (iii) 둘 다 아니면 기존 alloc 스레드 경로.
+  소유권이 `logits`로 넘어가므로 `model_ref.reset()` 뒤의 `write_outputs`에도 안전하다.
+  커널·산술 무변경.
+
+## 3. Result
+출력 **bitwise 동일**, `-v` 0.000179291, `-n 1 -d -v` PASSED
+(decode는 8192 forward 중 8191개가 폴백 경로를 타므로 폴백도 같이 검증된다).
+
+`[profile]` b5: **`lm_head` 0.029 → 0.020** (−9 ms). 다른 항목 무변화.
+
+교차 실행 (같은 allocation, 3rep):
+
+| 노드 | a = HEAD(032) | b = 033 | Δ |
+|---|---|---|---|
+| b5 | 1.9740 / 1.9693 / 1.9689 | **1.9628 / 1.9604 / 1.9617** | **−8.3 ms** |
+| b7 | (1.7650) / 1.7299 / 1.7274 | **1.7184 / 1.7174 / 1.7217** | **−9.1 ms** |
+
+b7 throughput 592.4 → **595.6 seq/s** (+0.54%). 모델 로드 시간 변화 없음(5.94 → 5.96 s,
+노이즈 내). 실측이 예측(−10 ms)의 90%다 — §3의 5.03 ms는 순수 DMA이고 실제로는
+`cudaMemcpy` 호출 오버헤드가 붙는다.
+
+## 4. 대가 (사용자 판단 필요)
+**256 MB의 페이지 락(약 220 ms)이 측정 구간 밖, 모델 생성자로 나간다.**
+- 가드레일 문언상 금지 대상은 "구간 밖 **추론 연산**"과 "연산 결과 캐싱"이다.
+  버퍼 할당은 둘 다 아니고, 이미 가중치 1.5 GB `cudaMalloc`과 EXP-020의 scratch
+  `cudaFree`가 같은 위치에 있다.
+- 다만 **출력 버퍼 용량이 입력과 무관한 상수**가 된다. 벤치마크 크기(1024×VOCAB
+  = 131 MB)를 그대로 박지 않고 256 MB 예산으로 잡아 2배 여유를 뒀지만, 상수인 것은
+  사실이다. 이 해석을 받아들이지 않으면 이 커밋을 되돌리면 되고, 그 경우
+  **`tensor.*`/`layer.*` 4개 파일에서 회수 가능한 것은 0이다**(§1, §3의 B·S 기각).
+
+## 5. Next action
+버스는 닫혔다(잔여 D2H 5 ms). `layer.*`는 영구히 레버가 없다.
+남은 비-GEMM은 **norm 0.083 · attn 0.117**뿐이고 둘 다 model.cu 안이다.

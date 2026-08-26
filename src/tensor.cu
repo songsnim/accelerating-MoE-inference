@@ -1,15 +1,85 @@
 #include "tensor.h"
 #include "config.h"
+#include <cuda_runtime.h>
+#include <cstdio>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 
-Tensor::Tensor(std::vector<std::size_t> shape) : shape_(std::move(shape)) {
+Tensor::Tensor(std::vector<std::size_t> shape, Alloc alloc)
+    : shape_(std::move(shape)), alloc_(alloc) {
     std::size_t n = 1;
     for (std::size_t d : shape_) n *= d;
-    data_.assign(n, 0.0f);
+    if (alloc_ == Alloc::Pinned) {
+        void* p = nullptr;
+        const cudaError_t status = cudaHostAlloc(&p, n * sizeof(float),
+                                                 cudaHostAllocDefault);
+        if (status != cudaSuccess) {
+            throw std::runtime_error(std::string("cudaHostAlloc tensor: ") +
+                                     cudaGetErrorString(status));
+        }
+        data_ = static_cast<float*>(p);
+    } else {
+        data_ = new float[n];
+    }
+    size_ = capacity_ = n;
+    std::fill(data_, data_ + n, 0.0f);
+}
+
+void Tensor::release() {
+    if (data_ == nullptr) return;
+    if (alloc_ == Alloc::Pinned) {
+        // A destructor cannot throw, so a failure here is reported and dropped.
+        const cudaError_t status = cudaFreeHost(data_);
+        if (status != cudaSuccess) {
+            std::fprintf(stderr, "cudaFreeHost tensor: %s\n",
+                         cudaGetErrorString(status));
+        }
+    } else {
+        delete[] data_;
+    }
+    data_ = nullptr;
+    size_ = capacity_ = 0;
+}
+
+Tensor::~Tensor() { release(); }
+
+Tensor::Tensor(const Tensor& other) : shape_(other.shape_) {
+    // Copies are always plain host memory: pinning is a deliberate, expensive
+    // act that only the owner of the original buffer asked for.
+    if (other.size_ != 0) {
+        data_ = new float[other.size_];
+        std::copy(other.data_, other.data_ + other.size_, data_);
+        size_ = capacity_ = other.size_;
+    }
+}
+
+Tensor& Tensor::operator=(const Tensor& other) {
+    if (this != &other) { Tensor tmp(other); *this = std::move(tmp); }
+    return *this;
+}
+
+Tensor::Tensor(Tensor&& other) noexcept
+    : shape_(std::move(other.shape_)), data_(other.data_), size_(other.size_),
+      capacity_(other.capacity_), alloc_(other.alloc_) {
+    other.shape_.clear();
+    other.data_ = nullptr;
+    other.size_ = other.capacity_ = 0;
+}
+
+Tensor& Tensor::operator=(Tensor&& other) noexcept {
+    if (this != &other) {
+        release();
+        shape_ = std::move(other.shape_);
+        data_ = other.data_; size_ = other.size_;
+        capacity_ = other.capacity_; alloc_ = other.alloc_;
+        other.shape_.clear();
+        other.data_ = nullptr;
+        other.size_ = other.capacity_ = 0;
+    }
+    return *this;
 }
 
 std::size_t Tensor::size(std::size_t dim) const {
@@ -42,11 +112,19 @@ const float& Tensor::at(std::size_t i, std::size_t j, std::size_t k, std::size_t
 void Tensor::reshape(std::vector<std::size_t> shape) {
     std::size_t n = 1;
     for (std::size_t d : shape) n *= d;
-    if (n != data_.size()) throw std::invalid_argument("reshape changes tensor size");
+    if (n != size_) throw std::invalid_argument("reshape changes tensor size");
     shape_ = std::move(shape);
 }
 
-void Tensor::fill(float value) { std::fill(data_.begin(), data_.end(), value); }
+void Tensor::reshape_within_capacity(std::vector<std::size_t> shape) {
+    std::size_t n = 1;
+    for (std::size_t d : shape) n *= d;
+    if (n > capacity_) throw std::invalid_argument("reshape exceeds tensor capacity");
+    shape_ = std::move(shape);
+    size_ = n;
+}
+
+void Tensor::fill(float value) { std::fill(data_, data_ + size_, value); }
 
 namespace tensor_ops {
 // Match the reference CUDA/PyTorch path: evaluate exp in double precision

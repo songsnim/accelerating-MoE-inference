@@ -1125,7 +1125,8 @@ PhiTinyMoEModel::Layer::Layer(const ModelLoader& loader, std::size_t layer_idx)
       moe(loader, layer_idx) {}
 
 PhiTinyMoEModel::PhiTinyMoEModel(const std::string& model_file)
-    : loader_(model_file),
+    : pinned_out_({PINNED_OUT_BYTES / sizeof(float)}, Tensor::Alloc::Pinned),
+      loader_(model_file),
       embeddings_(loader_.load("model.embed_tokens.weight")),
       final_norm_(loader_, "model.norm.weight", "model.norm.bias"),
       lm_head_(loader_, "lm_head.weight", "lm_head.bias") {
@@ -1179,7 +1180,21 @@ void PhiTinyMoEModel::generate(
     // of host faulting that the D2H at the end overwrites in full. It needs
     // nothing from the GPU, so it runs alongside the 32 layers instead of
     // after them.
-    std::thread alloc_thread([&] { logits = Tensor({batch, apss26::VOCAB_SIZE}); });
+    const std::size_t need = batch * apss26::VOCAB_SIZE;
+    std::thread alloc_thread;
+    if (logits.alloc() == Tensor::Alloc::Pinned && logits.capacity() >= need) {
+        // A previous call already took the reserve; keep using it.
+        logits.reshape_within_capacity({batch, apss26::VOCAB_SIZE});
+    } else if (pinned_out_.capacity() >= need) {
+        logits = std::move(pinned_out_);
+        logits.reshape_within_capacity({batch, apss26::VOCAB_SIZE});
+    } else {
+        // Batch too large for the reserve: ordinary host memory, whose
+        // constructor zero-fills 131 MB page by page. That is 69 ms of host
+        // faulting the D2H overwrites in full, and it needs nothing from the
+        // GPU, so it runs alongside the 32 layers instead of after them.
+        alloc_thread = std::thread([&] { logits = Tensor({batch, apss26::VOCAB_SIZE}); });
+    }
     // Joined on the way out as well, so a cuda_check throw unwinds with its
     // message instead of reaching std::terminate through ~thread.
     struct JoinGuard {
@@ -1466,7 +1481,7 @@ void PhiTinyMoEModel::generate(
         d_norm, d_index, d_expert_in, apss26::HIDDEN_SIZE);
     float* d_logits = sc.logits.reserve(batch * apss26::VOCAB_SIZE);
     lm_head_.forward(d_expert_in, d_logits, batch);
-    alloc_thread.join();
+    if (alloc_thread.joinable()) alloc_thread.join();
     to_host(logits, d_logits);
     tick(t_lm);
 

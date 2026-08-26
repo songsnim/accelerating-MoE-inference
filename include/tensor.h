@@ -6,16 +6,29 @@
 
 class Tensor {
 public:
+    // Host storage kind. Pinned buffers reach 26 GB/s on the D2H that pageable
+    // ones get 8.8 GB/s for, but page-locking costs ~110 ms per 131 MB and the
+    // driver serialises it against in-flight work, so only a buffer allocated
+    // outside the measured region can afford it.
+    enum class Alloc { Host, Pinned };
+
     Tensor() = default;
-    explicit Tensor(std::vector<std::size_t> shape);
+    explicit Tensor(std::vector<std::size_t> shape, Alloc alloc = Alloc::Host);
+    ~Tensor();
+    Tensor(const Tensor& other);
+    Tensor& operator=(const Tensor& other);
+    Tensor(Tensor&& other) noexcept;
+    Tensor& operator=(Tensor&& other) noexcept;
 
     std::size_t ndim() const { return shape_.size(); }
-    std::size_t size() const { return data_.size(); }
+    std::size_t size() const { return size_; }
+    std::size_t capacity() const { return capacity_; }
+    Alloc alloc() const { return alloc_; }
     std::size_t size(std::size_t dim) const;
     const std::vector<std::size_t>& shape() const { return shape_; }
 
-    float* data() { return data_.data(); }
-    const float* data() const { return data_.data(); }
+    float* data() { return data_; }
+    const float* data() const { return data_; }
     float& operator[](std::size_t i) { return data_[i]; }
     const float& operator[](std::size_t i) const { return data_[i]; }
 
@@ -29,12 +42,18 @@ public:
     const float& at(std::size_t i, std::size_t j, std::size_t k, std::size_t l) const;
 
     void reshape(std::vector<std::size_t> shape);
+    // Re-target an already-allocated buffer at a smaller shape, so one
+    // reservation can serve any batch that fits in it.
+    void reshape_within_capacity(std::vector<std::size_t> shape);
     void fill(float value);
     void zero() { fill(0.0f); }
 
 private:
     std::vector<std::size_t> shape_;
-    std::vector<float> data_;
+    float* data_ = nullptr;
+    std::size_t size_ = 0, capacity_ = 0;
+    Alloc alloc_ = Alloc::Host;
+    void release();
     std::size_t offset(std::initializer_list<std::size_t> indices) const;
 };
 
