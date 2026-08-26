@@ -54,11 +54,6 @@ private:
     T* data_ = nullptr;
 };
 
-void to_device(float* device, const Tensor& host) {
-    cuda_check(cudaMemcpy(device, host.data(), host.size() * sizeof(float),
-                          cudaMemcpyHostToDevice), "cudaMemcpy H2D");
-}
-
 void to_host(Tensor& host, const float* device) {
     cuda_check(cudaMemcpy(host.data(), device, host.size() * sizeof(float),
                           cudaMemcpyDeviceToHost), "cudaMemcpy D2H");
@@ -598,6 +593,7 @@ PhiTinyMoEModel::PhiTinyMoEModel(const std::string& model_file)
       lm_head_(loader_, "lm_head.weight", "lm_head.bias") {
     layers_.reserve(apss26::NUM_LAYERS);
     for (std::size_t i = 0; i < apss26::NUM_LAYERS; ++i) layers_.emplace_back(loader_, i);
+    d_embeddings_ = device_copy(embeddings_);
 }
 
 PhiTinyMoEModel::~PhiTinyMoEModel() {
@@ -612,6 +608,8 @@ PhiTinyMoEModel::~PhiTinyMoEModel() {
     }
     final_norm_.free();
     lm_head_.free();
+    cudaFree(d_embeddings_);
+    d_embeddings_ = nullptr;
 }
 
 void PhiTinyMoEModel::forward(const std::vector<int>& input_ids, Tensor& logits) const {
@@ -634,8 +632,8 @@ void PhiTinyMoEModel::generate(
     const std::size_t batch = input_ids.size();
 
     // Stage timers, off unless APS_PROFILE is set, so measured runs carry no
-    // extra synchronisation. t_embed covers the trie build and the embedding
-    // gather, both of which are host work this experiment moves the cost of.
+    // extra synchronisation. t_embed is the trie build; the embedding gather
+    // itself is a device kernel and lands in t_h2d with the other uploads.
     const bool profile = std::getenv("APS_PROFILE") != nullptr;
     double t_embed = 0, t_norm = 0, t_h2d = 0, t_gemm = 0, t_d2h = 0,
            t_attn = 0, t_moe = 0, t_resid = 0, t_lm = 0;
@@ -706,13 +704,6 @@ void PhiTinyMoEModel::generate(
         dst[node_depth[n]] = static_cast<int>(n);
     }
 
-    Tensor hidden({total, apss26::HIDDEN_SIZE});
-    for (std::size_t n = 0; n < total; ++n) {
-        float* row = hidden.data() + n * apss26::HIDDEN_SIZE;
-        const float* src = embeddings_.data() +
-            static_cast<std::size_t>(node_token[n]) * apss26::HIDDEN_SIZE;
-        for (std::size_t h = 0; h < apss26::HIDDEN_SIZE; ++h) row[h] = src[h];
-    }
     tick(t_embed);
 
     // Everything except attention and the routing decision now runs on the
@@ -779,7 +770,14 @@ void PhiTinyMoEModel::generate(
         static_cast<unsigned>((apss26::HEAD_DIM + 1 + max_len) * sizeof(float));
     const float attn_scale = std::sqrt(static_cast<float>(apss26::HEAD_DIM));
 
-    to_device(d_hidden, hidden);
+    // The embedding lookup is a row gather out of a device-resident table:
+    // one 16 KB contiguous row per node, so it is fully coalesced. It replaces
+    // a single-threaded host gather of the same 255 MB plus its upload.
+    cuda_check(cudaMemcpy(d_index.get(), node_token.data(), total * sizeof(int),
+                          cudaMemcpyHostToDevice), "cudaMemcpy node tokens");
+    gather_rows<<<static_cast<unsigned>(total), 256>>>(
+        d_embeddings_, d_index.get(), d_hidden, apss26::HIDDEN_SIZE);
+    cuda_check(cudaGetLastError(), "embedding gather launch");
     tick(t_h2d);
 
     Tensor router({total, apss26::NUM_EXPERTS});

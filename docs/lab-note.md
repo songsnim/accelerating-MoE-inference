@@ -939,3 +939,47 @@ b1은 이미 클럭이 낮아 잃을 것이 없다.
 
 `012b`는 성능상 중립이지만, 손대지 않은 `gemm_nt_bias`의 SASS가 리팩터링 전과 동일함을
 보장하므로 유지한다(누산 순서 불변 논증의 근거).
+
+---
+
+# EXP-013: embedding lookup을 디바이스로
+
+## 1. Hypothesis
+계획서 순서는 Q/O `cp.async`였으나 **구조적으로 막혀 있다**: 타일이 `as[BK][BM]`로
+전치되어 있고(스레드가 k 연속 float4를 읽어 shared 4개 행에 흩뿌린다) `cp.async`는
+global->shared 연속 복사만 된다. 전치를 버리면 내부 루프의 shared 로드가
+`LDS.128` 4개 -> `LDS.32` 16개가 되어 손해다. 타일 재설계급이라 보류.
+
+대신 EXP-011에서 처음 계측된 `embed 0.181` + `h2d 0.023`이 남은 최대 단일 항목이고,
+**전부 호스트 직렬 코드**다: 15,583행 x 16 KB = 255 MB를 CPU 1스레드로 모으고 다시
+255 MB를 올린다. 임베딩 테이블(525 MB)을 다른 가중치와 똑같이 로드 시점에 디바이스로
+올리면 이 단계는 커널 1개가 된다. 순수 복사라 산술 위험 0.
+
+## 2. Change (`src/model.cu`, `include/model.h`)
+- 생성자에서 `d_embeddings_ = device_copy(embeddings_)` (다른 가중치와 동일 취급).
+- 호스트 gather 루프와 `Tensor hidden`, `to_device()` 삭제. 대신 노드 토큰 id를
+  올리고 기존 `gather_rows`를 그대로 재사용 — 행이 16 KB 연속이라 완전 coalesced.
+- `t_embed`는 이제 **trie 구성만** 잰다.
+
+## 3. Result (노드 b0, 한 allocation 안에서 교차 2rep)
+
+| | embed | h2d | gemm | moe | elapsed | seq/s |
+|---|---|---|---|---|---|---|
+| EXP-012b | 0.180 / 0.186 | 0.029 / 0.033 | 1.088 / 1.086 | 0.780 | 2.5278 / 2.5494 | ~403 |
+| **EXP-013** | **0.002** | **0.004 / 0.003** | 1.086 / 1.090 | 0.782 | **2.3084 / 2.3066** | **~444** |
+
+**elapsed -0.23 s.** `cmp` -> **bitwise 동일**, 양쪽 PASSED.
+
+## 4. Analysis
+예측 -0.19 s를 넘겼다(-0.23). 다른 단계는 ms 단위로 불변 — 측정-B의 클럭 효과가
+없다. 임베딩 gather는 메모리 바운드라 전력 밀도를 올리지 않기 때문이고, 이는 측정-B의
+"컴퓨트 바운드 단계만 클럭 손해를 본다"는 결론과 일관된다.
+
+**trie 구성 자체는 2 ms**로 확정됐다(EXP-011에서 역산했던 "수 ms"의 직접 측정).
+
+## 5. Next action
+남은 것은 gemm 1.09(projection)와 moe 0.78뿐이고 둘 다 컴퓨트 바운드다.
+- **q/o_proj는 16.2 TF/s / 35.6 peak.** ncu 실측 stall은 barrier 9.4% +
+  long_scoreboard 14.8% + short_scoreboard 10.6%. `cp.async`가 막혔으므로 남은 길은
+  타일 재설계(register tile 확대 또는 k-major 레이아웃 + mma 스타일 인덱싱)다. 큰 작업.
+- 측정-B에 따라 **컴퓨트 밀도를 올리는 최적화의 기대값은 이론치의 97~98%**로 잡는다.

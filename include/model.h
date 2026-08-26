@@ -92,6 +92,9 @@ private:
 
     ModelLoader loader_;
     Tensor embeddings_;
+    // The same table on the device, so the per-token gather is a kernel
+    // instead of 255 MB of single-threaded host memcpy plus an upload.
+    float* d_embeddings_ = nullptr;
     DeviceNorm final_norm_;
     DeviceLinear lm_head_;
     std::vector<Layer> layers_;

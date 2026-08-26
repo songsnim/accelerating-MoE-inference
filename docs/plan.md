@@ -1,7 +1,7 @@
 # 실험 계획
 
-기준: EXP-011 완료. b5 기준 **2.653 s / 386.1 seq/s**.
-제출 기록은 EXP-010 시점 **309.3 seq/s**.
+기준: EXP-013 완료. b0 기준 **2.307 s / ~444 seq/s**.
+제출 기록은 EXP-012 시점 **408.4 seq/s**.
 근거: `exploration-003.md`(2위 라인 대조) + EXP-008 ncu 실측.
 
 ## 순서
@@ -12,14 +12,16 @@
 | **010** | **MoE W1/W3 fusion + grouped GEMM** — N=896(=7×128) 융합, expert를 `blockIdx.z` | −0.2~0.37 s | ncu 실측: 블록 40~72 / 164 슬롯(24~44% 점유) + N=448에 BN=128이라 **12.5% 패딩 낭비**. EXP-008이 만든 moe 퇴행(1.259→1.398) 상환. 누산 순서 불변 → `cmp` 판정 |
 | ~~011~~ | **Prefix trie** (완료 `47aff75`) | **−0.628 s 실측** | 19,803 → 15,583 행. elapsed 3.281 → 2.653 (b5), bitwise 동일. attn은 `qi` 직렬 루프 소멸로 −24.7% |
 | **012** | **expert w13 grouping** — (expert, rowtile) work queue | −0.19 s 이상 | 측정-A: w13 시간가중 wave 충전율 66%, 53%가 1 wave 미만 launch. trie로 expert당 행이 21% 줄어 충전율은 더 나빠졌다 |
-| 013 | Q/O `cp.async` 2-stage + XOR swizzle | −0.10 s | K/V로 확대 금지(저쪽 실측 0.3784→0.4545 s 역효과) |
-| 014 | GQA grouping + coalesced K staging | −0.05~0.10 s | 남은 attn 0.137 s. thread i가 key row `chain[i]`를 직접 읽어 **uncoalesced**(연속 thread 간격 `KVH·D`) |
+| ~~013~~ | **embedding lookup 디바이스 이전** (완료) | **−0.23 s 실측** | embed 0.181 + h2d 0.023 → 0.002 + 0.004. bitwise 동일. trie 구성 자체는 2 ms로 확정 |
+| **014** | GEMM 타일 재설계 (projection) | ? | q/o_proj 16.2 TF/s / 35.6 peak. gemm 1.09가 남은 최대 항목 |
+| 015 | GQA grouping + coalesced K staging | −0.05 s | 남은 attn 0.143 s. thread i가 key row `chain[i]`를 직접 읽어 **uncoalesced**(연속 thread 간격 `KVH·D`) |
 | 이후 | LayerNorm coalesced staging + fused residual −0.10 · device-side routing −0.07 · embedding OpenMP −0.10 · K/V projection fusion 소액 | | |
 
 ## 하지 않는 것
 
 | 항목 | 사유 |
 |---|---|
+| **Q/O `cp.async` 2-stage** | 현재 타일이 `as[BK][BM]` **전치** 레이아웃이라 `cp.async`(연속 복사)로 채울 수 없다. 전치를 버리면 내부 루프 shared 로드가 `LDS.128` 4개 → `LDS.32` 16개. 타일 재설계와 묶어야 한다 |
 | **Tensor Core (전 범위)** | 정확도 사망. split 3항·4항 모두 0.29916 FAILED이고 **4항을 넣어도 오차 불변** — 원인은 표현 절삭이 아니라 WMMA accumulator 연산 순서라 operand splitting으로 회생 불가. 합법 범위(lm_head + layer 31)는 실측 15 ms(0.35%) |
 | **CUDA Graph / launch 수 감소** | 독립 측정 2건 동일 결론. 저쪽 610 gap 합 2 ms(0.05%), 우리 3969 gap 합 8 ms |
 | **feature-major 레이아웃 전환** | ncu 실측: sectors/request 14.5~15.8(이상 16), dram_throughput 3.7~10.8%. 메모리 경로에 고칠 것 없음. 대가는 전 커널 재인덱싱 |
