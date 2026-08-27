@@ -168,7 +168,7 @@ __device__ __forceinline__ int gemm_col_slot(int tx, int j) {
 // kernel -- 511 MB read and 511 MB written per layer at the DRAM roofline --
 // folded into a staging step this kernel was running anyway.
 template <int BM, int BN, int TM, int TN, bool SWIZ, bool FUSE_RESID = false,
-          int COMBINE = 0, bool AGATHER = false>
+          int COMBINE = 0, bool AGATHER = false, bool FUSE_SILU = false>
 __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
                                              const float* __restrict__ b,
                                              const float* __restrict__ bias,
@@ -303,6 +303,63 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
             __syncthreads();
             cur = nxt;
         }
+    }
+
+    // w13 only: silu_mul's job, done where the values already are.
+    // The stacked weight's rows are interleaved at load time, so an even slot
+    // `j` holds a gate column and `j+1` the up column of the same pair
+    // (gemm_col_slot puts an even j and j+1 in adjacent columns) -- both in
+    // this thread's registers. The separate pass read [rows, 2f] back to write
+    // [rows, f], 167 MB per layer at 90% of DRAM peak: at the roofline, so the
+    // only way to make it cheaper was to delete it. Measured 6.38 ms over the
+    // model against +0.98 ms here. Storing an fp32 and reloading it is the
+    // identity, so the value the separate pass computed from is the one here
+    // and the result is bit-identical.
+    // tensor.cu evaluates exp in double; expf differs by ~1e-7 relative,
+    // which is four orders under the 3e-3 validation threshold.
+    // No bias and no residual on this GEMM, so neither is applied here.
+    if (FUSE_SILU) {
+        static_assert(TN % 2 == 0, "silu pairing needs an even TN");
+        // The silu goes through shared memory, not straight off `acc`.
+        // Computed in front of a live `acc[TM][TN]` it cost two loop-carried
+        // pointers: ptxas spilled 16 B and put four LDL at the top of the k
+        // loop, +6.0% on this kernel against the 1.6% the fusion saves.
+        // `as` is dead once the k loop ends, so parking `acc` there lets it
+        // die before the transcendental's temporaries are live and the loop
+        // keeps the allocation it was measured with. Each thread reads back
+        // only its own slots, so the one barrier is for the last k tile's
+        // readers, not for the hand-off.
+        constexpr int PROW = 16 / TN;             // rows parked per pass
+        static_assert(PROW >= 1 && TM % PROW == 0, "silu pass misses rows");
+        static_assert(PROW * TN * GEMM_THREADS <= 2 * BK * (BM + SPAD),
+                      "parked tile does not fit in `as`");
+        float* const sp = &as[0][0][0];
+        const int fcols = n >> 1;
+        __syncthreads();
+#pragma unroll
+        for (int pz = 0; pz < TM / PROW; ++pz) {
+#pragma unroll
+            for (int i = 0; i < PROW; ++i)
+#pragma unroll
+                for (int j = 0; j < TN; ++j)
+                    sp[(i * TN + j) * GEMM_THREADS + tid] = acc[pz * PROW + i][j];
+            // Rolled on purpose: unrolled, the transcendentals of a whole
+            // pass are live at once and ptxas spills the loop again.
+#pragma unroll 1
+            for (int q = 0; q < PROW * TN / 2; ++q) {
+                const int i = q / (TN / 2), j = (q % (TN / 2)) * 2;
+                const int row = m0 + ty * TM + pz * PROW + i;
+                const int col = n0 + gemm_col_slot<BN>(tx, j);
+                if (row >= m || col >= n) continue;
+                const float x = sp[(i * TN + j) * GEMM_THREADS + tid];
+                const float u = sp[(i * TN + j + 1) * GEMM_THREADS + tid];
+                c[static_cast<long long>(row) * fcols + (col >> 1)] =
+                    (x / (1.0f + expf(-x))) * u;
+            }
+        }
+        // The tail below is unreachable for this instantiation; nvcc says so
+        // (#128-D), which is what the early return buys.
+        return;
     }
 
 #pragma unroll
@@ -513,7 +570,7 @@ void gemm_gate(const float* __restrict__ a, const float* __restrict__ b,
 // 66% time-weighted wave fill on w13, 53% of its time in sub-one-wave
 // launches). Nothing about a row's arithmetic changes: the tile it lands in
 // does not enter the accumulation.
-template <bool AGATHER = false>
+template <bool AGATHER = false, bool FUSE_SILU = false>
 __global__ __launch_bounds__(GEMM_THREADS, 2)
 void gemm_grouped(const float* __restrict__ a,
                              const float* const* __restrict__ weights,
@@ -527,7 +584,8 @@ void gemm_grouped(const float* __restrict__ a,
     const int* const t = tiles + blockIdx.y * 3;
     // The grid is sized to the worst-case tile count, so the tail is empty.
     if (t[2] == 0) return;
-    gemm_nt_body<GRP_BM, GRP_BN, GRP_TM, GRP_TN, GRP_SWIZ, false, 0, AGATHER>(
+    gemm_nt_body<GRP_BM, GRP_BN, GRP_TM, GRP_TN, GRP_SWIZ, false, 0, AGATHER,
+                 FUSE_SILU>(
         a, weights[t[0]], nullptr, c, nullptr, nullptr, t[1], t[1] + t[2], k, n,
         arowmap, nmean, ninv, nw, nb);
 }
@@ -579,22 +637,6 @@ __global__ void gather_rows(const float* __restrict__ src,
         }
     } else {
         for (int c = threadIdx.x; c < cols; c += blockDim.x) out[c] = in[c];
-    }
-}
-
-// PhiMLP applies silu to the w1 branch and multiplies the w3 branch into it.
-// tensor.cu evaluates exp in double; expf differs by ~1e-7 relative, which is
-// four orders under the 3e-3 validation threshold.
-// gate_up holds one stacked GEMM's output, [rows, 2*f]: the w1 half then the
-// w3 half of the same row. n = rows * f.
-__global__ void silu_mul(const float* __restrict__ gate_up,
-                         float* __restrict__ out, int f, long long n) {
-    const long long i = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i < n) {
-        const long long row = i / f, c = i % f;
-        const float* gu = gate_up + row * 2 * f;
-        const float x = gu[c];
-        out[i] = (x / (1.0f + expf(-x))) * gu[f + c];
     }
 }
 
@@ -1116,7 +1158,7 @@ __global__ void attention_heads(const float* __restrict__ q,
 // generate()'s working set, in one place so the model can hold it.
 struct PhiTinyMoEModel::Scratch {
     DeviceBuffer<float> stream_a, stream_b, norm, attn, q, k, v, ctx, router;
-    DeviceBuffer<float> tail, gate, gate_up, rope, logits, nstat;
+    DeviceBuffer<float> tail, gate, rope, logits, nstat;
     DeviceBuffer<int> index, pair, blk, eoff, tiles, pos, anc, anc_off, last;
 };
 
@@ -1141,12 +1183,24 @@ PhiTinyMoEModel::DeviceLinear::DeviceLinear(const ModelLoader& loader,
     const Tensor b = loader.load(bottom);
     out = a.size(0) + b.size(0);
     in = a.size(1);
+    if (a.size(0) != b.size(0) || b.size(1) != in) {
+        throw std::runtime_error("stacked weight halves do not match");
+    }
     cuda_check(cudaMalloc(&weight, out * in * sizeof(float)),
                "cudaMalloc stacked weight");
-    cuda_check(cudaMemcpy(weight, a.data(), a.size() * sizeof(float),
-                          cudaMemcpyHostToDevice), "cudaMemcpy stacked weight top");
-    cuda_check(cudaMemcpy(weight + a.size(), b.data(), b.size() * sizeof(float),
-                          cudaMemcpyHostToDevice), "cudaMemcpy stacked weight bottom");
+    // Interleaved by row, not concatenated: destination row 2c is `top`'s row
+    // c and 2c+1 is `bottom`'s. The GEMM reads output column n from weight row
+    // n, so the two halves of a pair land in adjacent output columns and one
+    // thread ends up holding both -- that is what FUSE_SILU needs. The rows
+    // themselves are untouched and still read in ascending order, so the
+    // kernel's B access pattern is the one it was measured on.
+    const std::size_t rb = in * sizeof(float);
+    cuda_check(cudaMemcpy2D(weight, 2 * rb, a.data(), rb, rb, a.size(0),
+                            cudaMemcpyHostToDevice),
+               "cudaMemcpy stacked weight top");
+    cuda_check(cudaMemcpy2D(weight + in, 2 * rb, b.data(), rb, rb, b.size(0),
+                            cudaMemcpyHostToDevice),
+               "cudaMemcpy stacked weight bottom");
 }
 
 PhiTinyMoEModel::DeviceLinear::DeviceLinear(DeviceLinear&& other) noexcept
@@ -1496,7 +1550,6 @@ void PhiTinyMoEModel::generate(
     float* d_tnorm = sc.tail.reserve(2 * batch * apss26::HIDDEN_SIZE);
     float* d_tresid = d_tnorm + batch * apss26::HIDDEN_SIZE;
     float* d_gate = sc.gate.reserve(packed_max * FFDIM);
-    float* d_gate_up = sc.gate_up.reserve(packed_max * 2 * FFDIM);
     // `index` carries the MoE packing map.
     int* d_index = sc.index.reserve(packed_max);
     // Routing scratch: each row's two experts and the per-block per-sub-range
@@ -1701,21 +1754,18 @@ void PhiTinyMoEModel::generate(
         cuda_check(cudaGetLastError(), "routing kernels");
         tick(t_d2h);
 
-        // No expert-activation buffer and no gather pass: w13 reads the
-        // residual stream through the packing map and normalises each row as
-        // it stages it. d_attn stays live until COMBINE=2 reads it as the
-        // residual, which is after this.
-        gemm_grouped<true><<<dim3((2 * FFDIM + GRP_BN - 1) / GRP_BN,
-                                  static_cast<unsigned>(max13_r)),
-                             GEMM_THREADS>>>(
-            d_attn, layer.moe.w13_ptrs, d_gate_up, d_tiles,
+        // No expert-activation buffer, no gather pass and no silu pass: w13
+        // reads the residual stream through the packing map, normalises each
+        // row as it stages it, and applies silu to the pair it holds on the
+        // way out. d_attn stays live until COMBINE=2 reads it as the residual,
+        // which is after this. The GEMM's N is still 2*FFDIM; it writes FFDIM.
+        gemm_grouped<true, true><<<dim3((2 * FFDIM + GRP_BN - 1) / GRP_BN,
+                                        static_cast<unsigned>(max13_r)),
+                                   GEMM_THREADS>>>(
+            d_attn, layer.moe.w13_ptrs, d_gate, d_tiles,
             static_cast<int>(apss26::HIDDEN_SIZE), static_cast<int>(2 * FFDIM),
             d_index, d_nmean, d_ninv,
             layer.post_norm.weight, layer.post_norm.bias);
-        const long long activated =
-            static_cast<long long>(rows * apss26::TOP_K) * FFDIM;
-        silu_mul<<<static_cast<unsigned>((activated + 255) / 256), 256>>>(
-            d_gate_up, d_gate, static_cast<int>(FFDIM), activated);
         // w2 writes the residual stream directly: the lower-expert copies
         // first, then the higher ones, which add their own half and the
         // residual on top of what the first launch left. That deletes the
