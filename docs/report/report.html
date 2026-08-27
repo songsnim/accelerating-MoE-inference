@@ -93,13 +93,13 @@ figcaption { font-size: 6.2pt; color: var(--mut); line-height: 1.34; margin-top:
   <div class="stats">
     <div class="stat hi">
       <div class="k">최종 처리량 (b5)</div>
-      <div class="v">655.6 <small>seq/s</small></div>
-      <div class="n">느린 노드 b7 574.5 seq/s</div>
+      <div class="v">687.8 <small>seq/s</small></div>
+      <div class="n">3rep 최고 687.79(제출) · b7 604.0</div>
     </div>
     <div class="stat">
       <div class="k">baseline 대비</div>
-      <div class="v">19,700<small>×</small></div>
-      <div class="n">0.0333 → 655.6 seq/s</div>
+      <div class="v">20,651<small>×</small></div>
+      <div class="n">0.0333 → 687.8 seq/s</div>
     </div>
     <div class="stat">
       <div class="k">검증 (임계 3e-3)</div>
@@ -108,8 +108,8 @@ figcaption { font-size: 6.2pt; color: var(--mut); line-height: 1.34; margin-top:
     </div>
     <div class="stat">
       <div class="k">실험</div>
-      <div class="v">55 <small>건</small></div>
-      <div class="n">채택 35 · 기각 19 + 측정 12</div>
+      <div class="v">65 <small>건</small></div>
+      <div class="n">채택 39 · 기각 25 + 측정 12</div>
     </div>
   </div>
 
@@ -119,22 +119,22 @@ figcaption { font-size: 6.2pt; color: var(--mut); line-height: 1.34; margin-top:
     표의 <b>누적 seq/s</b>는 그 실험까지 반영한 처리량으로, §5 궤적과 같은 정규화 값이다(EXP-001·002는 n=8, 003 이후 n=1024).
   </p>
 
-  <h2>1. 성능 평가 결과 <span>— 자체 측정. <code>git HEAD 0cb5410</code> (EXP-055) · <code>./main -n 1024</code> · 노드당 한 allocation 안에서 3rep · 워밍업 없음</span></h2>
+  <h2>1. 성능 평가 결과 <span>— 자체 측정. <code>git HEAD 9970b05</code> (EXP-065) · <code>./main -n 1024</code> · 노드당 한 allocation 안에서 3rep · 워밍업 없음</span></h2>
   <table>
     <colgroup><col style="width:11%"><col style="width:12%"><col style="width:12%"><col style="width:12%"><col style="width:15%"><col style="width:16%"><col style="width:22%"></colgroup>
-    <thead><tr><th>노드</th><th class="num">rep1 (s)</th><th class="num">rep2 (s)</th><th class="num">rep3 (s)</th><th class="num">평균 elapsed</th><th class="num">평균 throughput</th><th>SM 클럭 / 전력 (부하 중위)</th></tr></thead>
+    <thead><tr><th>노드</th><th class="num">rep1 (s)</th><th class="num">rep2 (s)</th><th class="num">rep3 (s)</th><th class="num">평균 elapsed</th><th class="num">평균 throughput</th><th class="num">vs 최고</th></tr></thead>
     <tbody>
-      <tr><td class="id">b5</td><td class="num">1.5619</td><td class="num">1.5618</td><td class="num">1.5618</td><td class="num">1.5618 s</td><td class="num"><b>655.64 seq/s</b></td><td>1770 MHz / 294 W</td></tr>
-      <tr><td class="id">b6</td><td class="num">1.5743</td><td class="num">1.5686</td><td class="num">1.5670</td><td class="num">1.5700 s</td><td class="num">652.23 seq/s</td><td>1762 MHz / 296 W</td></tr>
-      <tr><td class="id">b0</td><td class="num">1.5791</td><td class="num">1.5792</td><td class="num">1.5809</td><td class="num">1.5797 s</td><td class="num">648.22 seq/s</td><td>1755 MHz / 302 W</td></tr>
-      <tr><td class="id">b1</td><td class="num">1.5874</td><td class="num">1.5797</td><td class="num">1.5770</td><td class="num">1.5813 s</td><td class="num">647.55 seq/s</td><td>1605 MHz / 278 W</td></tr>
-      <tr><td class="id">b7</td><td class="num">1.7831</td><td class="num">1.7814</td><td class="num">1.7832</td><td class="num">1.7825 s</td><td class="num">574.46 seq/s</td><td>1395 MHz / 217 W</td></tr>
+      <tr><td class="id">b5</td><td class="num">1.4975</td><td class="num">1.4888</td><td class="num">1.4915</td><td class="num">1.4926 s</td><td class="num"><b>686.06 seq/s</b></td><td class="num">—</td></tr>
+      <tr><td class="id">b6</td><td class="num">1.5011</td><td class="num">1.4975</td><td class="num">1.5020</td><td class="num">1.5002 s</td><td class="num">682.56 seq/s</td><td class="num">-0.5%</td></tr>
+      <tr><td class="id">b0</td><td class="num">1.5134</td><td class="num">1.5083</td><td class="num">1.5071</td><td class="num">1.5096 s</td><td class="num">678.32 seq/s</td><td class="num">-1.1%</td></tr>
+      <tr><td class="id">b1</td><td class="num">1.5082</td><td class="num">1.5108</td><td class="num">1.5107</td><td class="num">1.5099 s</td><td class="num">678.19 seq/s</td><td class="num">-1.1%</td></tr>
+      <tr><td class="id">b7</td><td class="num">1.6972</td><td class="num">1.6942</td><td class="num">1.6951</td><td class="num">1.6955 s</td><td class="num">603.96 seq/s</td><td class="num">-12.0%</td></tr>
     </tbody>
   </table>
   <p class="note">
-    <b>검증</b>(별도 런, 같은 빌드, b0, <code>./main -n 1024 -v</code>): <b>PASSED</b> · max abs diff <b>1.79e-4</b> · mean abs diff 1.27e-5 (임계 3e-3의 6%). 모델 로드 5.92 s는 측정 구간 외.
-    rep 내 편차는 최대 0.65%(b1)다. <b>노드 간 −12.4%는 코드가 아니라 GPU 클럭이다</b> — b7만 1395 MHz / 217 W에 고정되고 나머지 4개는 1605~1770 MHz / ~300 W로 전력 상한 근처다. 그래서 단일 대표값 대신 5개를 전부 싣는다.
-    원본 로그·클럭 샘플: <code>outputs/perf-eval-055/</code>.
+    <b>검증</b>: 위 전 런이 <code>-v</code> 동봉이며 모두 <b>PASSED</b> · max abs diff <b>1.79e-4</b> · mean abs diff 1.27e-5 (임계 3e-3의 6%) — 전 런 동일값. 모델 로드 ~6 s는 측정 구간 외.
+    rep 내 편차는 최대 <b>0.58%</b>이고 <b>노드 간 격차 −12.0%</b>는 코드가 아니라 GPU 클럭이다 — EXP-055 시점의 클럭 스윕에서 b7만 부하 중 1395 MHz / 217 W에 고정되고 나머지 4개는 1605~1770 MHz / ~300 W로 전력 상한 근처였다. 그래서 단일 대표값 대신 파티션 5개 노드를 전부 싣는다.
+    원본 로그: <code>outputs/perf-eval-065/</code> · 클럭 샘플: <code>outputs/perf-eval-055/</code>.
   </p>
 
 
@@ -299,19 +299,20 @@ figcaption { font-size: 6.2pt; color: var(--mut); line-height: 1.34; margin-top:
 
   <p class="note tight">
     표에 올리지 않은 채택 건: <b>008</b> shared 더블 버퍼 + 8×8 타일 — 실제로 작동한 것은 지연 은닉이 아니라 반복당 BAR.SYNC 2 → 1(15.5 → 19.9 TF/s, 1.04×) · <b>028</b> gate가 <code>out=16</code>인데 타일이 BN=128이라 112열(87.5%)을 버리므로 tall-skinny 전용 커널로(1.11 → 0.60 ms/층, 1.008×) · <b>009</b> softmax의 double <code>exp</code>를 128 lane에 분산(attn 1.59×) · <b>016</b> attention key를 32열 청크로 shared 스테이징 · <b>035·036</b> 나눗셈 호이스팅과 shared <code>float4</code> 로드(−62%) · <b>042</b> w13 가중치 행 인터리브로 silu를 에필로그로 · <b>046</b> norm 에필로그 독립 런치.
+    <b>EXP-056~065</b>(채택 4 · 기각 6, 누적 644 → 673): <b>060</b> FFMA 발사 순서를 j-외/i-내로 — 레지스터 뱅크 충돌 53% → 17%(<b>+2.28%</b>, 이 구간 최대) · <b>063</b> shared 스토어를 p 루프 중간으로(+1.23%) · <b>062</b> 레이어 0의 투영을 distinct 토큰으로(+0.81%) · <b>065</b> logits D2H를 lm_head GEMM 뒤로 숨김(+0.11~0.35%).
   </p>
 
   <h2>5. 처리량 궤적 <span>— x: 실험 인덱스, y: seq/s (log). 기각 실험은 코드를 원복했으므로 값이 유지된다</span></h2>
   <figure>
 __CHART__
     <figcaption>
-      각 실험의 같은-allocation A/B 비를 이어 붙여 <b>빠른 노드 기준으로 정규화</b>했다(체인 최종 643.5 대 §1의 b0 실측 648.2 — 0.7% 일치). EXP-000~002는 n=1/n=8, 003 이후는 n=1024. 로그축에서 후반이 평평하므로 EXP-016 이후를 선형 확대했다.
+      각 실험의 같은-allocation A/B 비를 이어 붙여 <b>빠른 노드 기준으로 정규화</b>했다(체인 최종 673.2 대 §1의 b5 실측 687.8 — 2.2% 차, 노드 클럭). EXP-000~002는 n=1/n=8, 003 이후는 n=1024. 로그축에서 후반이 평평하므로 EXP-016 이후를 선형 확대했다. 리더보드 제출값은 b5 실측 <b>687.793880 seq/s</b>다.
     </figcaption>
   </figure>
 
-  <h2>6. 기각 19건의 사유 <span>— 네 가지로 수렴한다</span></h2>
+  <h2>6. 기각 25건의 사유 <span>— 네 가지로 수렴한다</span></h2>
   <p class="note" style="margin-bottom:0">
-    도달한 천장은 <b>GEMM의 FMA 피크 70%</b>(= FFMA 명령비 89.5% × 발사율 78.5%, 측정-K)이고 그 두 항 모두 <b>128 레지스터 × 512 스레드 = 레지스터 파일 100%</b>에 막혀 있다. 대역폭 커널은 DRAM 88~93.5%로 이미 루프라인이다. 그래서 남은 시도는 전부 다음 네 형태로 실패했다. ① <b>병목이 아닌 자원을 비운다</b> — DRAM이 12~38%인 커널에서 트래픽·FLOP을 지워도 0 또는 손해(047, 053). ② <b>명령 수를 줄인다</b> — ptxas가 이미 숨기고 있어 live range 대가가 더 크다(049, 054). ③ <b>타일 모양을 바꾼다</b> — 포화한 파이프를 다른 포화한 파이프와 교환한다(022b, 050, 052). ④ <b>reduction을 재배치한다</b> — 라우터 top-2가 1e-7 섭동에 뒤집혀 검증 실패(051). 텐서코어는 044가 닫았다: GA102는 <b>TF32가 FP32 FFMA와 동률(38 TFLOP/s)</b>이라 이득이 FP16에만 있는데, 전 GEMM FP16 프로브가 max abs <b>4.34</b>(임계의 1448배)로 기각됐고 규칙상 양자화도 금지다.
+    도달한 천장은 <b>GEMM의 FMA 피크 70%</b>(= FFMA 명령비 89.5% × 발사율 78.5%, 측정-K)이고 그 두 항 모두 <b>128 레지스터 × 512 스레드 = 레지스터 파일 100%</b>에 막혀 있다. 대역폭 커널은 DRAM 88~93.5%로 이미 루프라인이다. 그래서 남은 시도는 전부 다음 네 형태로 실패했다. ① <b>병목이 아닌 자원을 비운다</b> — DRAM이 12~38%인 커널에서 트래픽·FLOP을 지워도 0 또는 손해(047, 053, 057, 061). ② <b>명령 수를 줄인다</b> — ptxas가 이미 숨기고 있어 live range 대가가 더 크다(049, 054, 059, 064). ③ <b>타일 모양을 바꾼다</b> — 포화한 파이프를 다른 포화한 파이프와 교환한다(022b, 050, 052, 056, 058). ④ <b>reduction을 재배치한다</b> — 라우터 top-2가 1e-7 섭동에 뒤집혀 검증 실패(051). 텐서코어는 044가 닫았다: GA102는 <b>TF32가 FP32 FFMA와 동률(38 TFLOP/s)</b>이라 이득이 FP16에만 있는데, 전 GEMM FP16 프로브가 max abs <b>4.34</b>(임계의 1448배)로 기각됐고 규칙상 양자화도 금지다.
   </p>
 
   <div class="foot"><span>제출자 aps17 송영재 · aps20 신정수 · 실험 기록 <span class="mono">docs/lab-note.md</span></span><span>2 / 2</span></div>

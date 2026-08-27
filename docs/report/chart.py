@@ -41,6 +41,10 @@ D = [
     (49,640.9,    False), (50,640.9,    False), (51,640.9,    False),
     (52,640.9,    False), (53,640.9,    False), (54,640.9,    False),
     (55,643.5,    True),
+    (56,643.5,    False), (57,643.5,    False), (58,643.5,    False),
+    (59,643.5,    False), (60,658.2,    True),  (61,658.2,    False),
+    (62,663.5,    True),  (63,671.7,    True),  (64,671.7,    False),
+    (65,673.2,    True),
 ]
 xs = [d[0] for d in D]
 ys = [d[1] for d in D]
@@ -62,13 +66,13 @@ ax.plot(ax_, ay_, "o", ms=4.2, mfc=SER, mec=SURF, mew=0.9, zorder=5,
 
 ax.set_yscale("log")
 ax.set_ylim(0.011, 2600)
-ax.set_xlim(-1.6, 61.0)
+ax.set_xlim(-1.8, 72.0)
 ax.yaxis.set_major_locator(LogLocator(base=10, numticks=6))
 ax.yaxis.set_minor_locator(LogLocator(base=10, subs=tuple(range(2, 10)), numticks=20))
 ax.yaxis.set_minor_formatter(NullFormatter())
 ax.set_yticks([0.01, 0.1, 1, 10, 100, 1000])
 ax.set_yticklabels(["0.01", "0.1", "1", "10", "100", "1000"])
-ax.set_xticks(list(range(0, 56, 5)))
+ax.set_xticks(list(range(0, 66, 5)))
 
 ax.grid(axis="y", color=GRID, lw=0.6, zorder=0)
 ax.grid(axis="y", which="minor", color=GRID, lw=0.3, alpha=0.55, zorder=0)
@@ -91,7 +95,8 @@ ANN = [
     (17, 515.7,  "017 bank conflict 1.09×",   (-2, 11), "center", "bottom"),
     (34, 605.6,  "034 GQA 블록",              (0,  12), "center", "bottom"),
     (40, 638.4,  "040 마지막 층 1024행",       (2,  12), "left",   "bottom"),
-    (55, 643.5,  "055\n643.5",                 (5,   0), "left",   "center"),
+    (60, 658.2,  "060 FFMA 발사순서",           (0,  12), "center", "bottom"),
+    (65, 673.2,  "065\n673.2",                 (5,   0), "left",   "center"),
 ]
 for x, y, t, (dx, dy), ha, va in ANN:
     ax.annotate(t, (x, y), textcoords="offset points", xytext=(dx, dy),
@@ -114,10 +119,10 @@ ins.plot([d[0] for d in tail if not d[2]], [d[1] for d in tail if not d[2]],
          "o", ms=2.6, mfc="#f4f3f0", mec=MUT, mew=0.8, zorder=4)
 ins.plot([d[0] for d in tail if d[2]], [d[1] for d in tail if d[2]],
          "o", ms=2.6, mfc=SER, mec="#f4f3f0", mew=0.6, zorder=5)
-ins.set_xlim(15.2, 56)
-ins.set_ylim(455, 675)
-ins.set_yticks([475, 550, 625])
-ins.set_xticks([20, 30, 40, 50])
+ins.set_xlim(15.2, 66.5)
+ins.set_ylim(455, 700)
+ins.set_yticks([475, 550, 625, 690])
+ins.set_xticks([20, 30, 40, 50, 60])
 ins.tick_params(colors=INK2, labelsize=5.2, length=1.6, width=0.5, pad=1.5)
 ins.grid(axis="y", color="#dedcd7", lw=0.45, zorder=0)
 for s in ("top", "right"):
@@ -125,7 +130,7 @@ for s in ("top", "right"):
 for s in ("left", "bottom"):
     ins.spines[s].set_color("#dedcd7")
     ins.spines[s].set_linewidth(0.5)
-ins.set_title("EXP-016~055 선형 확대", fontproperties=reg, fontsize=5.6,
+ins.set_title("EXP-016~065 선형 확대", fontproperties=reg, fontsize=5.6,
               color=INK2, pad=2.0)
 
 fig.savefig("/home/n8/aps17/.claude/jobs/fd41db1b/tmp/chart.svg",
@@ -133,4 +138,4 @@ fig.savefig("/home/n8/aps17/.claude/jobs/fd41db1b/tmp/chart.svg",
 fig.savefig("/home/n8/aps17/.claude/jobs/fd41db1b/tmp/chart.png",
             facecolor=SURF, dpi=200)
 print("saved")
-print("total speedup: %.0fx" % (643.5 / 0.0333))
+print('chain end 673.2; measured b5 687.79')
