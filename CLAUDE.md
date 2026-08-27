@@ -42,7 +42,7 @@
 - Record experiments at `docs/lab-note.md`, refer to `docs/note-format.md` for template.
     - 반드시 1개의 가설씩 실험을 진행해야 한다. 동시에 여러개를 바꿔버리면 뭐가 실제 레버인지 알 수 없다.
     - 여러 가설 중 가장 파급력이 클 만한 가설을 먼저 실험한다. 먼저 했을 때 이득이 크면서도 나중에 다른 실험에 미칠 잠재적인 위험성이 적으며, 롤백할 일을 최소화할 수 있도록 다음 실험을 결정해라. 
-    - speedup을 최대한 올려보겠다고 minor한 변경을 끼워넣을 필요 없이, 핵심 가설 중심으로 실험을 구성하라.
+    - ~speedup을 최대한 올려보겠다고 minor한 변경을 끼워넣을 필요 없이, 핵심 가설 중심으로 실험을 구성하라.~(deprecated, project 막판이므로 minor한 변경도 허용된다.)
     - 기록은 최대한 간결해야 하며, bloat을 쳐내고 load-bearing한 알짜 내용만 기록
     - 실험 1개마다 반드시 commit을 수행한다. 커밋 명은 <index>-<slug>
 - 실험 output binary는 `outputs/` 폴더에 저장
