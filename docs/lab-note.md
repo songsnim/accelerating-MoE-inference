@@ -4134,3 +4134,76 @@ G에 대해 **단조 악화**. 출력은 G=1·G=4 모두 base와 131 MB 바이�
 ## 5. Next action
 리포트에서 가져올 게 더 없다. 남은 자체 후보는 가격표 순으로
 w2 combine RMW(~1.0%), gate를 DRAM 루프라인까지(~0.5%), logits D2H 겹치기(~0.25%).
+# EXP-049 — w13의 중복 nw/nb 로드 제거 (기각 −0.36 ~ −0.75%)
+## 1. Background
+nsys 커널 표(b1, 합 1576 ms = 벽시계):
+
+| 커널 | ms | 인스턴스 | 클럭한계 fp32 대비 |
+|---|---|---|---|
+| `gemm_nt_bias` (q·k·v·lm_head) | 550.1 | 97 | ~69% |
+| **`gemm_grouped<1,1>` (w13)** | **362.9** | 32 | **~60%** |
+| `gemm_nt_bias_resid` (o_proj) | 357.0 | 32 | ~69.5% |
+| `gemm_grouped_combine<2>` (w2) | 99.0 | 32 | ~62% |
+| `gemm_grouped_combine<1>` (w2) | 91.6 | 32 | " |
+| `layer_norm_rows<1>` (stats) | 38.2 | 64 | DRAM 428 GB/s |
+| attention | 25.6 | 31 | |
+| `norm_apply` | 19.3 | 32 | DRAM 844 GB/s (**루프라인**) |
+| `gemm_gate` | 18.6 | 32 | |
+| `rope_rows<0>` | 11.8 | 31 | DRAM 루프라인 |
+
+투영은 측정-K가 닫은 70% 천장에 정확히 붙어 있다. **w13만 같은 128×128/8×8 타일로
+60%**다. ncu로 o_proj와 나란히 재보니(같은 프로파일 실행, 같은 클럭):
+
+| | o_proj | w13 |
+|---|---|---|
+| Compute (SM) Throughput | 77.13% | 71.47% |
+| Duration | 13.67 ms | 13.75 ms |
+| Executed Instructions | 4.622 G | 4.301 G (**−7%**) |
+| Warp Cycles / Issued Inst | 5.08 | 5.35 |
+| **global load 명령** | 19.98 M | **28.81 M (+44%)** |
+| **stall.long_scoreboard** | 2.49% | **7.14% (2.9배)** |
+| shared **store** bank conflict | 2.69 M | **63.18 M (23배)** |
+| DRAM Throughput | 31.82% | 11.44% |
+
+**같은 시간에 명령을 7% 덜 발사한다** — DRAM은 11%뿐이니 대역폭이 아니라 스톨이다.
++44% global load의 정체는 AGATHER의 `nw`/`nb`: `anorm`을 av·av2로 두 번 부르는데
+`col0`가 같은데도 `ok` 가드가 서로 달라 nvcc가 CSE를 못 하고 k청크마다 float4 쌍을
+**두 번** 읽는다.
+
+## 2. Hypothesis
+그 쌍을 k청크당 한 번만 읽으면 long_scoreboard가 내려가고 w13이 빨라진다.
+
+## 3. Design and Implementation
+두 판본:
+- (a) `anwb` 람다로 손수 호이스트해 `nwv`/`nbv`에 담고 두 apply가 그걸 쓴다.
+- (b) `anorm`에서 `ok` 가드만 삭제 — 같은 `col0`·가드 없음이라 nvcc가 스스로 CSE한다.
+  경계 밖 행은 `(0−0)*0*w + b`가 staging되지만 그 acc 행은 저장 때 건너뛰므로 무해.
+
+둘 다 레지스터 128 불변·spill 0, 출력 131 MB 바이트 동일, `-v` PASSED.
+
+## 4. Result — 기각
+같은 allocation 균형 교차(A=base, B=수정, A,B,B,A,A,B):
+
+| 판본 | 노드 | base | 수정 | Δ | moe 단계 |
+|---|---|---|---|---|---|
+| (a) 손수 호이스트 | b1 | 645.44 | 640.62 | **−0.75%** | 0.552 → 0.569 (**+17 ms**) |
+| (b) 가드만 삭제 | b7 | 571.16 | 569.13 | **−0.36%** | 0.625 → 0.633 (**+8 ms**) |
+
+명령을 줄였는데 느려진다. **ptxas가 이미 그 로드를 숨기고 있었고, 128레지스터 상한에서
+live range를 건드리면 아낀 명령보다 스케줄 손해가 크다.** (a)가 (b)보다 더 나쁜 것도
+같은 방향 — 손수 호이스트가 live range를 더 길게 늘인다.
+
+측정-K가 투영에서 얻은 결론(“k 루프는 닫혔고 남은 여유는 레지스터/shared 이중 제약에
+막혀 있다”)이 **w13에도 그대로** 적용된다. 47(rope), 49(nw/nb) 둘 다 같은 벽이다.
+
+남은 두 차이의 처분:
+- **shared store bank conflict 63.2 M**은 `GRP_SWIZ = false` 값이다. **EXP-039가 이미
+  기각**했다 — 스위즐은 `gemm_spad`를 4 → 32로 키우고 w2에서 레지스터 125 → 128 +
+  k 루프 spill 24 B(moe +31 ms)를 만들었다. w13은 **이미 128**이라 여유가 더 없다.
+- **타일 패딩 3.4%**(측정-K 실측)는 전문가별 부분 타일이라 구조적이다.
+
+## 5. Next action
+w13은 닫힌다. 다음 후보를 실측으로 고른다: `layer_norm_rows<1>`(stats)이 255 MB를
+**두 번** 훑어 DRAM 428 GB/s(루프라인의 51%)에 있고 38.2 ms를 쓴다 — 두 번째 패스가
+L2에 사는 덕이지만 행을 shared에 담으면 DRAM 패스가 1회로 줄어 최대 −18 ms(1.2%).
+그리고 w2의 두 launch 분할이 만드는 행 패딩 6.6%(≈12.6 ms).
