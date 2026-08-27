@@ -288,10 +288,39 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
                     *reinterpret_cast<const float4*>(&bc[p][gemm_col_slot<BN>(tx, j) + gemm_kshift(SWIZ, p)]);
                 bv4[j] = t.x; bv4[j + 1] = t.y; bv4[j + 2] = t.z; bv4[j + 3] = t.w;
             }
+            // j outer, i inner. The FMA sequence each output sees is
+            // unchanged -- acc[i][j] still takes exactly one
+            // `+= av4[i] * bv4[j]` per p, and p still ascends -- so the result
+            // is bit-identical. What changes is which operand ptxas hands the
+            // reuse cache, and with it the register bank conflicts.
+            //
+            // Ampere reads FFMA's three sources from a 2-bank register file and
+            // one of them comes from the reuse cache (820 of 1024 FFMAs in the
+            // k loop carry `.reuse`), so ~2.16 sources per FFMA go to the banks
+            // and collide whenever they share a parity. With i outer the
+            // reused operand is `av4[i]` and the two bank reads are `bv4[j]`
+            // (a 4-aligned float4 quad, parity alternating with j) and
+            // `acc[i][j]`, which ptxas scatters -- measured in the SASS:
+            //
+            //   conflicting FFMAs   i outer -> j outer
+            //   q/k/v/lm_head         52.8%      17.2%
+            //   w13                   51.9%      20.4%
+            //   w2 <1>/<2>         71.2/67.9%  14.2/13.5%
+            //
+            // With j outer the reused operand is `bv4[j]` and the bank reads
+            // are `av4[i]` and `acc[i][j]`; ptxas then lays the eight
+            // accumulators of one j in the parity opposite to `av4`'s quad, so
+            // the collision mostly disappears (`FFMA R81, R60, R12.reuse, R81`
+            // -- R60/R81 odd/even). Registers go 125 -> 127 (grouped 127 -> 128)
+            // with no spill and 2 blocks/SM either way.
+            //
+            // Writing the same thing as explicit 4x4 sub-blocks puts it back to
+            // 29-57%, and transposing `acc` or padding its rows changes
+            // nothing, so the loop order is the whole lever.
 #pragma unroll
-            for (int i = 0; i < TM; ++i)
+            for (int j = 0; j < TN; ++j)
 #pragma unroll
-                for (int j = 0; j < TN; ++j) acc[i][j] += av4[i] * bv4[j];
+                for (int i = 0; i < TM; ++i) acc[i][j] += av4[i] * bv4[j];
         }
 
         if (more) {
