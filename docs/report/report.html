@@ -1,0 +1,318 @@
+<title>Prefill 최적화 보고서</title>
+<style>
+@font-face { font-family: "NSKR"; src: url("fonts/NotoSansKR-Regular.ttf") format("truetype"); font-weight: 400; }
+@font-face { font-family: "NSKR"; src: url("fonts/NotoSansKR-Bold.ttf") format("truetype"); font-weight: 700; }
+
+@page { size: A4; margin: 0; }
+
+:root {
+  --ink:   #0b0b0b;
+  --ink2:  #40403d;
+  --mut:   #6f6e69;
+  --rule:  #d9d8d3;
+  --rule2: #ecebe7;
+  --band:  #f4f3f0;
+  --accent:#2a78d6;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: #fff; }
+body { font-family: "NSKR", sans-serif; color: var(--ink); -webkit-font-smoothing: antialiased; }
+
+.page {
+  width: 210mm; height: 297mm;
+  padding: 12mm 13mm 9mm 13mm;
+  background: #fff; page-break-after: always;
+  overflow: hidden; position: relative;
+}
+.page:last-child { page-break-after: auto; }
+
+/* masthead */
+.mast { border-bottom: 1.6px solid var(--ink); padding-bottom: 1.7mm; margin-bottom: 2.4mm; }
+h1 { font-size: 14pt; font-weight: 700; margin: 0; letter-spacing: -0.2px; }
+.sub { font-size: 7.5pt; color: var(--mut); margin-top: 1.0mm; }
+.sub b { color: var(--ink2); font-weight: 700; }
+.by { font-size: 7.5pt; margin-top: 1.3mm; color: var(--ink2); }
+.by b { font-weight: 700; color: var(--ink); }
+.by .lab { font-size: 6.2pt; color: var(--mut); letter-spacing: 0.3px; margin-right: 1.4mm; }
+
+/* stat strip */
+.stats { display: flex; gap: 1.9mm; margin-bottom: 2.4mm; }
+.stat { flex: 1; background: var(--band); border-radius: 1.3mm; padding: 1.4mm 2.0mm; }
+.stat .k { font-size: 5.8pt; color: var(--mut); letter-spacing: 0.2px; }
+.stat .v { font-size: 10.4pt; font-weight: 700; line-height: 1.1; margin-top: 0.3mm; }
+.stat .v small { font-size: 6.5pt; font-weight: 400; color: var(--mut); }
+.stat .n { font-size: 5.8pt; color: var(--mut); margin-top: 0.35mm; }
+.stat.hi .v { color: var(--accent); }
+
+/* sections */
+h2 { font-size: 8.8pt; font-weight: 700; margin: 0 0 1.4mm 0; padding-bottom: 0.8mm; border-bottom: 1px solid var(--rule); }
+h2 span { font-weight: 400; color: var(--mut); font-size: 7.1pt; }
+.note { font-size: 6.8pt; color: var(--ink2); line-height: 1.38; margin: 0 0 1.9mm 0; }
+.note b { font-weight: 700; color: var(--ink); }
+.note.tight { margin-bottom: 1.7mm; }
+
+/* tables */
+table { width: 100%; border-collapse: collapse; margin-bottom: 1.9mm; }
+th { font-size: 6.15pt; font-weight: 700; color: var(--mut); text-align: left;
+     padding: 0 1.4mm 0.75mm 0; border-bottom: 1px solid var(--rule);
+     letter-spacing: 0.2px; white-space: nowrap; }
+td { font-size: 6.75pt; line-height: 1.3; color: var(--ink2);
+     padding: 0.92mm 1.3mm 0.92mm 0; border-bottom: 1px solid var(--rule2); vertical-align: top; }
+tr:last-child td { border-bottom: 1px solid var(--rule); }
+td.id { font-weight: 700; color: var(--ink); white-space: nowrap; font-size: 6.5pt; }
+td.sp { text-align: right; font-weight: 700; color: var(--accent); white-space: nowrap; }
+td.cum { font-weight: 700; color: var(--ink); padding-right: 0; }
+td.sp.flat { color: var(--mut); font-weight: 400; }
+td b { color: var(--ink); font-weight: 700; }
+td code, .note code, .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 6.0pt; color: var(--ink); }
+td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+td.ok { font-weight: 700; color: #0f7a4d; white-space: nowrap; }
+
+.c1 { width: 5.5%; } .c2 { width: 28%; } .c3 { width: 29%; } .c4 { width: 26%; } .c5 { width: 6.5%; } .c6 { width: 5%; }
+.w1 { width: 22%; } .w2 { width: 31%; } .w3 { width: 47%; }
+
+/* figure */
+figure { margin: 0 0 1.9mm 0; }
+figure svg { width: 100%; height: auto; display: block; }
+figcaption { font-size: 6.2pt; color: var(--mut); line-height: 1.34; margin-top: 0.6mm; }
+
+.foot { position: absolute; bottom: 5.5mm; left: 13mm; right: 13mm;
+        font-size: 5.8pt; color: var(--mut);
+        border-top: 1px solid var(--rule2); padding-top: 1.1mm;
+        display: flex; justify-content: space-between; }
+</style>
+
+<div class="page">
+
+  <div class="mast">
+    <h1>Phi-tiny-MoE-instruct Prefill 병렬화 최적화 보고서</h1>
+    <div class="sub">RTX 3090 1장 · CUDA · <b>n=1024 (19,803 토큰 / trie 15,583 노드)</b> · 측정 대상은 <code>generate()</code> 구간 · 실험 기록 <code>docs/lab-note.md</code></div>
+    <div class="by"><span class="lab">제출자</span><b>aps17 송영재</b> · <b>aps20 신정수</b></div>
+  </div>
+
+  <div class="stats">
+    <div class="stat hi">
+      <div class="k">최종 처리량 (b5)</div>
+      <div class="v">655.6 <small>seq/s</small></div>
+      <div class="n">느린 노드 b7 574.5 seq/s</div>
+    </div>
+    <div class="stat">
+      <div class="k">baseline 대비</div>
+      <div class="v">19,700<small>×</small></div>
+      <div class="n">0.0333 → 655.6 seq/s</div>
+    </div>
+    <div class="stat">
+      <div class="k">검증 (임계 3e-3)</div>
+      <div class="v">1.79e-4</div>
+      <div class="n">max abs diff · PASSED</div>
+    </div>
+    <div class="stat">
+      <div class="k">실험</div>
+      <div class="v">55 <small>건</small></div>
+      <div class="n">채택 35 · 기각 19 + 측정 12</div>
+    </div>
+  </div>
+
+  <p class="note">
+    <b>방법론.</b> 실험 1건 = 가설 1개 = 커밋 1개. 노드별 SM 클럭이 부하 중 <b>1395~1770 MHz</b>로 갈려 같은 바이너리의 처리량이 <b>±12%</b> 움직인다(§1) — 그래서 모든 A/B는 <b>같은 srun allocation 안에서 교차 실행</b>했다.
+    <b>판정 기준은 출력 131 MB의 bitwise 동일(<code>cmp</code>)</b>이다 — EXP-004에서 layer_norm을 tree reduction으로 쓰자 router logit이 1e-7 흔들려 <b>top-2 expert 집합이 뒤집히고</b> 1024개 중 4개 시퀀스가 검증 실패했다. EXP-051이 재확인했다(합산 순서만 역순으로 바꿔 max diff 1.79e-4 → 1.91e-2, FAILED). 따라서 누산 순서 보존은 조심이 아니라 <b>필수 조건</b>이고, 이 제약이 이후 모든 설계를 결정한다.
+    표의 <b>누적 seq/s</b>는 그 실험까지 반영한 처리량으로, §5 궤적과 같은 정규화 값이다(EXP-001·002는 n=8, 003 이후 n=1024).
+  </p>
+
+  <h2>1. 성능 평가 결과 <span>— 자체 측정. <code>git HEAD 0cb5410</code> (EXP-055) · <code>./main -n 1024</code> · 노드당 한 allocation 안에서 3rep · 워밍업 없음</span></h2>
+  <table>
+    <colgroup><col style="width:11%"><col style="width:12%"><col style="width:12%"><col style="width:12%"><col style="width:15%"><col style="width:16%"><col style="width:22%"></colgroup>
+    <thead><tr><th>노드</th><th class="num">rep1 (s)</th><th class="num">rep2 (s)</th><th class="num">rep3 (s)</th><th class="num">평균 elapsed</th><th class="num">평균 throughput</th><th>SM 클럭 / 전력 (부하 중위)</th></tr></thead>
+    <tbody>
+      <tr><td class="id">b5</td><td class="num">1.5619</td><td class="num">1.5618</td><td class="num">1.5618</td><td class="num">1.5618 s</td><td class="num"><b>655.64 seq/s</b></td><td>1770 MHz / 294 W</td></tr>
+      <tr><td class="id">b6</td><td class="num">1.5743</td><td class="num">1.5686</td><td class="num">1.5670</td><td class="num">1.5700 s</td><td class="num">652.23 seq/s</td><td>1762 MHz / 296 W</td></tr>
+      <tr><td class="id">b0</td><td class="num">1.5791</td><td class="num">1.5792</td><td class="num">1.5809</td><td class="num">1.5797 s</td><td class="num">648.22 seq/s</td><td>1755 MHz / 302 W</td></tr>
+      <tr><td class="id">b1</td><td class="num">1.5874</td><td class="num">1.5797</td><td class="num">1.5770</td><td class="num">1.5813 s</td><td class="num">647.55 seq/s</td><td>1605 MHz / 278 W</td></tr>
+      <tr><td class="id">b7</td><td class="num">1.7831</td><td class="num">1.7814</td><td class="num">1.7832</td><td class="num">1.7825 s</td><td class="num">574.46 seq/s</td><td>1395 MHz / 217 W</td></tr>
+    </tbody>
+  </table>
+  <p class="note">
+    <b>검증</b>(별도 런, 같은 빌드, b0, <code>./main -n 1024 -v</code>): <b>PASSED</b> · max abs diff <b>1.79e-4</b> · mean abs diff 1.27e-5 (임계 3e-3의 6%). 모델 로드 5.92 s는 측정 구간 외.
+    rep 내 편차는 최대 0.65%(b1)다. <b>노드 간 −12.4%는 코드가 아니라 GPU 클럭이다</b> — b7만 1395 MHz / 217 W에 고정되고 나머지 4개는 1605~1770 MHz / ~300 W로 전력 상한 근처다. 그래서 단일 대표값 대신 5개를 전부 싣는다.
+    원본 로그·클럭 샘플: <code>outputs/perf-eval-055/</code>.
+  </p>
+
+
+  <h2>2. 구조상의 최적화 <span>— 연산을 어디서, 몇 번 하는가</span></h2>
+  <table>
+    <colgroup><col class="c1"><col class="c2"><col class="c3"><col class="c4"><col class="c5"><col class="c6"></colgroup>
+    <thead><tr><th>EXP</th><th>근거 (실측)</th><th>기법</th><th>Before → After</th><th class="num">Speedup</th><th class="num">누적 seq/s</th></tr></thead>
+    <tbody>
+      <tr><td class="id">001</td>
+        <td>모든 GEMM이 M≈19행, 층 가중치 470 MB를 시퀀스마다 재스트리밍</td>
+        <td>전 시퀀스를 <code>[T,4096]</code> 단일 활성 행렬로 배치화 + attention q·k 내적 130회 재계산 제거</td>
+        <td>시퀀스별 forward 1024회 → 19,803행이 32층을 1회 통과</td>
+        <td class="sp">2.88×</td><td class="num cum">0.13</td></tr>
+      <tr><td class="id">002</td>
+        <td><code>Tensor::at()</code> 경유 matmul이 shape 무관 1.2 GMAC/s = CPU 피크의 1%</td>
+        <td>q/k/v/o·lm_head를 자체 shared-tiled CUDA GEMM으로, 가중치 2.7 GB device 상주</td>
+        <td>연산량의 66%를 host → device</td>
+        <td class="sp">1.69×</td><td class="num cum">0.22</td></tr>
+      <tr><td class="id">003</td>
+        <td>프로파일: MoE가 <b>98.1%</b> (28.0 s / 28.6 s). GPU로 옮긴 projection은 0.15 s</td>
+        <td>MoE 전체를 커널화(gather → expert GEMM → silu·mul → scatter), expert 가중치 11.3 GB 상주</td>
+        <td>n=1024 전량이 2분 제한 안으로 진입</td>
+        <td class="sp">35.9×</td><td class="num cum">21.0</td></tr>
+      <tr><td class="id">004</td>
+        <td>host norm/resid/attn 20.1 s + 그 때문에 발생하는 PCIe 왕복 10.1 s = <b>53%</b></td>
+        <td>layer_norm·residual add 커널화, residual stream을 32층 내내 device 상주(double buffer)</td>
+        <td>층당 버스 왕복 → router logit 1건만 남김. d2h 7.5 → 0.85 s</td>
+        <td class="sp">2.02×</td><td class="num cum">42.5</td></tr>
+      <tr><td class="id">006</td>
+        <td>attention 관련이 2.54 s = <b>40%</b> (host 1.13 + q/k/v·context 버스 왕복 1.38)</td>
+        <td>RoPE + softmax attention 커널화. cos/sin 표만 host 계산 후 업로드(device trig는 1 ulp 차이로 라우팅을 뒤집음)</td>
+        <td>d2h 0.865 → <b>0.006 s</b> (144×), 활성값이 device를 떠나지 않음</td>
+        <td class="sp">1.61×</td><td class="num cum">260</td></tr>
+      <tr><td class="id">011</td>
+        <td>causal + 절대위치 RoPE ⇒ 앞 토큰이 같은 두 토큰은 32층 전부에서 동일 hidden state</td>
+        <td>행 단위를 토큰 → <b>prefix trie 노드</b>로 (순수 CSE, 산술 변경 0)</td>
+        <td>19,803 → <b>15,583 노드</b>(−21.3%). 행에 비례하는 전 항목 감소</td>
+        <td class="sp">1.24×</td><td class="num cum">372</td></tr>
+      <tr><td class="id">012</td>
+        <td>nsys: expert w13의 시간가중 wave 충전율 66%, 시간의 53%가 1 wave(164블록) 미만 launch</td>
+        <td>16개 expert의 행을 한 버퍼에 패킹하고 <b>(expert, rowtile) work queue</b>로 평탄화</td>
+        <td>launch 16 → 1, 충전율 49% → 85%</td>
+        <td class="sp">1.07×</td><td class="num cum">397</td></tr>
+      <tr><td class="id">013</td>
+        <td>embedding gather가 host 단일 스레드로 255 MB 수집 + 255 MB 업로드</td>
+        <td>embedding table 525 MB을 다른 가중치와 같이 로드 시점에 device로, <code>gather_rows</code> 재사용</td>
+        <td>0.180 → <b>0.002 s</b></td>
+        <td class="sp">1.10×</td><td class="num cum">437</td></tr>
+      <tr><td class="id">015</td>
+        <td>MoE 라우팅이 층마다 host를 왕복: score D2H + host top-2/타일 빌드 = 0.060 s (2.6%)</td>
+        <td>device counting-sort 3-pass 라우팅(count → scan → place)으로 host와 동일한 packed 레이아웃 재현</td>
+        <td>host 라우팅 삭제 + 층당 255 MB <code>cudaMemset</code>(총 8.2 GB) 삭제</td>
+        <td class="sp">1.03×</td><td class="num cum">465</td></tr>
+      <tr><td class="id">040</td>
+        <td>입력이 짧아(평균 19.3 토큰) lm_head가 실제로 읽는 행은 15,583 중 <b>1,024 (6.6%)</b></td>
+        <td>마지막 층의 q_proj·rope·attn·o_proj·norm·MoE만 1024행 경로로. k/v는 조상 키가 필요해 전 행 유지</td>
+        <td>마지막 층 58.2 → <b>13.4 ms</b>. 건너뛴 행은 아무도 안 읽으므로 비트 동일</td>
+        <td class="sp">1.025×</td><td class="num cum">638</td></tr>
+    </tbody>
+  </table>
+
+  <h2>3. 그 외 최적화 <span>— 커널 밖: host 작업 · 할당 수명 · 전송</span></h2>
+  <table>
+    <colgroup><col class="c1"><col class="c2"><col class="c3"><col class="c4"><col class="c5"><col class="c6"></colgroup>
+    <thead><tr><th>EXP</th><th>근거 (실측)</th><th>기법</th><th>Before → After</th><th class="num">Speedup</th><th class="num">누적 seq/s</th></tr></thead>
+    <tbody>
+      <tr><td class="id">014</td>
+        <td><code>logits</code> 131 MB의 <b>Tensor 할당+제로필이 69 ms</b>이고 그 제로는 직후 D2H가 덮어씀. GPU 무의존 host 작업</td>
+        <td>진입부에서 별도 스레드로 할당을 시작하고 D2H 직전에 join (<code>JoinGuard</code> RAII)</td>
+        <td>0.069 → <b>0.000 s</b>, 다른 구간 퇴행 0</td>
+        <td class="sp">1.030×</td><td class="num cum">450</td></tr>
+      <tr><td class="id">021</td>
+        <td>측정-E: 에필로그 <code>cudaFree</code> 24회(~1.5 GB)가 구간 안에서 <b>20.77 ms</b>, 그 동안 GPU idle</td>
+        <td>스크래치 24개를 모델 멤버로 올려 grow-only <code>reserve()</code>로 재사용, 해제는 모델 소멸자로</td>
+        <td>해제만 구간 밖으로 (<code>cudaMalloc</code>은 구간 안에 유지)</td>
+        <td class="sp">1.011×</td><td class="num cum">542</td></tr>
+      <tr><td class="id">033</td>
+        <td>D2H가 pageable 7.6 대 pinned 25.9 GB/s. 단 구간 안 page-lock은 <b>어느 스레드에 올려도 안 숨는다</b>(030 실측 +105 ms — 컨텍스트 락이 launch를 막음)</td>
+        <td><code>Tensor</code>에 pinned 할당자를 추가하고 생성자에서 256 MB 예산을 예약해 <code>std::move</code>로 넘김</td>
+        <td>D2H 15.0 → <b>5.0 ms</b>. 페이지 락 220 ms는 구간 밖(생성자)</td>
+        <td class="sp">1.005×</td><td class="num cum">587</td></tr>
+      <tr><td class="id">031<br>032</td>
+        <td>attention의 dynamic shared가 키 수에 선형(<code>516+136·nk</code> B)인데 블록 한도 48 KB에 걸림. 인덱스 버퍼는 <code>total &lt; batch/2</code>에서 오버런</td>
+        <td>shared 산정을 sliding window 기준으로, 48 KB 초과 시에만 <code>cudaFuncSetAttribute</code> opt-in</td>
+        <td>입력 길이 절벽 <b>357 → 741 토큰</b></td>
+        <td class="sp flat">방어</td><td class="num cum">—</td></tr>
+    </tbody>
+  </table>
+
+  <div class="foot"><span>제출자 aps17 송영재 · aps20 신정수</span><span>1 / 2</span></div>
+</div>
+
+<div class="page">
+
+  <h2>4. 커널 상의 최적화 <span>— 커널 내부: 타일 · shared 경로 · 융합. 전부 ncu/nsys 실측이 먼저이고 가설은 그 지표 하나를 겨눈다. 융합 기준(EXP-024): 루프라인(DRAM 90%+) 엘리먼트와이즈 커널은 빠르게 만들 수 없고 삭제만이 길이며, 계산 바운드 생산자의 유휴 DRAM에 접는다</span></h2>
+  <table>
+    <colgroup><col class="c1"><col class="c2"><col class="c3"><col class="c4"><col class="c5"><col class="c6"></colgroup>
+    <thead><tr><th>EXP</th><th>근거 (실측)</th><th>기법</th><th>Before → After</th><th class="num">Speedup</th><th class="num">누적 seq/s</th></tr></thead>
+    <tbody>
+      <tr><td class="id">005</td>
+        <td>thread당 출력 1개 → MAC마다 shared 2회 읽기. 실효 2.0 TFLOP/s = <b>피크의 6%</b></td>
+        <td>레지스터 타일 4×4 (64×64, BK=16). shared를 k-major 전치 저장 + <code>float4</code> 로드, <code>+4</code> 패딩으로 16 B 정렬 유지</td>
+        <td>shared 읽기/MAC 2 → 0.5. 피크 <b>6% → 44%</b></td>
+        <td class="sp">3.77×</td><td class="num cum">161</td></tr>
+      <tr><td class="id">010</td>
+        <td>ncu: expert N=448에 BN=128이면 <b>12.5% 폐기</b>, 블록도 80개(상주 164 슬롯의 49%)</td>
+        <td>w1‖w3를 행방향으로 쌓아 <b>N=896=7×128</b> 한 장으로 융합 (launch 2 → 1)</td>
+        <td>패딩 0, 충전율 49% → <b>85%</b>. 예측의 3배</td>
+        <td class="sp">1.08×</td><td class="num cum">300</td></tr>
+      <tr><td class="id">017</td>
+        <td>ncu: <code>bs</code> 읽기가 명령당 wavefront <b>5.0</b> · conflict <b>2.0</b>. 패딩으로는 불가(베이스가 회전만 함)</td>
+        <td>레인이 갖는 8열을 4열씩 <b>반 타일 떨어뜨려</b> quarter의 8레인이 32뱅크를 한 번씩 덮게 (<code>gemm_col_slot</code>)</td>
+        <td>conflict 2.0 → <b>0</b>, wavefront 5.0 → 3.0. <b>단일 실험 최대 레버</b></td>
+        <td class="sp">1.09×</td><td class="num cum">516</td></tr>
+      <tr><td class="id">019</td>
+        <td>ncu: FMA 59% · l1tex 63%로 <b>둘 다 미포화</b>, <code>long_scoreboard</code> 0.92 = 지연 바운드. 타일 형상 축은 산술로 닫힘</td>
+        <td>남은 축인 <code>BK</code>를 8 → 16 (2블록/SM 유지 최대폭) + <code>__launch_bounds__</code>로 점유율 고정</td>
+        <td><code>long_sb</code> 0.92 → <b>0.02</b>, FMA 59 → 67%</td>
+        <td class="sp">1.04×</td><td class="num cum">536</td></tr>
+      <tr><td class="id">023</td>
+        <td>ncu: <code>layer_norm_rows</code> barrier stall <b>16.67</b> — 256스레드 중 1스레드만 일함. 행당 shared 16 KB라 동시 체인 5개/SM</td>
+        <td>1행 = 1레인(32행 = 1워프). 열을 청크로 shared에 <b>전치</b> 스테이징, 로드는 레지스터로 배칭 후 STS</td>
+        <td>barrier <b>0</b>, DRAM 34% → <b>89%</b> (루프라인 도달)</td>
+        <td class="sp">1.015×</td><td class="num cum">550</td></tr>
+      <tr><td class="id">024</td>
+        <td><code>add_inplace</code> 905 µs/층, <b>DRAM 92.7%</b> = 루프라인. 빠르게 만들 길이 없다</td>
+        <td>residual add를 각자의 <b>생산자 에필로그</b>(o_proj GEMM / w2 combine)로 융합</td>
+        <td>3유닛 → 1유닛, 그 1유닛도 o_proj의 유휴 DRAM(4%)에 숨음 → 실측 +0.002 s</td>
+        <td class="sp">1.025×</td><td class="num cum">564</td></tr>
+      <tr><td class="id">025</td>
+        <td><code>moe_combine</code> 1.18 ms/층, 1.02 GB, <b>DRAM 95.1%</b></td>
+        <td>w2 에필로그로 융합. atomic은 그루핑을 깨므로 <b>(expert, 순번) 32 서브레인지</b>로 패킹해 launch 2개로 순서를 확보</td>
+        <td>511 MB expert-output 버퍼 왕복 삭제. 상한 37.8 중 26 ms 회수</td>
+        <td class="sp">1.011×</td><td class="num cum">570</td></tr>
+      <tr><td class="id">026</td>
+        <td>ncu: shared <b>store</b> wavefront 32(이상값 16) = 절반이 conflict. 패딩으로는 불가 — <code>stride≡2 (mod 8)</code>와 float4의 <code>≡0 (mod 4)</code>가 양립 불가</td>
+        <td>시프트를 stride가 아니라 <b>열</b>에 넣어 k그룹 4개가 서로 다른 뱅크 옥텟을 잡게 (<code>SPAD</code> 4 → 32)</td>
+        <td>store conflict → <b>0</b>, SASS <b>명령 수 불변</b>(2552 → 2552)</td>
+        <td class="sp">1.015×</td><td class="num cum">579</td></tr>
+      <tr><td class="id">034</td>
+        <td>ncu: occupancy <b>98.1%</b> · Mem Pipes Busy <b>77.5%</b> ⇒ 점유율이 아니라 <b>명령 수</b>가 벽. QH/KVH=4라 q head 4개가 같은 k·v를 4번 읽음</td>
+        <td>GQA group 1개를 1블록으로 (grid 16 → 4). v를 1번 읽어 레지스터에서 4 head가 재사용. nk≤32에서 1워프만 일하던 것도 해소</td>
+        <td>global load <b>−74%</b>, 커널 3.34 → 1.37 ms, SM 77.5 → 86.9%</td>
+        <td class="sp">1.033×</td><td class="num cum">606</td></tr>
+      <tr><td class="id">037</td>
+        <td>측정-J: norm 3패스는 상주로 못 줄인다(레지스터 32배 부족). 남은 레버는 <b>바이트</b>뿐 — x를 3번 읽어 766 MB read</td>
+        <td>3번째 패스(<code>apply</code>)를 소비자로 이관. gate는 컬럼 타일 1개, expert gather는 DRAM 바운드라 <b>둘 다 ALU가 공짜</b></td>
+        <td>콜당 1.019 → <b>0.511 GB</b>. 소비자 비용 실측 +2 µs</td>
+        <td class="sp">1.009×</td><td class="num cum">615</td></tr>
+      <tr><td class="id">038</td>
+        <td><code>gather_rows</code>(expert)가 층당 1.22 ms · 총 39 ms의 <b>순수 복사</b>(511 MB 읽고 511 MB 쓰기)</td>
+        <td>w13 GEMM이 어차피 A를 행 단위로 스테이징하므로 그 행 주소를 <code>arowmap[r]</code>로 간접화 — 커널 자체가 사라진다</td>
+        <td>커널 삭제(층당 1.02 GB 제거). 대가는 A 스테이징 7회 반복</td>
+        <td class="sp">1.013×</td><td class="num cum">623</td></tr>
+      <tr><td class="id">055</td>
+        <td>ncu: w13의 store conflict가 <b>63.2 M</b> = o_proj의 23배. 049는 "039가 이미 기각"으로 적었지만 <b>039가 측정한 것은 w2 인스턴스</b>였다</td>
+        <td>026의 store swizzle을 <code>gemm_grouped</code>(w13) 인스턴스에만 켬 (2줄). w2는 039의 기각을 존중해 유지</td>
+        <td>conflict 64.7 → <b>5.4 M</b>, 13.86 → 13.61 ms. 레지스터 128 → 127</td>
+        <td class="sp">1.004×</td><td class="num cum">644</td></tr>
+    </tbody>
+  </table>
+
+  <p class="note tight">
+    표에 올리지 않은 채택 건: <b>008</b> shared 더블 버퍼 + 8×8 타일 — 실제로 작동한 것은 지연 은닉이 아니라 반복당 BAR.SYNC 2 → 1(15.5 → 19.9 TF/s, 1.04×) · <b>028</b> gate가 <code>out=16</code>인데 타일이 BN=128이라 112열(87.5%)을 버리므로 tall-skinny 전용 커널로(1.11 → 0.60 ms/층, 1.008×) · <b>009</b> softmax의 double <code>exp</code>를 128 lane에 분산(attn 1.59×) · <b>016</b> attention key를 32열 청크로 shared 스테이징 · <b>035·036</b> 나눗셈 호이스팅과 shared <code>float4</code> 로드(−62%) · <b>042</b> w13 가중치 행 인터리브로 silu를 에필로그로 · <b>046</b> norm 에필로그 독립 런치.
+  </p>
+
+  <h2>5. 처리량 궤적 <span>— x: 실험 인덱스, y: seq/s (log). 기각 실험은 코드를 원복했으므로 값이 유지된다</span></h2>
+  <figure>
+__CHART__
+    <figcaption>
+      각 실험의 같은-allocation A/B 비를 이어 붙여 <b>빠른 노드 기준으로 정규화</b>했다(체인 최종 643.5 대 §1의 b0 실측 648.2 — 0.7% 일치). EXP-000~002는 n=1/n=8, 003 이후는 n=1024. 로그축에서 후반이 평평하므로 EXP-016 이후를 선형 확대했다.
+    </figcaption>
+  </figure>
+
+  <h2>6. 기각 19건의 사유 <span>— 네 가지로 수렴한다</span></h2>
+  <p class="note" style="margin-bottom:0">
+    도달한 천장은 <b>GEMM의 FMA 피크 70%</b>(= FFMA 명령비 89.5% × 발사율 78.5%, 측정-K)이고 그 두 항 모두 <b>128 레지스터 × 512 스레드 = 레지스터 파일 100%</b>에 막혀 있다. 대역폭 커널은 DRAM 88~93.5%로 이미 루프라인이다. 그래서 남은 시도는 전부 다음 네 형태로 실패했다. ① <b>병목이 아닌 자원을 비운다</b> — DRAM이 12~38%인 커널에서 트래픽·FLOP을 지워도 0 또는 손해(047, 053). ② <b>명령 수를 줄인다</b> — ptxas가 이미 숨기고 있어 live range 대가가 더 크다(049, 054). ③ <b>타일 모양을 바꾼다</b> — 포화한 파이프를 다른 포화한 파이프와 교환한다(022b, 050, 052). ④ <b>reduction을 재배치한다</b> — 라우터 top-2가 1e-7 섭동에 뒤집혀 검증 실패(051). 텐서코어는 044가 닫았다: GA102는 <b>TF32가 FP32 FFMA와 동률(38 TFLOP/s)</b>이라 이득이 FP16에만 있는데, 전 GEMM FP16 프로브가 max abs <b>4.34</b>(임계의 1448배)로 기각됐고 규칙상 양자화도 금지다.
+  </p>
+
+  <div class="foot"><span>제출자 aps17 송영재 · aps20 신정수 · 실험 기록 <span class="mono">docs/lab-note.md</span></span><span>2 / 2</span></div>
+</div>
