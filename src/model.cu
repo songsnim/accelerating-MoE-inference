@@ -67,11 +67,6 @@ private:
     std::size_t capacity_ = 0;
 };
 
-void to_host(Tensor& host, const float* device) {
-    cuda_check(cudaMemcpy(host.data(), device, host.size() * sizeof(float),
-                          cudaMemcpyDeviceToHost), "cudaMemcpy D2H");
-}
-
 // C[M,N] = A[M,K] * B[N,K]^T + bias[N], register-tiled through shared memory.
 // One block computes a BM x BN output tile; one thread keeps TM x TN outputs in
 // registers, so the inner loop reads TM + TN floats from shared per TM * TN
@@ -1290,7 +1285,35 @@ __global__ void attention_heads(const float* __restrict__ q,
 }  // namespace
 
 // generate()'s working set, in one place so the model can hold it.
+// lm_head runs in this many row chunks so each chunk's D2H overlaps the next
+// chunk's GEMM. The logits are 131 MB and the copy runs at ~26 GB/s out of the
+// page-locked reserve, so it is ~5 ms sitting at the end of the measured region
+// with the GPU idle.
+constexpr std::size_t LM_CHUNKS = 4;
+
 struct PhiTinyMoEModel::Scratch {
+    // The copy stream is non-blocking on purpose: a plain stream would
+    // implicitly synchronise with the legacy default stream the GEMMs run on,
+    // and the next chunk's GEMM would wait for this chunk's copy -- exactly the
+    // serialisation this is meant to remove.
+    Scratch() {
+        cuda_check(cudaStreamCreateWithFlags(&copy, cudaStreamNonBlocking),
+                   "cudaStreamCreate lm_head copy");
+        for (std::size_t i = 0; i < LM_CHUNKS; ++i) {
+            cuda_check(cudaEventCreateWithFlags(&ev[i], cudaEventDisableTiming),
+                       "cudaEventCreate lm_head chunk");
+        }
+    }
+    ~Scratch() {
+        for (std::size_t i = 0; i < LM_CHUNKS; ++i) cudaEventDestroy(ev[i]);
+        cudaStreamDestroy(copy);
+    }
+    Scratch(const Scratch&) = delete;
+    Scratch& operator=(const Scratch&) = delete;
+
+    cudaStream_t copy = nullptr;
+    cudaEvent_t ev[LM_CHUNKS] = {};
+
     DeviceBuffer<float> stream_a, stream_b, norm, attn, q, k, v, ctx, router;
     DeviceBuffer<float> tail, gate, rope, logits, nstat;
     // Layer 0's distinct-token working set: the gathered embeddings, the
@@ -2004,9 +2027,26 @@ void PhiTinyMoEModel::generate(
     tick(t_norm);
 
     float* d_logits = sc.logits.reserve(batch * apss26::VOCAB_SIZE);
-    lm_head_.forward(d_norm, d_logits, batch);
     if (alloc_thread.joinable()) alloc_thread.join();
-    to_host(logits, d_logits);
+    // lm_head in row chunks, each chunk's 33 MB copied home while the next
+    // chunk's GEMM runs. Rows are the split axis because a row's logits are
+    // contiguous in the output, so each chunk is one flat copy.
+    const std::size_t lm_chunk = (batch + LM_CHUNKS - 1) / LM_CHUNKS;
+    std::size_t ci = 0;
+    for (std::size_t c0 = 0; c0 < batch; c0 += lm_chunk, ++ci) {
+        const std::size_t rows_c = std::min(lm_chunk, batch - c0);
+        lm_head_.forward(d_norm + c0 * apss26::HIDDEN_SIZE,
+                         d_logits + c0 * apss26::VOCAB_SIZE, rows_c);
+        cuda_check(cudaEventRecord(sc.ev[ci], nullptr), "cudaEventRecord lm_head");
+        cuda_check(cudaStreamWaitEvent(sc.copy, sc.ev[ci], 0),
+                   "cudaStreamWaitEvent lm_head");
+        cuda_check(cudaMemcpyAsync(logits.data() + c0 * apss26::VOCAB_SIZE,
+                                   d_logits + c0 * apss26::VOCAB_SIZE,
+                                   rows_c * apss26::VOCAB_SIZE * sizeof(float),
+                                   cudaMemcpyDeviceToHost, sc.copy),
+                   "cudaMemcpyAsync logits");
+    }
+    cuda_check(cudaStreamSynchronize(sc.copy), "cudaStreamSynchronize logits");
     tick(t_lm);
 
     if (profile) {
