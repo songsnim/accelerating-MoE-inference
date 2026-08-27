@@ -46,7 +46,7 @@
     - 기록은 최대한 간결해야 하며, bloat을 쳐내고 load-bearing한 알짜 내용만 기록
     - 실험 1개마다 반드시 commit을 수행한다. 커밋 명은 <index>-<slug>
 - 실험 output binary는 `outputs/` 폴더에 저장
-- 사용자가 실험 하나에 대해 **microworld**를 생성하라고 하면 `docs/microworld.md`를 참고하여 제작 후, `docs/microworld/`에 저장하라.
+- 사용자가 실험 하나에 대해 **microworld**를 생성하라고 하면 `docs/microworld.md`를 참고하여 제작 후, `docs/microworld/`에 저장하라. microworld는 사용자가 실험을 더 쉽게 이해하기 위한 용도이므로, 실험 때는 특별한 이유가 아니라면 굳이 필요 없다.
 - 모든 CUDA API 호출에는 디버깅 용이성을 위해 에러 코드가 포함되어야 한다.
 
 ## 6. useful scripts
