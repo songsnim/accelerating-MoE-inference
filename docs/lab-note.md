@@ -3410,3 +3410,85 @@ attention 29.9 ms는 036. 시퀀스가 ≤32토큰이라 sliding window는 무�
 한 곳이고, 다른 실험에 미치는 영향이 없다(오히려 이후 모든 커널 실험의 측정 대상을
 줄인다). 레버 2는 그 다음 — grouped 형상 재설계는 되돌리기가 무겁다.
 재현: `outputs/prof-039.nsys-rep`, ncu 커맨드는 측정-K와 동일(`TMPDIR` 주의).
+
+---
+
+# EXP-040 — 마지막 레이어를 lm_head가 읽는 행만 계산한다 (채택)
+
+## 1. Background
+측정-L의 레버 1. 입력이 짧아(평균 19.3 토큰, distinct 1024) trie 15,583행 중
+**lm_head가 실제로 읽는 것은 1,024행(6.6%)** 뿐이다. `last_node`는 지금까지 lm_head
+앞의 gather에만 쓰였다.
+
+## 2. Hypothesis
+레이어 31의 출력은 `final_norm` → last_node 행 → lm_head로만 흐른다. 그 1024행의
+attention이 자기 root path 전체의 k/v를 필요로 하므로 **input_norm · k_proj ·
+v_proj는 전 행 유지**해야 하지만, `q_proj · rope(q) · attention · o_proj+resid ·
+post_norm · gate · routing · w13 · silu · w2 · final_norm`은 1024행만 돌면 된다.
+건너뛴 행이 만드는 값은 아무도 읽지 않으므로 **비트 동일**하다.
+
+## 3. Design and Implementation
+- **`rope_rows<int MODE>`**: 0 = q+k(블록=노드, 기존과 동일한 인스턴스), 1 = k만,
+  2 = q만(압축 행, 노드 id는 `map`에서). 꼬리는 1과 2를 각자의 행 수로 두 번 띄운다.
+- **`attention_heads<bool GATHER>`**: `slot = blockIdx.x`가 q/out의 행,
+  `node = map[slot]`이 `anc_off`와 키 집합의 행. GATHER=false는 `node = slot`으로
+  접혀 기존 인스턴스 그대로다.
+- **생성 쪽**: 루프가 `li`로 돌면서 `tail`이면 `rows = batch`. `d_norm`과 `d_hidden`의
+  해당 1024행을 `gather_rows<>` 두 번(16.8 MB씩, 실측 46 µs씩)으로 압축해
+  q_proj의 A와 o_proj의 residual로 넘긴다. **GEMM 커널은 한 줄도 안 건드렸다** —
+  전부 `rows` 인자와 타일 예산(`max13_tail`/`half_tail`/`nrb_tail`)만 바뀐다.
+- lm_head 앞의 gather와 `last_node` H2D가 사라진다(꼬리가 이미 batch 순서로 남긴다).
+  `expert_in` 버퍼는 `tail`로 역할이 바뀌었다.
+- 중복 시퀀스 입력에서는 `batch > total`이 될 수 있어(예: 같은 시퀀스 3개 → total 2,
+  batch 3) 공유 버퍼를 `mrows = max(total, batch)`로 잡았다. 대회 입력은 distinct
+  1024라 닿지 않는다 — 산술로만 방어했고 실행 경로로는 재현하지 못했다.
+
+## 4. Result — 채택
+
+한 allocation 안에서 교차 3rep, 빠른 노드:
+
+| | rep1 | rep2 | rep3 | 평균 | seq/s |
+|---|---|---|---|---|---|
+| EXP-038 | 1.6331 | 1.6307 | 1.6253 | **1.6297** | 628.3 |
+| EXP-040 | 1.5907 | 1.5871 | 1.5923 | **1.5900** | **644.0** |
+| | | | | **−39.7 ms (−2.44%)** | **+2.50%** |
+
+3쌍 모두 같은 방향. **출력 131 MB가 034 이전 빌드와 바이트 단위로 동일**(`cmp`).
+`-v` PASSED, `-n 8 -v` PASSED, `-n 1 -d -v` PASSED.
+
+마지막 레이어 커널(nsys, 느린 노드, µs):
+
+| 커널 | 038 | 040 |
+|---|---|---|
+| input_norm | 1264 | 1263 (유지) |
+| tail gather ×2 | — | 46.3 + 46.5 (신규) |
+| q_proj | 13004 | **1108** |
+| k_proj / v_proj | 3310 / 3310 | 3298 / 3300 (유지) |
+| rope | 382 | **77.6(k) + 24.1(q)** |
+| attention | 935 | **110** |
+| o_proj+resid | 13142 | **1115** |
+| post_norm stats | 605 | **278** |
+| gate | 590 | **255** |
+| routing ×3 | 32.4 | 18.9 |
+| w13 | 13174 | **1206** |
+| silu | 205 | **14.7** |
+| w2 ×2 | 6906 | **558** |
+| final_norm | 1269 | **672** |
+| lm_head gather | 46.3 | **삭제** |
+| **합** | **58,175** | **13,390** |
+
+**−44.8 ms**(느린 노드)이고 nsys 벽시계 차(1.8489 → 1.8042, −44.7 ms)와 일치한다.
+빠른 노드의 −39.7 ms는 클럭비 1.16으로 나눈 값과 맞는다.
+
+축소된 커널이 행 수에 선형으로 줄지 않는 것은 예측대로다: q_proj는 15.2배 적은 행에
+8.5배 적은 시간(그리드 16×8 = 128블록이 상주 164블록에 못 미친다), post_norm은 2.2배,
+final_norm은 1.9배뿐이다. 남은 꼬리 13.39 ms 중 7.86 ms(input_norm + k/v)는 축소
+불가이고, 나머지 5.53 ms의 이상치는 ~0.9 ms지만 1024행에서는 전부 레이턴시 바운드라
+더 짜낼 것이 없다.
+
+## 5. Next action
+세션 누적(038 → 040): 빠른 노드 **1.6297 → 1.5900 s, 628.3 → 644.0 seq/s**.
+측정-L의 레버 2(grouped 타일 패딩, −28 ms)가 다음이다. w13 3.4% / w2 6.4%는
+전문가 16개가 각각 128행 타일의 끝을 남기는 값이고, 027이 기각한 것은 "죽은 행 그룹
+건너뛰기"였을 뿐 **grouped 전용 BM 축소는 재본 적이 없다**(측정-K의 타일 재설계는
+패딩이 0인 q_proj 형상에서만 했다).

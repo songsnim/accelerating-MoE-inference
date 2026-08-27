@@ -910,36 +910,49 @@ __global__ void route_place(const int* __restrict__ pair, int total,
 // the rotated q/k is exactly the magnitude that moves a router logit across the
 // quantisation boundary in PhiMoE::route (see layer_norm_rows). The table is
 // 64 * max_len * 2 floats, so building it costs microseconds.
+// MODE 0 rotates both q and k with the block index doubling as the node index,
+// which is what every layer but the last needs. The last layer projects q only
+// for the rows lm_head will read, so its q lives in a compacted buffer while k
+// still covers every node: MODE 1 is k alone over the nodes, MODE 2 is q alone
+// over the compacted rows, whose node ids -- needed for the position lookup --
+// come from `map`.
+template <int MODE = 0>
 __global__ void rope_rows(float* __restrict__ q, float* __restrict__ k,
                           const int* __restrict__ pos,
-                          const float* __restrict__ table) {
+                          const float* __restrict__ table,
+                          const int* __restrict__ map = nullptr) {
     constexpr int D = static_cast<int>(apss26::HEAD_DIM);
     constexpr int HALF = D / 2;
     constexpr int QH = static_cast<int>(apss26::NUM_ATTENTION_HEADS);
     constexpr int KVH = static_cast<int>(apss26::NUM_KV_HEADS);
 
-    const int row = blockIdx.x;
+    const int slot = blockIdx.x;
+    const int row = MODE == 2 ? map[slot] : slot;
     const float* trig = table + static_cast<long long>(pos[row]) * HALF * 2;
 
     // The host writes both halves of a pair from the pre-rotation values, so
     // one thread owns one pair and no two threads touch the same element.
-    float* qrow = q + static_cast<long long>(row) * QH * D;
-    for (int i = threadIdx.x; i < QH * HALF; i += blockDim.x) {
-        float* r = qrow + (i / HALF) * D;
-        const int j = i % HALF;
-        const float c = trig[j * 2], sn = trig[j * 2 + 1];
-        const float x0 = r[j], x1 = r[j + HALF];
-        r[j] = __fsub_rn(__fmul_rn(x0, c), __fmul_rn(x1, sn));
-        r[j + HALF] = __fadd_rn(__fmul_rn(x1, c), __fmul_rn(x0, sn));
+    if (MODE != 1) {
+        float* qrow = q + static_cast<long long>(slot) * QH * D;
+        for (int i = threadIdx.x; i < QH * HALF; i += blockDim.x) {
+            float* r = qrow + (i / HALF) * D;
+            const int j = i % HALF;
+            const float c = trig[j * 2], sn = trig[j * 2 + 1];
+            const float x0 = r[j], x1 = r[j + HALF];
+            r[j] = __fsub_rn(__fmul_rn(x0, c), __fmul_rn(x1, sn));
+            r[j + HALF] = __fadd_rn(__fmul_rn(x1, c), __fmul_rn(x0, sn));
+        }
     }
-    float* krow = k + static_cast<long long>(row) * KVH * D;
-    for (int i = threadIdx.x; i < KVH * HALF; i += blockDim.x) {
-        float* r = krow + (i / HALF) * D;
-        const int j = i % HALF;
-        const float c = trig[j * 2], sn = trig[j * 2 + 1];
-        const float x0 = r[j], x1 = r[j + HALF];
-        r[j] = __fsub_rn(__fmul_rn(x0, c), __fmul_rn(x1, sn));
-        r[j + HALF] = __fadd_rn(__fmul_rn(x1, c), __fmul_rn(x0, sn));
+    if (MODE != 2) {
+        float* krow = k + static_cast<long long>(slot) * KVH * D;
+        for (int i = threadIdx.x; i < KVH * HALF; i += blockDim.x) {
+            float* r = krow + (i / HALF) * D;
+            const int j = i % HALF;
+            const float c = trig[j * 2], sn = trig[j * 2 + 1];
+            const float x0 = r[j], x1 = r[j + HALF];
+            r[j] = __fsub_rn(__fmul_rn(x0, c), __fmul_rn(x1, sn));
+            r[j + HALF] = __fadd_rn(__fmul_rn(x1, c), __fmul_rn(x0, sn));
+        }
     }
 }
 
@@ -971,12 +984,17 @@ constexpr int ATTN_KSTRIDE = ATTN_CHUNK + 4;   // 36
 //   - __f*_rn keeps nvcc from contracting the multiply-adds into FMAs that the
 //     host does not emit (verified in obj/model.o: vmulss + vaddss throughout),
 //   - exp stays in double, as accurate_exp did.
+// GATHER is the last layer's variant: q and out hold one row per lm_head row
+// rather than one per node, and `map` gives each of those rows its node id, so
+// the key set and the k/v rows it names are unchanged.
+template <bool GATHER = false>
 __global__ void attention_heads(const float* __restrict__ q,
                                 const float* __restrict__ k,
                                 const float* __restrict__ v,
                                 const int* __restrict__ anc,
                                 const int* __restrict__ anc_off,
-                                float* __restrict__ out, float scale) {
+                                float* __restrict__ out, float scale,
+                                const int* __restrict__ map = nullptr) {
     constexpr int D = static_cast<int>(apss26::HEAD_DIM);
     constexpr int QH = static_cast<int>(apss26::NUM_ATTENTION_HEADS);
     constexpr int KVH = static_cast<int>(apss26::NUM_KV_HEADS);
@@ -992,7 +1010,8 @@ __global__ void attention_heads(const float* __restrict__ q,
     float* sw = sdenom + GROUP;                // [nk][GROUP] scores
     __shared__ float smax[GROUP];              // the per-head softmax max
 
-    const int node = blockIdx.x, kh = blockIdx.y;
+    const int slot = blockIdx.x, kh = blockIdx.y;
+    const int node = GATHER ? map[slot] : slot;
     const int tid = threadIdx.x;
 
     const int abase = anc_off[node];
@@ -1016,7 +1035,7 @@ __global__ void attention_heads(const float* __restrict__ q,
     // The group's GROUP query rows are contiguous in q, so this is GROUP
     // coalesced 512 B loads.
     const long long qbase =
-        static_cast<long long>(node) * QH * D + static_cast<long long>(kh) * GROUP * D;
+        static_cast<long long>(slot) * QH * D + static_cast<long long>(kh) * GROUP * D;
     for (int g = 0; g < GROUP; ++g) sq[g * QSTRIDE + tid] = q[qbase + g * D + tid];
     for (int i = tid; i < nw; i += D) sw[i] = 0.0f;
     __syncthreads();
@@ -1089,7 +1108,7 @@ __global__ void attention_heads(const float* __restrict__ q,
             acc[g] = __fadd_rn(acc[g], __fmul_rn(sw[i * GROUP + g], vv));
     }
     for (int g = 0; g < GROUP; ++g)
-        out[static_cast<long long>(node) * QH * D + (kh * GROUP + g) * D + tid] = acc[g];
+        out[static_cast<long long>(slot) * QH * D + (kh * GROUP + g) * D + tid] = acc[g];
 }
 
 }  // namespace
@@ -1097,8 +1116,8 @@ __global__ void attention_heads(const float* __restrict__ q,
 // generate()'s working set, in one place so the model can hold it.
 struct PhiTinyMoEModel::Scratch {
     DeviceBuffer<float> stream_a, stream_b, norm, attn, q, k, v, ctx, router;
-    DeviceBuffer<float> expert_in, gate, gate_up, rope, logits, nstat;
-    DeviceBuffer<int> index, pair, blk, eoff, tiles, pos, anc, anc_off;
+    DeviceBuffer<float> tail, gate, gate_up, rope, logits, nstat;
+    DeviceBuffer<int> index, pair, blk, eoff, tiles, pos, anc, anc_off, last;
 };
 
 PhiTinyMoEModel::DeviceLinear::DeviceLinear(const ModelLoader& loader,
@@ -1443,7 +1462,12 @@ void PhiTinyMoEModel::generate(
     constexpr std::size_t QDIM = apss26::NUM_ATTENTION_HEADS * apss26::HEAD_DIM;
     constexpr std::size_t KVDIM = apss26::NUM_KV_HEADS * apss26::HEAD_DIM;
     constexpr std::size_t FFDIM = apss26::EXPERT_INTERMEDIATE_SIZE;
-    const std::size_t elements = total * apss26::HIDDEN_SIZE;
+    // A batch whose sequences repeat has fewer trie nodes than sequences, so
+    // the last layer can hold more rows than the 31 before it. Every buffer
+    // those layers share is sized for whichever row count is larger; on
+    // distinct inputs `total >= batch` and `mrows` is `total`.
+    const std::size_t mrows = std::max(total, batch);
+    const std::size_t elements = mrows * apss26::HIDDEN_SIZE;
 
     if (!scratch_) scratch_ = std::make_unique<Scratch>();
     Scratch& sc = *scratch_;
@@ -1455,26 +1479,31 @@ void PhiTinyMoEModel::generate(
 
     float* d_norm = sc.norm.reserve(elements);
     float* d_attn = sc.attn.reserve(elements);
-    float* d_q = sc.q.reserve(total * QDIM);
+    float* d_q = sc.q.reserve(mrows * QDIM);
     float* d_k = sc.k.reserve(total * KVDIM);
     float* d_v = sc.v.reserve(total * KVDIM);
-    float* d_ctx = sc.ctx.reserve(total * QDIM);
-    float* d_router = sc.router.reserve(total * apss26::NUM_EXPERTS);
+    float* d_ctx = sc.ctx.reserve(mrows * QDIM);
+    float* d_router = sc.router.reserve(mrows * apss26::NUM_EXPERTS);
     // MoE scratch. Every expert's rows are packed into one buffer so the 16
     // expert GEMMs become one launch, so the row count is the number of
     // (row, expert) pairs -- exactly TOP_K * total.
     const std::size_t packed_rows = total * apss26::TOP_K;
-    // `index` carries the packing map for the whole MoE and is then reused by
-    // the lm_head gather, so it takes the larger of the two. The gather target
-    // now serves only lm_head, which addresses `batch` rows.
-    const std::size_t gather_rows_max = std::max(packed_rows, batch);
-    float* d_expert_in = sc.expert_in.reserve(batch * apss26::HIDDEN_SIZE);
-    float* d_gate = sc.gate.reserve(packed_rows * FFDIM);
-    float* d_gate_up = sc.gate_up.reserve(packed_rows * 2 * FFDIM);
-    int* d_index = sc.index.reserve(gather_rows_max);
+    const std::size_t packed_max = mrows * apss26::TOP_K;
+    // The last layer's output only reaches lm_head through the `batch` rows
+    // each sequence ends on, so from q_proj onwards it runs on those rows
+    // alone. They need `d_norm` (q's input) and `d_hidden` (o_proj's residual)
+    // gathered into place first; everything after o_proj is already row-wise.
+    float* d_tnorm = sc.tail.reserve(2 * batch * apss26::HIDDEN_SIZE);
+    float* d_tresid = d_tnorm + batch * apss26::HIDDEN_SIZE;
+    float* d_gate = sc.gate.reserve(packed_max * FFDIM);
+    float* d_gate_up = sc.gate_up.reserve(packed_max * 2 * FFDIM);
+    // `index` carries the MoE packing map.
+    int* d_index = sc.index.reserve(packed_max);
     // Routing scratch: each row's two experts and the per-block per-sub-range
     // counts the scan turns into offsets.
     const int nrb = static_cast<int>((total + ROUTE_BLOCK - 1) / ROUTE_BLOCK);
+    const int nrb_max =
+        static_cast<int>((mrows + ROUTE_BLOCK - 1) / ROUTE_BLOCK);
     // Three ints per row tile; a range contributes at most one partial tile.
     // w13's list covers all the packed rows over 16 ranges, each of w2's covers
     // `total` of them over 16 sub-ranges.
@@ -1482,11 +1511,23 @@ void PhiTinyMoEModel::generate(
         static_cast<int>(packed_rows / GRP_BM + apss26::NUM_EXPERTS);
     const int half_tiles =
         static_cast<int>(total / GRP_BM + apss26::NUM_EXPERTS);
-    int* d_pair = sc.pair.reserve(packed_rows);
-    int* d_blk = sc.blk.reserve(static_cast<std::size_t>(nrb) * NUM_RANGES);
+    // The last layer's MoE sees `batch` rows, so it gets its own, smaller
+    // budgets: route_scan lays the three tile lists out at offsets derived
+    // from the pair it is handed, and the grids are sized from the same pair.
+    const int nrb_tail =
+        static_cast<int>((batch + ROUTE_BLOCK - 1) / ROUTE_BLOCK);
+    const int max13_tail = static_cast<int>(batch * apss26::TOP_K / GRP_BM +
+                                            apss26::NUM_EXPERTS);
+    const int half_tail =
+        static_cast<int>(batch / GRP_BM + apss26::NUM_EXPERTS);
+    int* d_pair = sc.pair.reserve(packed_max);
+    int* d_blk = sc.blk.reserve(static_cast<std::size_t>(nrb_max) * NUM_RANGES);
     int* d_eoff = sc.eoff.reserve(NUM_RANGES);
-    int* d_tiles = sc.tiles.reserve(
-        static_cast<std::size_t>(3) * (max13 + 2 * half_tiles));
+    int* d_tiles = sc.tiles.reserve(static_cast<std::size_t>(3) *
+                                    (static_cast<int>(packed_max / GRP_BM +
+                                                      apss26::NUM_EXPERTS) +
+                                     2 * static_cast<int>(mrows / GRP_BM +
+                                                          apss26::NUM_EXPERTS)));
 
     // Attention runs on the device now, so it needs the batch layout there:
     // each row's position inside its sequence (for RoPE) and each sequence's
@@ -1507,16 +1548,19 @@ void PhiTinyMoEModel::generate(
         }
     }
     int* d_pos = sc.pos.reserve(total);
+    int* d_last = sc.last.reserve(batch);
     int* d_anc = sc.anc.reserve(anc.size());
     int* d_anc_off = sc.anc_off.reserve(anc_off.size());
     float* d_rope = sc.rope.reserve(rope.size());
     // The post-attention norm's per-row mean and 1/sigma, handed to whichever
     // kernel applies its epilogue.
-    float* d_nmean = sc.nstat.reserve(2 * total);
-    float* d_ninv = d_nmean + total;
+    float* d_nmean = sc.nstat.reserve(2 * mrows);
+    float* d_ninv = d_nmean + mrows;
     // A node's position is its depth in the trie.
     cuda_check(cudaMemcpy(d_pos, node_depth.data(), total * sizeof(int),
                           cudaMemcpyHostToDevice), "cudaMemcpy positions");
+    cuda_check(cudaMemcpy(d_last, last_node.data(), batch * sizeof(int),
+                          cudaMemcpyHostToDevice), "cudaMemcpy last rows");
     cuda_check(cudaMemcpy(d_anc, anc.data(), anc.size() * sizeof(int),
                           cudaMemcpyHostToDevice), "cudaMemcpy ancestors");
     cuda_check(cudaMemcpy(d_anc_off, anc_off.data(), anc_off.size() * sizeof(int),
@@ -1559,10 +1603,14 @@ void PhiTinyMoEModel::generate(
                 " B per-block cap; the longest sequence that fits is " +
                 std::to_string(fits) + " tokens");
         }
-        cuda_check(cudaFuncSetAttribute(attention_heads,
+        cuda_check(cudaFuncSetAttribute(attention_heads<false>,
                                         cudaFuncAttributeMaxDynamicSharedMemorySize,
                                         static_cast<int>(attn_shared)),
                    "cudaFuncSetAttribute(attention shared memory)");
+        cuda_check(cudaFuncSetAttribute(attention_heads<true>,
+                                        cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                        static_cast<int>(attn_shared)),
+                   "cudaFuncSetAttribute(attention shared memory, tail)");
     }
     const float attn_scale = std::sqrt(static_cast<float>(apss26::HEAD_DIM));
 
@@ -1576,46 +1624,80 @@ void PhiTinyMoEModel::generate(
     cuda_check(cudaGetLastError(), "embedding gather launch");
     tick(t_h2d);
 
-    for (const Layer& layer : layers_) {
+    for (std::size_t li = 0; li < layers_.size(); ++li) {
+        const Layer& layer = layers_[li];
+        // Nothing downstream of the last layer reads a row other than the one
+        // its sequence ends on: layer 31's output goes to final_norm and then
+        // straight into lm_head's `batch` rows. Its q, attention, o_proj and
+        // MoE therefore run on those rows alone. k and v still cover every
+        // node -- a last row attends to its whole root path -- and so does the
+        // input norm that feeds them.
+        const bool tail = li + 1 == layers_.size();
+        const std::size_t rows = tail ? batch : total;
+        const int rows_i = static_cast<int>(rows);
+        const int nrb_r = tail ? nrb_tail : nrb;
+        const int max13_r = tail ? max13_tail : max13;
+        const int half_r = tail ? half_tail : half_tiles;
+
         layer.input_norm.forward(d_hidden, d_norm, total);
         tick(t_norm);
-        layer.q_proj.forward(d_norm, d_q, total);
+        if (tail) {
+            gather_rows<><<<static_cast<unsigned>(batch), 256>>>(
+                d_norm, d_last, d_tnorm, apss26::HIDDEN_SIZE);
+            gather_rows<><<<static_cast<unsigned>(batch), 256>>>(
+                d_hidden, d_last, d_tresid, apss26::HIDDEN_SIZE);
+            cuda_check(cudaGetLastError(), "tail gathers");
+        }
+        layer.q_proj.forward(tail ? d_tnorm : d_norm, d_q, rows);
         layer.k_proj.forward(d_norm, d_k, total);
         layer.v_proj.forward(d_norm, d_v, total);
         tick(t_gemm);
-        rope_rows<<<static_cast<unsigned>(total), 256>>>(
-            d_q, d_k, d_pos, d_rope);
-        attention_heads<<<dim3(static_cast<unsigned>(total),
-                               apss26::NUM_KV_HEADS),
-                          apss26::HEAD_DIM, attn_shared>>>(
-            d_q, d_k, d_v, d_anc, d_anc_off,
-            d_ctx, attn_scale);
+        if (tail) {
+            // q sits in a compacted buffer now, so the two halves of the
+            // rotation are launched over their own row sets.
+            rope_rows<1><<<static_cast<unsigned>(total), 256>>>(
+                nullptr, d_k, d_pos, d_rope);
+            rope_rows<2><<<static_cast<unsigned>(batch), 256>>>(
+                d_q, nullptr, d_pos, d_rope, d_last);
+            attention_heads<true><<<dim3(static_cast<unsigned>(batch),
+                                         apss26::NUM_KV_HEADS),
+                                    apss26::HEAD_DIM, attn_shared>>>(
+                d_q, d_k, d_v, d_anc, d_anc_off, d_ctx, attn_scale, d_last);
+        } else {
+            rope_rows<><<<static_cast<unsigned>(total), 256>>>(
+                d_q, d_k, d_pos, d_rope);
+            attention_heads<><<<dim3(static_cast<unsigned>(total),
+                                     apss26::NUM_KV_HEADS),
+                                apss26::HEAD_DIM, attn_shared>>>(
+                d_q, d_k, d_v, d_anc, d_anc_off,
+                d_ctx, attn_scale);
+        }
         cuda_check(cudaGetLastError(), "attention kernels");
         tick(t_attn);
-        layer.o_proj.forward_resid(d_ctx, d_attn, d_hidden, total);
+        layer.o_proj.forward_resid(d_ctx, d_attn, tail ? d_tresid : d_hidden,
+                                   rows);
         tick(t_gemm);
 
         // The post-attention norm hands over its two per-row scalars and
         // stops there: both its consumers below read d_attn and apply the
         // epilogue themselves, so the norm's third pass -- 255 MB read plus
         // 255 MB written -- never runs. d_norm is not written at all here.
-        layer.post_norm.forward_stats(d_attn, d_nmean, d_ninv, total);
+        layer.post_norm.forward_stats(d_attn, d_nmean, d_ninv, rows);
         tick(t_norm);
 
         // MoE: route on the host (16 scores per token), then run each expert
         // over its own gathered rows and scatter the halves back.
-        layer.moe.gate.forward_gate_norm(d_attn, d_router, total,
+        layer.moe.gate.forward_gate_norm(d_attn, d_router, rows,
                                          d_nmean, d_ninv, layer.post_norm);
         tick(t_gemm);
         // Routing runs on the device: the 997 KB of scores no longer come back
         // and the packed layout is built where it is used. The tile count stays
         // on the device too -- the grid is launched at its worst case.
-        route_count<<<nrb, ROUTE_BLOCK>>>(d_router, static_cast<int>(total),
-                                          d_pair, d_blk);
-        route_scan<<<1, NUM_RANGES>>>(d_blk, nrb, d_eoff, d_tiles, max13,
-                                      half_tiles);
-        route_place<<<nrb, ROUTE_BLOCK>>>(d_pair, static_cast<int>(total),
-                                          d_blk, d_eoff, d_index);
+        route_count<<<nrb_r, ROUTE_BLOCK>>>(d_router, rows_i, d_pair, d_blk);
+        route_scan<<<1, NUM_RANGES>>>(d_blk, nrb_r, d_eoff, d_tiles, max13_r,
+                                      half_r);
+        route_place<<<nrb_r, ROUTE_BLOCK>>>(d_pair, rows_i, d_blk, d_eoff,
+                                            d_index);
         cuda_check(cudaGetLastError(), "routing kernels");
         tick(t_d2h);
 
@@ -1623,12 +1705,15 @@ void PhiTinyMoEModel::generate(
         // residual stream through the packing map and normalises each row as
         // it stages it. d_attn stays live until COMBINE=2 reads it as the
         // residual, which is after this.
-        gemm_grouped<true><<<dim3((2 * FFDIM + GRP_BN - 1) / GRP_BN, max13), GEMM_THREADS>>>(
+        gemm_grouped<true><<<dim3((2 * FFDIM + GRP_BN - 1) / GRP_BN,
+                                  static_cast<unsigned>(max13_r)),
+                             GEMM_THREADS>>>(
             d_attn, layer.moe.w13_ptrs, d_gate_up, d_tiles,
             static_cast<int>(apss26::HIDDEN_SIZE), static_cast<int>(2 * FFDIM),
             d_index, d_nmean, d_ninv,
             layer.post_norm.weight, layer.post_norm.bias);
-        const long long activated = static_cast<long long>(packed_rows) * FFDIM;
+        const long long activated =
+            static_cast<long long>(rows * apss26::TOP_K) * FFDIM;
         silu_mul<<<static_cast<unsigned>((activated + 255) / 256), 256>>>(
             d_gate_up, d_gate, static_cast<int>(FFDIM), activated);
         // w2 writes the residual stream directly: the lower-expert copies
@@ -1636,14 +1721,14 @@ void PhiTinyMoEModel::generate(
         // residual on top of what the first launch left. That deletes the
         // 511 MB expert-output buffer and the roofline-bound pass over it.
         const dim3 w2_grid((apss26::HIDDEN_SIZE + GRP_BN - 1) / GRP_BN,
-                           static_cast<unsigned>(half_tiles));
+                           static_cast<unsigned>(half_r));
         gemm_grouped_combine<1><<<w2_grid, GEMM_THREADS>>>(
-            d_gate, layer.moe.w2_ptrs, d_next, d_tiles + 3 * max13, d_index,
+            d_gate, layer.moe.w2_ptrs, d_next, d_tiles + 3 * max13_r, d_index,
             nullptr, static_cast<int>(FFDIM),
             static_cast<int>(apss26::HIDDEN_SIZE));
         gemm_grouped_combine<2><<<w2_grid, GEMM_THREADS>>>(
             d_gate, layer.moe.w2_ptrs, d_next,
-            d_tiles + 3 * (max13 + half_tiles), d_index, d_attn,
+            d_tiles + 3 * (max13_r + half_r), d_index, d_attn,
             static_cast<int>(FFDIM), static_cast<int>(apss26::HIDDEN_SIZE));
         cuda_check(cudaGetLastError(), "moe kernels");
         tick(t_moe);
@@ -1651,17 +1736,13 @@ void PhiTinyMoEModel::generate(
         std::swap(d_hidden, d_next);
     }
 
-    final_norm_.forward(d_hidden, d_norm, total);
+    // The last layer already left one row per sequence, in the batch's order,
+    // so the norm and lm_head read them where they are.
+    final_norm_.forward(d_hidden, d_norm, batch);
     tick(t_norm);
 
-    // Only the last row of each sequence feeds lm_head: the trie node its
-    // whole token list ends on. Two identical sequences share that node.
-    cuda_check(cudaMemcpy(d_index, last_node.data(), batch * sizeof(int),
-                          cudaMemcpyHostToDevice), "cudaMemcpy last rows");
-    gather_rows<<<static_cast<unsigned>(batch), 256>>>(
-        d_norm, d_index, d_expert_in, apss26::HIDDEN_SIZE);
     float* d_logits = sc.logits.reserve(batch * apss26::VOCAB_SIZE);
-    lm_head_.forward(d_expert_in, d_logits, batch);
+    lm_head_.forward(d_norm, d_logits, batch);
     if (alloc_thread.joinable()) alloc_thread.join();
     to_host(logits, d_logits);
     tick(t_lm);
