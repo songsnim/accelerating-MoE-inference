@@ -94,6 +94,17 @@ void to_host(Tensor& host, const float* device) {
 // block size stay common to both by design.
 constexpr int BK = 16;
 constexpr int GEMM_THREADS = 256;
+// Which p step of the compute hands the next k tile to shared.
+//
+// The stores write the half of the double buffer nothing reads this iteration,
+// so they are free to go any time after the global loads land -- but ptxas puts
+// all 16 at 98-99% of the loop body with *zero* FFMAs after them, so their
+// latency sits directly on the __syncthreads(). ncu: barrier is 9.14% of warp
+// cycles and it went *up* when 060 made the compute faster, which is the
+// signature of a drain the compute no longer covers. Issuing them mid-loop
+// leaves the remaining p steps to cover them. `p` is a compile-time constant in
+// the unrolled loop, so the test folds and the block is emitted exactly once.
+constexpr int GEMM_STS_AT = BK / 2 - 1;
 constexpr int PROJ_BM = 128, PROJ_BN = 128, PROJ_TM = 8, PROJ_TN = 8;
 constexpr bool PROJ_SWIZ = true;
 constexpr int GRP_BM = 128, GRP_BN = 128, GRP_TM = 8, GRP_TN = 8;
@@ -274,6 +285,7 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
 
         const float (*ac)[BM + SPAD] = as[cur];
         const float (*bc)[BN + SPAD] = bs[cur];
+        const int nxt = cur ^ 1;
 #pragma unroll
         for (int p = 0; p < BK; ++p) {
             float av4[TM], bv4[TN];
@@ -321,20 +333,30 @@ __device__ __forceinline__ void gemm_nt_body(const float* __restrict__ a,
             for (int j = 0; j < TN; ++j)
 #pragma unroll
                 for (int i = 0; i < TM; ++i) acc[i][j] += av4[i] * bv4[j];
+
+            // Writing the other buffer: every thread finished reading it
+            // before the __syncthreads() that closed the previous iteration.
+            //
+            // Not guarded by `more`. On the last k tile the staging registers
+            // still hold the previous tile's values and this writes them to the
+            // buffer nobody reads again -- harmless, and 16 instructions once
+            // per block. Guarding it costs far more: `more` is not a
+            // compile-time constant, so ptxas duplicates every p step after the
+            // store for the two sides of the branch (+820 instructions on a
+            // 1147-instruction loop at GEMM_STS_AT = 3).
+            if (p == GEMM_STS_AT) {
+                as[nxt][lc + 0][sc] = av.x; as[nxt][lc + 1][sc] = av.y;
+                as[nxt][lc + 2][sc] = av.z; as[nxt][lc + 3][sc] = av.w;
+                as[nxt][lc + 0][sc2] = av2.x; as[nxt][lc + 1][sc2] = av2.y;
+                as[nxt][lc + 2][sc2] = av2.z; as[nxt][lc + 3][sc2] = av2.w;
+                bs[nxt][lc + 0][sc] = bv.x; bs[nxt][lc + 1][sc] = bv.y;
+                bs[nxt][lc + 2][sc] = bv.z; bs[nxt][lc + 3][sc] = bv.w;
+                bs[nxt][lc + 0][sc2] = bv2.x; bs[nxt][lc + 1][sc2] = bv2.y;
+                bs[nxt][lc + 2][sc2] = bv2.z; bs[nxt][lc + 3][sc2] = bv2.w;
+            }
         }
 
         if (more) {
-            // Writing the other buffer: every thread finished reading it before
-            // the __syncthreads() that closed the previous iteration.
-            const int nxt = cur ^ 1;
-            as[nxt][lc + 0][sc] = av.x; as[nxt][lc + 1][sc] = av.y;
-            as[nxt][lc + 2][sc] = av.z; as[nxt][lc + 3][sc] = av.w;
-            as[nxt][lc + 0][sc2] = av2.x; as[nxt][lc + 1][sc2] = av2.y;
-            as[nxt][lc + 2][sc2] = av2.z; as[nxt][lc + 3][sc2] = av2.w;
-            bs[nxt][lc + 0][sc] = bv.x; bs[nxt][lc + 1][sc] = bv.y;
-            bs[nxt][lc + 2][sc] = bv.z; bs[nxt][lc + 3][sc] = bv.w;
-            bs[nxt][lc + 0][sc2] = bv2.x; bs[nxt][lc + 1][sc2] = bv2.y;
-            bs[nxt][lc + 2][sc2] = bv2.z; bs[nxt][lc + 3][sc2] = bv2.w;
             __syncthreads();
             cur = nxt;
         }
