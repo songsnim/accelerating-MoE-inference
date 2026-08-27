@@ -98,6 +98,12 @@ constexpr int PROJ_BM = 128, PROJ_BN = 128, PROJ_TM = 8, PROJ_TN = 8;
 constexpr bool PROJ_SWIZ = true;
 constexpr int GRP_BM = 128, GRP_BN = 128, GRP_TM = 8, GRP_TN = 8;
 constexpr bool GRP_SWIZ = false;
+// w13 alone. 039 turned the store swizzle on for the grouped GEMM and measured
+// it through w2, where it cost 3 registers and spilled 24 B; the constant was
+// shared, so w13 was never tried on its own. ncu says w13 carries 63.2 M shared
+// store bank conflicts against o_proj's 2.7 M (23x) -- o_proj has PROJ_SWIZ on,
+// which is exactly what 026 turned on to delete them.
+constexpr bool W13_SWIZ = true;
 static_assert((PROJ_BM / PROJ_TM) * (PROJ_BN / PROJ_TN) == GEMM_THREADS,
               "projection tile does not fill the block");
 static_assert((GRP_BM / GRP_TM) * (GRP_BN / GRP_TN) == GEMM_THREADS,
@@ -584,7 +590,7 @@ void gemm_grouped(const float* __restrict__ a,
     const int* const t = tiles + blockIdx.y * 3;
     // The grid is sized to the worst-case tile count, so the tail is empty.
     if (t[2] == 0) return;
-    gemm_nt_body<GRP_BM, GRP_BN, GRP_TM, GRP_TN, GRP_SWIZ, false, 0, AGATHER,
+    gemm_nt_body<GRP_BM, GRP_BN, GRP_TM, GRP_TN, W13_SWIZ, false, 0, AGATHER,
                  FUSE_SILU>(
         a, weights[t[0]], nullptr, c, nullptr, nullptr, t[1], t[1] + t[2], k, n,
         arowmap, nmean, ninv, nw, nb);
