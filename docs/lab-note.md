@@ -3855,3 +3855,111 @@ mean abs 1.27e-5 → **0.0193** (1520배). 첫 불일치 [1,0]: 34.995 vs 35.258
   `layer_norm_rows`(SM 38% / DRAM 34%, 116 ms) 하나뿐이고, 나머지
   (`rope` 92.0 / `add_inplace` 92.6 / `silu_mul` 93.4 / `moe_combine` 92.4% DRAM)는
   대역폭 포화로 여지가 없다. `attention_heads`는 SM 73.5% / occ 97.6%로 compute 쪽.
+
+# EXP-045 — 비-GEMM을 GEMM 뒤에 숨긴다 (측정-L 레버 4, 기각 −0.91%)
+
+## 1. Background
+측정-L의 남은 순위에서 가장 큰 항. 비-GEMM은 b1 기준 **99 ms(6.2%)** — norm 60,
+rope+attention 38, routing 1. 측정-L은 이걸 "2 스트림, 시퀀스 2분할(+2.3% 행)"으로
+적었는데, **행 청킹만으로 분할 비용 없이 된다**는 것이 이번 설계다(각 커널이 행별
+독립이므로 시퀀스를 쪼갤 필요가 없다).
+
+먼저 부품 천장을 다시 쟀다(`exp-045-clockwall-bench.cu`, NVML):
+
+| | ms | MHz | W | throttle | 비고 |
+|---|---|---|---|---|---|
+| 순수 FFMA (메모리 0) | 1.145 | 1860 | 350 | SW_POWER_CAP | 20992 flop/cycle의 **96.2%** |
+| gemm_nt_bias (q_proj) | 11.27 | 1605 | 285 | SW_POWER_CAP | 69.1% |
+| layer_norm_rows | 1.238 | 1905 | 295 | — | 824 GB/s = **DRAM 88%** |
+| float4 복사 | 0.615 | 1905 | 275 | — | 830 GB/s = 89% (루프라인) |
+
+즉 GEMM은 발행에, norm은 DRAM에 붙어 있다 — 자원이 다르다. 전력 상한(370 W)은
+순수 FFMA에서만 실제로 닿고, GEMM은 285 W에서 이미 1605 MHz다. **클럭은 우리가 살 수
+있는 물건이 아니므로 이 축은 진단으로만 쓰고 닫았다.**
+
+## 2. Hypothesis
+GEMM(발행 바운드)과 norm(DRAM 바운드)을 두 스트림에서 동시에 돌리면 norm의 바이트가
+GEMM의 계산 뒤로 숨는다. 마이크로벤치가 그 비율을 준다:
+
+| | ms |
+|---|---|
+| gemm 단독 | 11.268 |
+| norm 단독 | 1.238 |
+| gemm→norm 순차 (지금 모델) | 12.114 |
+| **gemm ∥ norm (2 스트림)** | **11.708** |
+
+norm의 **64%가 숨었다**(+0.44 대 1.238). 99 ms에 적용하면 −63 ms(−4.0%)가 상한이다.
+
+## 3. Design and Implementation
+`DeviceLinear::forward/forward_resid/forward_gate_norm`, `DeviceNorm::forward/forward_stats`에
+`cudaStream_t stream = nullptr` 인자 추가. `Scratch`가 side 스트림 1개와 이벤트 3개를 소유.
+청크 경계는 `PROJ_BM`의 배수 → GEMM 타일 분할이 단일 런치와 동일하고, norm은 행별
+계산이라 값은 비트 동일하다.
+
+레이어당(비-tail):
+```
+main: input_norm([0,head))            ; record ev_main
+side: wait(ev_main); input_norm([head,total)) ; record ev_side
+main: q_proj([0,head))                        ← side의 norm이 이 뒤로 숨는다
+side: q_proj([head,total))            ; record ev_side2
+main: wait(ev_side); k_proj(all); v_proj(all); wait(ev_side2)
+```
+`head`를 side에 두는 대신 main에 이어 붙이면 앞 청크의 **꼬리 웨이브가 드레인으로
+노출**되므로 두 청크를 서로 다른 스트림에 둔다(mode 2가 그 대가를 잰다).
+
+**함정 하나(−0.4%를 만들었다).** `cudaStreamCreate`는 blocking 스트림이고, legacy
+default stream은 모든 blocking 스트림과 **암묵적으로 직렬화**한다. 그래서 첫 빌드는
+겹침이 0인데 청킹 비용만 냈다. `cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking)`이
+필요하다.
+
+## 4. Result — 기각
+
+`head` 스윕(b5, 1 allocation):
+
+| head | 960 | 1920 | 3840 | 7680 | base |
+|---|---|---|---|---|---|
+| seq/s | 649.6 | 650.4 | 652.6 | 652.9 | **655.1** |
+
+균형 교차 측정(head=7680, 순서 0,1,4,4,1,0,0,4,1):
+
+| | b6 (3회 평균) | b7 (3회 평균) |
+|---|---|---|
+| mode 0 = base | **649.00** | **568.91** |
+| mode 1 = norm 2-스트림 | 643.08 (**−0.91%**) | 565.26 (**−0.64%**) |
+| mode 4 = rope만 side (분할 0) | 649.81 (+0.12%) | — |
+
+비용 분해(b1, 1 allocation):
+
+| | seq/s | vs base |
+|---|---|---|
+| mode 0 base | 644.7 | — |
+| mode 3 = q만 두 스트림 분할, norm은 전부 main | 643.2 | −0.24% (**분할 자체의 값**) |
+| mode 1 = 분할 + side norm | 642.8 | −0.29% |
+| mode 2 = 뒤 청크를 main에 이어 붙임 | 639.5 | −0.80% (**드레인의 값**) |
+
+**겹침은 실제로 일어난다.** nsys(`outputs/prof-045m1.nsys-rep`): 커널 합 1647.6 ms 대
+벽시계 1575.7 ms = **동시성 72 ms**. 그런데 벽시계가 줄지 않는다. 소재는 커널 시간에
+그대로 보인다 — `layer_norm_rows<0>` 64런치의 min 610 / med 764 / **max 1580 µs**.
+단독 1266 µs(전체 행)짜리 커널의 절반 청크가 **0.64 → 1.58 ms로 2.5배 부푼다.**
+
+이유는 산술로 닫힌다. norm이 단독으로 DRAM 88%를 쓰고 q_proj가 19%를 쓰므로 합이
+107% > 100%다. **동시 실행은 DRAM을 나눠 쓰는 것이지 공짜가 아니다.** 게다가
+동거(co-residency)가 불가능하다 — GEMM은 REG 125 × 512스레드 = **65536으로 레지스터
+파일을 정확히 100% 쓴다**(norm 블록은 1536뿐인데 남은 공간이 0). 그래서 둘은 SM을
+**시분할**하고, 시분할은 자원이 겹치지 않을 때만 이득인데 DRAM은 겹친다.
+
+마이크로벤치가 +64%를 보인 것은 거짓이 아니다 — 거기서도 이득은 0.44 ms(쌍의 3.6%)
+뿐이었고, 레이어당으로 환산하면 0.4 ms(0.8%)다. 그 0.8%를 분할 비용 0.24%와
+DRAM 경합이 먹는다. **분할 비용이 0인 배치(mode 4, rope)조차 +0.12%로 노이즈다.**
+
+## 5. Next action
+**측정-L 레버 4를 지운다. 풀 99 ms(6.2%)는 실현 가능 값이 아니고 상한이 ~0.5%다.**
+근거: 겹침은 일어나지만(72 ms) DRAM이 공유 자원이고 레지스터 파일이 동거를 막는다.
+스트림 축은 이걸로 닫힌다(037/038/042의 **융합**은 바이트를 지우므로 계속 유효하다 —
+겹치는 것과 지우는 것은 다르다).
+
+전부 되돌렸다(`git checkout src/model.cu include/model.h`). 채택 상태는 042 그대로.
+재현: `docs/microworld/exp-045-{concurrency,clockwall}-bench.cu`,
+둘 다 `kern.inc` = `sed -n '95,1155p' src/model.cu` 필요.
+
+---
