@@ -1065,6 +1065,51 @@ __global__ void rope_rows(float* __restrict__ q, float* __restrict__ k,
     }
 }
 
+// Layer 0 only. A node's hidden state there is exactly `embedding[token]`, so
+// q and k before the rotation depend on the token and nothing else -- not on
+// the prefix, which is all that distinguishes two trie nodes carrying the same
+// token. The projections therefore run over the distinct tokens (3,830 of the
+// 15,583 nodes on the contest input) and this kernel expands the result back to
+// one row per node, applying each node's own position as it goes.
+//
+// Same four ops in the same order on the same operands as rope_rows MODE 0, so
+// the rotated values are bit-identical; source and destination are separate
+// buffers here, which is what lets one source row feed many nodes.
+__global__ void rope_gather(const float* __restrict__ qsrc,
+                            const float* __restrict__ ksrc,
+                            float* __restrict__ q, float* __restrict__ k,
+                            const int* __restrict__ pos,
+                            const int* __restrict__ map,
+                            const float* __restrict__ table) {
+    constexpr int D = static_cast<int>(apss26::HEAD_DIM);
+    constexpr int HALF = D / 2;
+    constexpr int QH = static_cast<int>(apss26::NUM_ATTENTION_HEADS);
+    constexpr int KVH = static_cast<int>(apss26::NUM_KV_HEADS);
+
+    const int slot = blockIdx.x;
+    const int u = map[slot];
+    const float* trig = table + static_cast<long long>(pos[slot]) * HALF * 2;
+
+    const float* qs = qsrc + static_cast<long long>(u) * QH * D;
+    float* qd = q + static_cast<long long>(slot) * QH * D;
+    for (int i = threadIdx.x; i < QH * HALF; i += blockDim.x) {
+        const int h = (i / HALF) * D, j = i % HALF;
+        const float c = trig[j * 2], sn = trig[j * 2 + 1];
+        const float x0 = qs[h + j], x1 = qs[h + j + HALF];
+        qd[h + j] = __fsub_rn(__fmul_rn(x0, c), __fmul_rn(x1, sn));
+        qd[h + j + HALF] = __fadd_rn(__fmul_rn(x1, c), __fmul_rn(x0, sn));
+    }
+    const float* ks = ksrc + static_cast<long long>(u) * KVH * D;
+    float* kd = k + static_cast<long long>(slot) * KVH * D;
+    for (int i = threadIdx.x; i < KVH * HALF; i += blockDim.x) {
+        const int h = (i / HALF) * D, j = i % HALF;
+        const float c = trig[j * 2], sn = trig[j * 2 + 1];
+        const float x0 = ks[h + j], x1 = ks[h + j + HALF];
+        kd[h + j] = __fsub_rn(__fmul_rn(x0, c), __fmul_rn(x1, sn));
+        kd[h + j + HALF] = __fadd_rn(__fmul_rn(x1, c), __fmul_rn(x0, sn));
+    }
+}
+
 // Key columns staged per pass.
 constexpr int ATTN_CHUNK = 32;
 // Shared row stride for the staged keys. A multiple of 4 so a key row can be
@@ -1226,7 +1271,11 @@ __global__ void attention_heads(const float* __restrict__ q,
 struct PhiTinyMoEModel::Scratch {
     DeviceBuffer<float> stream_a, stream_b, norm, attn, q, k, v, ctx, router;
     DeviceBuffer<float> tail, gate, rope, logits, nstat;
+    // Layer 0's distinct-token working set: the gathered embeddings, the
+    // normalised rows, and the q/k/v the projections produce for them.
+    DeviceBuffer<float> uemb, unorm, uq, ukv;
     DeviceBuffer<int> index, pair, blk, eoff, tiles, pos, anc, anc_off, last;
+    DeviceBuffer<int> utok, nodeu;
 };
 
 PhiTinyMoEModel::DeviceLinear::DeviceLinear(const ModelLoader& loader,
@@ -1585,6 +1634,31 @@ void PhiTinyMoEModel::generate(
         dst[node_depth[n]] = static_cast<int>(n);
     }
 
+    // Distinct tokens among the trie nodes. At layer 0 a node's hidden state is
+    // exactly `embedding[token]`, so everything up to the rotation depends on
+    // the token alone; two nodes carrying the same token differ only in their
+    // prefix, and nothing before attention reads the prefix. Measured on the
+    // contest input: 15,583 nodes, 3,830 distinct tokens (-75.4% rows).
+    std::vector<int> utok;
+    std::vector<int> nodeu(total);
+    {
+        std::unordered_map<int, int> seen;
+        seen.reserve(total * 2);
+        for (std::size_t n = 0; n < total; ++n) {
+            const int token = node_token[n];
+            const auto it = seen.find(token);
+            if (it != seen.end()) {
+                nodeu[n] = it->second;
+            } else {
+                const int u = static_cast<int>(utok.size());
+                utok.push_back(token);
+                seen.emplace(token, u);
+                nodeu[n] = u;
+            }
+        }
+    }
+    const std::size_t urows = utok.size();
+
     tick(t_embed);
 
     // Everything now runs on the device and the residual stream stays there
@@ -1686,6 +1760,14 @@ void PhiTinyMoEModel::generate(
     // kernel applies its epilogue.
     float* d_nmean = sc.nstat.reserve(2 * mrows);
     float* d_ninv = d_nmean + mrows;
+    // Layer 0's distinct-token buffers.
+    float* d_uemb = sc.uemb.reserve(urows * apss26::HIDDEN_SIZE);
+    float* d_unorm = sc.unorm.reserve(urows * apss26::HIDDEN_SIZE);
+    float* d_uq = sc.uq.reserve(urows * QDIM);
+    float* d_uk = sc.ukv.reserve(2 * urows * KVDIM);
+    float* d_uv = d_uk + urows * KVDIM;
+    int* d_utok = sc.utok.reserve(urows);
+    int* d_nodeu = sc.nodeu.reserve(total);
     // A node's position is its depth in the trie.
     cuda_check(cudaMemcpy(d_pos, node_depth.data(), total * sizeof(int),
                           cudaMemcpyHostToDevice), "cudaMemcpy positions");
@@ -1697,6 +1779,10 @@ void PhiTinyMoEModel::generate(
                           cudaMemcpyHostToDevice), "cudaMemcpy ancestor offsets");
     cuda_check(cudaMemcpy(d_rope, rope.data(), rope.size() * sizeof(float),
                           cudaMemcpyHostToDevice), "cudaMemcpy rope table");
+    cuda_check(cudaMemcpy(d_utok, utok.data(), urows * sizeof(int),
+                          cudaMemcpyHostToDevice), "cudaMemcpy distinct tokens");
+    cuda_check(cudaMemcpy(d_nodeu, nodeu.data(), total * sizeof(int),
+                          cudaMemcpyHostToDevice), "cudaMemcpy node token map");
     // The kernel stages ATTN_GROUP scores per key plus an ATTN_CHUNK-wide k
     // slice, so its shared footprint is linear in the key count -- which the
     // sliding window caps, so a sequence past the window costs no more than the
@@ -1763,6 +1849,9 @@ void PhiTinyMoEModel::generate(
         // node -- a last row attends to its whole root path -- and so does the
         // input norm that feeds them.
         const bool tail = li + 1 == layers_.size();
+        // Layer 0's norm and projections run over the distinct tokens, and
+        // rope_gather expands the result back to one row per node.
+        const bool first = li == 0;
         const std::size_t rows = tail ? batch : total;
         const int rows_i = static_cast<int>(rows);
         const int nrb_r = tail ? nrb_tail : nrb;
@@ -1773,8 +1862,15 @@ void PhiTinyMoEModel::generate(
         // per row) instead of riding the warp that just ran the two chains, so
         // it keeps far more loads in flight. `d_nmean`/`d_ninv` are free here --
         // post_norm does not write them until after o_proj.
-        layer.input_norm.forward_two_stage(d_hidden, d_norm, d_nmean, d_ninv,
-                                          total);
+        const std::size_t nrows = first ? urows : total;
+        if (first) {
+            gather_rows<><<<static_cast<unsigned>(urows), 256>>>(
+                d_embeddings_, d_utok, d_uemb, apss26::HIDDEN_SIZE);
+            cuda_check(cudaGetLastError(), "distinct-token embedding gather");
+        }
+        float* const d_pnorm = first ? d_unorm : d_norm;
+        layer.input_norm.forward_two_stage(first ? d_uemb : d_hidden, d_pnorm,
+                                          d_nmean, d_ninv, nrows);
         tick(t_norm);
         if (tail) {
             gather_rows<><<<static_cast<unsigned>(batch), 256>>>(
@@ -1783,11 +1879,23 @@ void PhiTinyMoEModel::generate(
                 d_hidden, d_last, d_tresid, apss26::HIDDEN_SIZE);
             cuda_check(cudaGetLastError(), "tail gathers");
         }
-        layer.q_proj.forward(tail ? d_tnorm : d_norm, d_q, rows);
-        layer.k_proj.forward(d_norm, d_k, total);
-        layer.v_proj.forward(d_norm, d_v, total);
+        layer.q_proj.forward(tail ? d_tnorm : d_pnorm, first ? d_uq : d_q,
+                             first ? urows : rows);
+        layer.k_proj.forward(d_pnorm, first ? d_uk : d_k, nrows);
+        layer.v_proj.forward(d_pnorm, first ? d_uv : d_v, nrows);
         tick(t_gemm);
-        if (tail) {
+        if (first) {
+            // Expand back to one row per node: the rotation carries the node's
+            // own position, and v needs none so it is a plain gather.
+            rope_gather<<<static_cast<unsigned>(total), 256>>>(
+                d_uq, d_uk, d_q, d_k, d_pos, d_nodeu, d_rope);
+            gather_rows<><<<static_cast<unsigned>(total), 256>>>(
+                d_uv, d_nodeu, d_v, KVDIM);
+            attention_heads<><<<dim3(static_cast<unsigned>(total),
+                                     apss26::NUM_KV_HEADS),
+                                apss26::HEAD_DIM, attn_shared>>>(
+                d_q, d_k, d_v, d_anc, d_anc_off, d_ctx, attn_scale);
+        } else if (tail) {
             // q sits in a compacted buffer now, so the two halves of the
             // rotation are launched over their own row sets.
             rope_rows<1><<<static_cast<unsigned>(total), 256>>>(
