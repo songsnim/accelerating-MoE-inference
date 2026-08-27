@@ -3963,3 +3963,56 @@ DRAM 경합이 먹는다. **분할 비용이 0인 배치(mode 4, rope)조차 +0.
 둘 다 `kern.inc` = `sed -n '95,1155p' src/model.cu` 필요.
 
 ---
+
+# EXP-046 — layer_norm 2단계 (SJS 리포트 #17, 채택 +0.13%)
+
+## 1. Background
+사용자 요청으로 `docs/prefill-report-SJS.md` §2의 #17 "router 좁은 타일 + 스트림 +
+layer_norm 2단계"(258 → 281 seq/s)를 우리 트리에서 A/B 했다. 세 요소의 상태:
+
+| 요소 | 우리 상태 |
+|---|---|
+| router 좁은 타일 | **이미 채택** — EXP-028 tall-skinny gate(GATE_BM=64, GATE_N=16, TM=4) |
+| 동시 스트림 | **이미 기각** — EXP-045, −0.91% (DRAM 공유 + 레지스터 파일 100%) |
+| layer_norm 2단계 | **미시험** ← 이번 실험 |
+
+## 2. Hypothesis
+`layer_norm_rows`는 한 워프(=한 블록, 32행)가 mean 체인 → var 체인 → 에필로그 스트리밍
+셋을 **순차로** 한다. 에필로그는 체인이 없으므로 그 워프에 묶여 있을 이유가 없다.
+독립 런치로 빼면 행당 블록 하나(15,583블록 × 256스레드)를 받아 in-flight 로드가 늘고,
+콜당 바이트는 그대로다(3읽기+1쓰기).
+
+근거: EXP-037이 2패스판 **93.6%** DRAM 대 3패스판 **88.3%**를 이미 관측했다. 차분으로
+보면 에필로그 패스만 1.266−0.599 = 0.667 ms / 510 MB = **765 GB/s(82%)**인데,
+순수 스트리밍 루프라인은 830 GB/s(89%, EXP-045 측정)다.
+
+## 3. Design and Implementation
+- `norm_apply` 커널 신설(29줄): 행당 블록 1개, 256스레드, float4, `cols/4`를
+  blockDim 스트라이드로 돈다. 연산은 기존 에필로그와 **같은 4개 op·같은 순서**
+  (`__fsub_rn → __fmul_rn → __fmul_rn → __fadd_rn`).
+- `DeviceNorm::forward_two_stage()` = `forward_stats()` + `norm_apply`.
+- `generate()`의 input_norm만 이걸로 교체. 통계는 `d_nmean`/`d_ninv`를 재사용한다 —
+  post_norm이 그걸 쓰는 시점은 o_proj 뒤이므로 겹치지 않는다.
+- final_norm(1콜, 1024행)과 post_norm(stats 전용)은 그대로.
+
+## 4. Result — 채택
+같은 allocation 안 균형 교차(순서 base,n2,n2,base,base,n2 / n2,base,...):
+
+| | b1 (3회 평균) | b0 (3~4회 평균) |
+|---|---|---|
+| base | 648.05 | 642.94 |
+| **2단계** | **649.24 (+0.18%)** | **643.40 (+0.07%)** |
+
+두 노드 모두 부호 일관, 평균 **+0.13%**. `-v` PASSED, 출력 **131 MB 바이트 동일**(`cmp`).
+
+작은 값이고 예측(0.10%)과 자리가 같다. 에필로그 패스의 82% → 89% 격차가 상한이며
+(−3.3 ms, 측정-J/037이 이미 적어둔 값) 그 절반쯤을 회수했다.
+
+## 5. Next action
+#17은 이걸로 닫힌다(세 요소 전부 판정 완료). 다음은 리포트 #30 **RoPE를 QKV GEMM
+epilogue로 융합**(+0.6% 주장) — 우리 트리에 `rope_rows`가 11.8 ms(0.7%)로 남아 있고,
+`gemm_col_slot`이 스레드에 (c, c+64) 쌍을 그대로 얹어 주므로 042의 FUSE_SILU와 같은
+구조로 들어간다. 그 다음 #34 grouped w13 L2 스위즐(+1.75% 주장) — 측정-K §4.5가
+스위즐을 기각한 것은 **투영 형상**이고 grouped는 재본 적이 없다.
+
+---

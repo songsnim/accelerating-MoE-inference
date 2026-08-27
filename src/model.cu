@@ -791,6 +791,38 @@ __global__ void layer_norm_rows(const float* __restrict__ x,
 // Mirrors PhiMoE::route in layer.cu: quantise the router scores, then pick the
 // best two with a tie epsilon. The scan is sequential in expert order because
 // the tie rule is: on a near tie the lower index wins.
+// EXP-046 (prefill-report-SJS #17, "layer_norm 2단계"). The third pass of
+// layer_norm_rows, lifted out into its own launch so it is not serialised
+// behind the two accumulation chains inside the same warp. Same four ops in the
+// same order on the same operands, so the output is bit-identical; what changes
+// is that this pass gets a whole block per row instead of one warp shared with
+// the chains, and its own grid.
+__global__ void norm_apply(const float* __restrict__ x,
+                           const float* __restrict__ weight,
+                           const float* __restrict__ bias,
+                           float* __restrict__ y,
+                           const float* __restrict__ rmean,
+                           const float* __restrict__ rinv, int cols) {
+    const int row = static_cast<int>(blockIdx.x);
+    const int c4 = cols / 4;
+    const float m = rmean[row], iv = rinv[row];
+    const long long off = static_cast<long long>(row) * cols;
+    const float4* src = reinterpret_cast<const float4*>(x + off);
+    float4* dst = reinterpret_cast<float4*>(y + off);
+    const float4* w4 = reinterpret_cast<const float4*>(weight);
+    const float4* b4 = reinterpret_cast<const float4*>(bias);
+    for (int i = static_cast<int>(threadIdx.x); i < c4;
+         i += static_cast<int>(blockDim.x)) {
+        const float4 xv = src[i], wv = w4[i], bv = b4[i];
+        float4 out;
+        out.x = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(xv.x, m), iv), wv.x), bv.x);
+        out.y = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(xv.y, m), iv), wv.y), bv.y);
+        out.z = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(xv.z, m), iv), wv.z), bv.z);
+        out.w = __fadd_rn(__fmul_rn(__fmul_rn(__fsub_rn(xv.w, m), iv), wv.w), bv.w);
+        dst[i] = out;
+    }
+}
+
 __device__ __forceinline__ void route_top2(const float* __restrict__ logits,
                                            int& first, int& second) {
     float scores[apss26::NUM_EXPERTS];
@@ -1317,6 +1349,16 @@ void PhiTinyMoEModel::DeviceNorm::forward_stats(const float* x, float* rmean,
     cuda_check(cudaGetLastError(), "layer_norm_rows(stats) launch");
 }
 
+void PhiTinyMoEModel::DeviceNorm::forward_two_stage(const float* x, float* y,
+                                                    float* rmean, float* rinv,
+                                                    std::size_t rows) const {
+    forward_stats(x, rmean, rinv, rows);
+    norm_apply<<<static_cast<unsigned>(rows), 256>>>(x, weight, bias, y, rmean,
+                                                     rinv,
+                                                     static_cast<int>(cols));
+    cuda_check(cudaGetLastError(), "norm_apply launch");
+}
+
 PhiTinyMoEModel::DeviceMoE::DeviceMoE(const ModelLoader& loader, std::size_t layer_idx)
     : gate(loader, "model.layers." + std::to_string(layer_idx) + ".block_sparse_moe.gate.weight", "") {
     const std::string base = "model.layers." + std::to_string(layer_idx) + ".block_sparse_moe";
@@ -1692,7 +1734,12 @@ void PhiTinyMoEModel::generate(
         const int max13_r = tail ? max13_tail : max13;
         const int half_r = tail ? half_tail : half_tiles;
 
-        layer.input_norm.forward(d_hidden, d_norm, total);
+        // Two launches, not one: the apply pass gets its own grid (one block
+        // per row) instead of riding the warp that just ran the two chains, so
+        // it keeps far more loads in flight. `d_nmean`/`d_ninv` are free here --
+        // post_norm does not write them until after o_proj.
+        layer.input_norm.forward_two_stage(d_hidden, d_norm, d_nmean, d_ninv,
+                                          total);
         tick(t_norm);
         if (tail) {
             gather_rows<><<<static_cast<unsigned>(batch), 256>>>(

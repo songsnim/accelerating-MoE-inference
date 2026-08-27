@@ -70,6 +70,11 @@ private:
         // consumer, which saves this norm a read of x and a write of y.
         void forward_stats(const float* x, float* rmean, float* rinv,
                            std::size_t rows) const;
+        // The same, as two launches: the stats pass and then a standalone
+        // elementwise apply. Bit-identical; EXP-046 measures whether splitting
+        // the third pass out of the warp that ran the chains is faster.
+        void forward_two_stage(const float* x, float* y, float* rmean,
+                               float* rinv, std::size_t rows) const;
 
         float* weight = nullptr;
         float* bias = nullptr;
